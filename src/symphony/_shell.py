@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .logging import get_logger
+from ._windows_job import is_job_identity, job_exists, terminate_job
 
 
 # Common Git for Windows install locations. Scoop and Winget installs land
@@ -382,6 +383,8 @@ def kill_process_group(pid: int, *, identity: str | None = None) -> bool:
     the orchestrator call sites to do so is tracked for the core.py lane.
     """
     global _warned_kill_without_identity
+    if is_job_identity(identity):
+        return terminate_job(identity) if identity is not None else False
     if identity is not None and process_identity(pid) != identity:
         log.warning("kill_process_group_identity_mismatch", pid=pid)
         return False
@@ -421,6 +424,27 @@ async def terminate_process_tree(
     fallback for taskkill-less hosts.
     """
     pid = proc.pid
+    if is_job_identity(identity):
+        assert identity is not None
+        exists = await asyncio.to_thread(job_exists, identity)
+        if exists is None:
+            return None
+        if exists and not await asyncio.to_thread(terminate_job, identity):
+            return None
+        if not exists and proc.returncode is None:
+            # This is our unreaped supervisor's original Windows process handle,
+            # including the pre-job bootstrap interval; never a reusable raw PID.
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+        rc = await safe_proc_wait(proc, timeout=kill_timeout)
+        deadline = time.monotonic() + kill_timeout
+        while await asyncio.to_thread(job_exists, identity) is not False:
+            if time.monotonic() >= deadline:
+                return None
+            await asyncio.sleep(0.05)
+        return proc.returncode if proc.returncode is not None else rc
     if sys.platform == "win32":
         if proc.returncode is not None:
             return proc.returncode

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import socket
 import subprocess
@@ -184,3 +185,53 @@ def test_port_conflict_names_this_workflow_service(
     assert "owned by this workflow's service" in err
     assert f"pid {owner.pid}" in err
     assert "symphony service status" in err
+
+
+@pytest.mark.parametrize("requested_port", [52363, 0])
+async def test_runtime_port_is_advertised_in_progress_without_rewriting_workflow(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requested_port: int,
+) -> None:
+    monkeypatch.delenv("SYMPHONY_BOARD_URL", raising=False)
+    text = _workflow_text().replace("\n---\n", "\nserver:\n  port: 9999\n---\n")
+    workflow = _board(tmp_path, text)
+    original = workflow.read_bytes()
+
+    class StubOrchestrator:
+        def __init__(self, _state):
+            self.observers = []
+
+        async def start(self):
+            pass
+
+        async def stop(self):
+            pass
+
+        def add_observer(self, callback):
+            self.observers.append(callback)
+
+        def snapshot(self):
+            return {"running": [], "retrying": []}
+
+    class StubRunner:
+        async def cleanup(self):
+            pass
+
+    monkeypatch.setattr(cli_main_mod, "Orchestrator", StubOrchestrator)
+    monkeypatch.setattr(cli_main_mod, "_startup_preflight_failures", lambda _cfg: [])
+    monkeypatch.setattr(cli_main_mod, "build_app", lambda orch: orch)
+    async def bind_server(orch, _host, port):
+        assert port == requested_port
+        for callback in orch.observers:
+            await callback()
+        return StubRunner(), 52363
+    monkeypatch.setattr(cli_main_mod, "run_server", bind_server)
+    monkeypatch.setattr(asyncio.get_running_loop(), "add_signal_handler", lambda _sig, callback: callback())
+    args = cli_main_mod._build_parser().parse_args([
+        str(workflow), "--port", str(requested_port), "--no-keep-awake",
+    ])
+
+    assert await cli_main_mod._run(args) == 0
+    progress = (tmp_path / "WORKFLOW-PROGRESS.md").read_text(encoding="utf-8")
+    assert "http://127.0.0.1:52363/" in progress
+    assert "http://127.0.0.1:9999/" not in progress
+    assert workflow.read_bytes() == original

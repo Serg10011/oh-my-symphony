@@ -785,8 +785,13 @@ def _bootstrap_missing(
     mappings["WORKFLOW.file.example.md"] = str(workflow_path.relative_to(repo))
     for source_name, target_name in mappings.items():
         destination = repo / target_name
+        source_file = source / source_name
+        if source_name == "WORKFLOW.file.example.md":
+            advanced = source / "examples/advanced/WORKFLOW.file.example.md"
+            if advanced.is_file():
+                source_file = advanced
         _copy_missing_file(
-            source / source_name,
+            source_file,
             destination,
             created_files,
             created_dirs,

@@ -26,6 +26,7 @@ from typing import Any, Sequence
 
 from .. import __version__
 from .._shell import process_identity, resolve_bash, terminate_process_tree
+from .._windows_backend import spawn_backend
 from ..errors import (
     CodexNotFound,
     PortExit,
@@ -272,6 +273,7 @@ class CodexAppServerBackend(BaseAgentBackend):
         self._on_process_started = init.on_process_started
         self._on_process_identified = init.on_process_identified
         self._process_launch_guard = init.process_launch_guard
+        self._require_durable_process = init._require_durable_process
         self._client_tools = init.client_tools
         self._approval_policy = codex.approval_policy
         self._sandbox_policy = codex.turn_sandbox_policy
@@ -307,28 +309,17 @@ class CodexAppServerBackend(BaseAgentBackend):
         command, env = self._prepare_command_and_env()
         try:
             async with self._process_launch_guard() as publish_started:
-                self._process = await asyncio.create_subprocess_exec(
-                    resolve_bash(),
-                    "-lc",
-                    command,
-                    cwd=str(self._cwd),
-                    stdin=asyncio.subprocess.PIPE,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env=env,
-                    limit=MAX_LINE_BYTES,
-                    # Own process group so terminate/kill reaches the agent CLI
-                    # behind the bash wrapper (POSIX only).
-                    start_new_session=os.name == "posix",
-                )
-                self._process_identity = process_identity(self._process.pid)
-                if self._on_process_identified is not None:
-                    self._on_process_identified(
-                        self._process.pid, self._process_identity
+                if os.name == "nt":
+                    self._process, self._process_identity = await spawn_backend(
+                        [resolve_bash(), "-lc", command], cwd=str(self._cwd), env=env,
+                        limit=MAX_LINE_BYTES, pipe_stdin=True,
+                        on_identified=self._on_process_identified,
+                        on_started=self._on_process_started, publish_started=publish_started,
+                        require_durable=self._require_durable_process,
+                        track_process=self._track_windows_process,
                     )
-                elif self._on_process_started is not None:
-                    self._on_process_started(self._process.pid)
-                await publish_started(self._process.pid)
+                else:
+                    await self._spawn_posix(command, env, publish_started)
         except FileNotFoundError as exc:
             raise CodexNotFound("bash not available", error=str(exc)) from exc
         except BaseException as launch_exc:
@@ -355,6 +346,33 @@ class CodexAppServerBackend(BaseAgentBackend):
             raise CodexNotFound("subprocess pipes not available")
         self._reader_task = asyncio.create_task(self._stdout_reader())
         self._stderr_task = asyncio.create_task(self._stderr_reader())
+
+    def _track_windows_process(self, proc: asyncio.subprocess.Process, identity: str) -> None:
+        self._process, self._process_identity = proc, identity
+
+    async def _spawn_posix(self, command: str, env: dict[str, str], publish_started: Any) -> None:
+        self._process = await asyncio.create_subprocess_exec(
+            resolve_bash(),
+            "-lc",
+            command,
+            cwd=str(self._cwd),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+            limit=MAX_LINE_BYTES,
+            # Own process group so terminate/kill reaches the agent CLI
+            # behind the bash wrapper (POSIX only).
+            start_new_session=os.name == "posix",
+        )
+        self._process_identity = process_identity(self._process.pid)
+        if self._on_process_identified is not None:
+            self._on_process_identified(
+                self._process.pid, self._process_identity
+            )
+        elif self._on_process_started is not None:
+            self._on_process_started(self._process.pid)
+        await publish_started(self._process.pid)
 
     def _prepare_command_and_env(self) -> tuple[str, dict[str, str]]:
         """Build the subprocess command and env, auto-fixing the symlink trap.

@@ -81,4 +81,3 @@ Post it with `JiraClient.append_note_once(issue, "", note, marker)` where
 `marker` is `<tool> <KEY> <sha256(intent.md)[:16]>`. The marker makes
 delivery idempotent across restarts and lost acknowledgements; a changed
 existing comment raises instead of being overwritten.
-

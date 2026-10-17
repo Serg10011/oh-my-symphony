@@ -73,7 +73,6 @@ from ..errors import (
 from ..issue import Issue, normalize_state
 from ..logging import get_logger
 from ..prompt import build_continuation_prompt, build_first_turn_prompt
-from ..skills import render_skill_block
 from ..utils import git_inspect
 from ..workflow import ServiceConfig
 from ..workspace import Workspace, WorkspaceManager
@@ -470,6 +469,7 @@ def _build_attempt_backend(
             process_launch_guard=orch._pm_process_launch_guard(
                 running_issue_id, issue, cfg, workspace.path
             ),
+            _require_durable_process=True,
         )
     )
 
@@ -504,10 +504,11 @@ async def _open_session(orch: Orchestrator, st: _AttemptState) -> None:
     # both TUI chrome AND artefact docs. Resolution already
     # honours `SYMPHONY_LANG` (build_service_config call).
     st.doc_language = st.cfg.tui.language
+    orch._start_factory_verify_phase(st.cfg, st.issue, st.running)
     # Skill files are read off-loop; dispatch shares the event
     # loop with every other running worker.
     skill_context = await asyncio.to_thread(
-        render_skill_block, st.cfg.workflow_path.parent, st.issue.skills
+        orch._render_stage_skills, st.cfg, st.issue, st.workspace.path
     )
     board_health = ""
     if orch._board_health_wanted(st.issue.state):
@@ -527,7 +528,7 @@ async def _open_session(orch: Orchestrator, st: _AttemptState) -> None:
         token_budget=orch._token_budget_for_state(st.cfg, st.issue.state),
         rewind_scope=None,
         compact_issue_context=st.cfg.agent.compact_issue_context,
-        full_ticket_path=orch._ticket_prompt_path(st.cfg, st.issue),
+        full_ticket_path=orch._ticket_prompt_path(st.cfg, st.issue, st.workspace.path),
         artifacts_dir=orch._prompt_artifacts_dir(st.cfg),
         extra_context=skill_context,
         board_health=board_health,
@@ -853,6 +854,8 @@ async def _run_turn(
     st.after_run_pending = True
     try:
         await st.client.run_turn(prompt=prompt, is_continuation=is_continuation)
+        if orch._is_factory_profile(st.cfg) and running.state_at_turn_start == "verify":
+            running.factory_verify_completed = True
     except (
         TurnTimeout,
         TurnFailed,
@@ -1062,9 +1065,15 @@ async def _evaluate_turn_result(
     if (
         not release_rewound
         and state not in active
-        and _is_successful_terminal_state(state)
+        and (
+            _is_successful_terminal_state(state)
+            or (orch._is_factory_profile(st.cfg) and state == "blocked")
+        )
         and st.prev_phase_state in active
-        and st.cfg.agent.stage_contracts_enabled(st.cfg.tracker.active_states)
+        and (
+            orch._is_factory_profile(st.cfg)
+            or st.cfg.agent.stage_contracts_enabled(st.cfg.tracker.active_states)
+        )
     ):
         try:
             outcome = await orch._enforce_stage_contract(

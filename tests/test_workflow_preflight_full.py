@@ -420,7 +420,7 @@ def test_workflow_with_no_tracker_block_at_all_fails_preflight(tmp_path: Path) -
     [
         "WORKFLOW.md",
         "WORKFLOW.example.md",
-        "WORKFLOW.file.example.md",
+        "examples/advanced/WORKFLOW.file.example.md",
         "skills/symphony-skill/oneshot/templates/WORKFLOW.oneshot.md",
     ],
 )

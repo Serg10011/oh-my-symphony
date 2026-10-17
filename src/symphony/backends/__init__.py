@@ -133,8 +133,8 @@ class BackendInit:
     cwd: Path
     workspace_root: Path
     on_event: EventCallback
-    on_process_started: Callable[[int], None] | None = None
-    on_process_identified: Callable[[int, str | None], None] | None = None
+    on_process_started: Callable[[int], bool | None] | None = None
+    on_process_identified: Callable[[int, str | None], bool | None] | None = None
     client_tools: list[ToolDescriptor] = field(default_factory=list)
     # Per-dispatch environment overlaid on the inherited process environment
     # when the backend spawns its subprocess (``SYMPHONY_TOKEN_EMA``,
@@ -143,6 +143,7 @@ class BackendInit:
     # clobbering each other's values (GitHub issue #29).
     env: dict[str, str] = field(default_factory=dict)
     process_launch_guard: ProcessLaunchGuard = noop_process_launch_guard
+    _require_durable_process: bool = False
 
 
 @runtime_checkable

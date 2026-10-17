@@ -35,6 +35,7 @@ from symphony.orchestrator.run_registry import (
     registry_path_for_workflow,
 )
 from symphony.trackers.file import FileBoardTracker, parse_ticket_file
+from symphony.workspace import COMMIT_NOOP, CommitOutcome
 
 from tests.test_orchestrator_contract_integration import (
     _TicketMutatingBackend,
@@ -3548,8 +3549,9 @@ def test_red_verifier_handoff_exits_normal_and_releases_its_slot(
     snapshots: list[Path] = []
     removals: list[Path] = []
 
-    async def record_snapshot(path: Path, **_kwargs: object) -> None:
+    async def record_snapshot(path: Path, **_kwargs: object) -> CommitOutcome:
         snapshots.append(path)
+        return CommitOutcome(COMMIT_NOOP)
 
     async def record_remove(path: Path) -> None:
         removals.append(path)

@@ -505,6 +505,32 @@ def test_conflict_and_workflow_escape_leave_existing_directory_untouched(
         )
 
 
+def test_project_bootstrap_preserves_advanced_workflow_when_factory_is_default(
+    tmp_path: Path,
+) -> None:
+    source = source_bundle(tmp_path / "source")
+    advanced = source / "examples/advanced/WORKFLOW.file.example.md"
+    advanced.parent.mkdir(parents=True)
+    advanced.write_text(
+        "---\ntracker:\n  kind: file\n  board_root: ./kanban\n"
+        "  active_states: [Todo, In Progress, Verify, Document]\n"
+        "workspace:\n  root: ~/symphony_workspaces\n---\nAdvanced workflow\n",
+        encoding="utf-8",
+    )
+    (source / "WORKFLOW.file.example.md").write_text(
+        "---\ncontract_profile: factory\n---\nFactory workflow\n", encoding="utf-8"
+    )
+    target = tmp_path / "new-project"
+    create_or_adopt_project(
+        target, source=source, project_id="new",
+        registry=ProjectRegistry(tmp_path / "projects.json"),
+    )
+    workflow = (target / "WORKFLOW.md").read_text(encoding="utf-8")
+    assert "[Todo, In Progress, Verify, Document]" in workflow
+    assert "root: ~/symphony_workspaces/new" in workflow
+    assert "contract_profile: factory" not in workflow
+
+
 def test_missing_workflow_gets_project_scoped_workspace_and_contained_board(
     tmp_path: Path,
 ) -> None:

@@ -17,6 +17,7 @@ import asyncio
 from pathlib import Path
 
 import pytest
+from tests._backend_windows_stub import mocked_windows_transport  # noqa: F401
 
 from symphony.backends import (
     EVENT_OTHER_MESSAGE,

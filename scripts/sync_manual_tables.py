@@ -60,6 +60,7 @@ SUBCOMMAND_KO = {
     "tui": "칸반 TUI 열기 (--tui와 동일)",
     "doctor": "실행 전 WORKFLOW.md 사전 점검",
     "board": "파일 칸반 보드 관리 (init/ls/new/mv/update/show/graph)",
+    "factory": "자율 개발 팩토리 초기화·동기화·실행",
     "service": "오케스트레이터를 백그라운드 서비스로 실행",
     "project": "독립 프로젝트 서비스 등록·실행",
     "pm": "일회용 PM Workspace 데모 생성·실행",

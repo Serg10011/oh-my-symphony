@@ -98,14 +98,16 @@ trap _symphony_release_worktree_lock EXIT
 # dispatcher into a retry loop with `Device or resource busy`. Skipping
 # the rmdir avoids the race entirely.
 #
-# A prior crashed attempt may have left `.git/worktrees/<ID>` registered;
-# detach it first so the next `add` doesn't fail with
-# "missing but already registered" or "already checked out". `remove`
-# tolerates a non-existent path (returns non-zero, ignored); `prune`
-# mops up any leftover admin files.
+# Validate every retained link before removing a prior worktree. Fresh empty
+# targets stay in place; only exact unlocked stale registrations are recovered.
 _symphony_acquire_worktree_lock
-git worktree remove --force "$WORKTREE_PATH" 2>/dev/null || true
-git worktree prune 2>/dev/null || true
+: "${SYMPHONY_PYTHON:?SYMPHONY_PYTHON not set}"
+: "${SYMPHONY_WORKSPACE_ROOT:?SYMPHONY_WORKSPACE_ROOT not set}"
+cleanup_workspace="$WORKTREE_PATH"
+if [ "${OS:-}" = "Windows_NT" ]; then
+  cleanup_workspace="$(cygpath -w "$WORKTREE_PATH")"
+fi
+"$SYMPHONY_PYTHON" -m symphony._worktree_cleanup "$cleanup_workspace" --prepare-setup "$BRANCH"
 
 # A prior worktree may have been reaped after its branch was merged into the
 # configured target. Reusing that old tip is unsafe: the next after_run hook
@@ -209,6 +211,7 @@ _symphony_link_dir() {
 for dir in ${SYMPHONY_BOARD_ROOT_NAME:-kanban}; do
   [ -e "$HOST_REPO/$dir" ] || continue
   tracked_file="$(git rev-parse --git-path "symphony-${dir}-tracked")"
+  mkdir -p "$(dirname "$tracked_file")"
   git ls-files -z -- "$dir" > "$tracked_file" || true
   if [ -s "$tracked_file" ]; then
     xargs -0 git update-index --skip-worktree -- < "$tracked_file" || true

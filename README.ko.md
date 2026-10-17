@@ -28,6 +28,58 @@
 
 [**AI CLI 없이 60초 만에 체험하기 →**](#try-it-in-60-seconds-no-agent-cli-required)
 
+## 기본 경로: 자율 개발 팩토리
+
+새 파일 보드 프로젝트는 Symphony 소스와 분리된 제품 저장소에서
+Wayfinder -> Symphony -> Supergoal 흐름으로 시작한다.
+
+```bash
+git init my-product
+cd my-product
+symphony factory init . --agent opencode
+git add . && git commit -m "Initialize Symphony factory"
+# wayfinder/tickets/ 아래에 티켓을 만든 뒤:
+symphony factory sync ./wayfinder
+symphony factory start ./wayfinder
+```
+
+Factory init은 기존 `.gitignore` 내용을 유지하면서 실시간 보드 카드,
+worktree, 로그, `WORKFLOW-PROGRESS.md` 제외 규칙을 추가한다. 이 파일들은
+공유 런타임 상태이며 Wayfinder 명세와 완성된 제품 코드는 커밋 대상이다.
+
+생성되는 보드는 `Ready -> Build -> Verify -> Done`을 사용하고, 권한이나 실행
+환경이 없으면 `Blocked`로 이동한다. Supergoal은 각 티켓의 테스트 우선 개발을,
+Symphony는 의존성 순서, worktree, 재시도, 독립 Verify를 맡는다. 기본 sync는
+전체 티켓과 blocker 연결을 가져오므로 선행 작업이 끝나면 다음 작업이 자동으로
+시작된다. 현재 실행 가능한 frontier만 가져오려면 `--frontier-only`를
+사용한다. UI 작업은
+`superdesign`, 제품 조사/스펙은 `superpm`, 브라우저/런타임 검증은 `superqa`를
+Wayfinder frontmatter에 명시한다. 기존 운영 프로필은
+`examples/advanced/WORKFLOW.file.example.md`에 유지된다.
+검증된 작업은 실행을 시작한 브랜치에 로컬로 병합된다. 원격으로 게시하려면
+upstream을 설정하고 `agent.auto_merge_push_target: true`를 명시해야 한다.
+`symphony project create`는 기존 고급 워크플로를 유지한다.
+
+`Blocked`가 되면 카드의 `Blocker`에서 원인과 보존된 worktree 경로를 먼저
+확인한다. Git 오류나 토큰 한도 문제를 해결한 뒤
+`symphony board update <ID> --state Verify --workflow ./WORKFLOW.md`로 검증을
+다시 요청한다. 일시정지된 티켓은 상태만 옮겨서는 실행되지 않는다. TUI의
+`P` 또는 실행 중인 서비스의 `POST /api/v1/<ID>/resume`으로 재개해야 한다.
+실제 병합까지 성공하면 Symphony가 작성한 복구 진단은
+`Resolved Blocker (history)`로 표시되고 원문은 이력으로 남는다.
+운영자가 직접 작성한 Blocker는 유지된다. 상세 한도와 복구 절차는
+[팩토리 운영 안내](skills/symphony-skill/reference/factory.md)를 참고한다.
+
+네 가지 표준 skill은 Symphony 패키지에 고정되어 프로젝트로 복사되므로 별도
+설치가 필요 없고, 복사본은 프로젝트에 맞게 수정할 수 있다. 브라우저 실행에는
+추가 런타임이 필요하다. Superdesign gate는 Node.js 18+, `@playwright/cli`
+(`npm install -g @playwright/cli@latest`), `playwright-cli install --skills`,
+그리고 시스템 Chrome 또는 Playwright Chromium
+(`npx playwright install chromium`)을 사용한다. SuperQA 브라우저 검증은
+`textual`, `playwright`, `pyyaml`, `pillow`와 Playwright Chromium
+(`python -m playwright install chromium`)을 사용한다. 이 런타임의 최초 설치에는
+네트워크가 필요할 수 있다.
+
 ## 목차
 
 > **인쇄용 매뉴얼:** [치트시트 (PDF)](https://cskwork.github.io/oh-my-symphony/manual/pdf/oh-my-symphony-cheatsheet-ko.pdf) · [튜토리얼 (PDF)](https://cskwork.github.io/oh-my-symphony/manual/pdf/oh-my-symphony-tutorial-ko.pdf) · [HTML + 영어](https://cskwork.github.io/oh-my-symphony/#manual). 배포할 때마다 `docs/manual/`에서 생성되며 키 표는 코드에서 뽑습니다.

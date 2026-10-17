@@ -24,6 +24,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any
 
 import pytest
+from tests._backend_windows_stub import mocked_windows_transport  # noqa: F401
 
 from tests._win_skips import requires_symlink_privilege
 

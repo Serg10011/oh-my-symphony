@@ -26,7 +26,7 @@ htmlcov/
 
 # Local user workflow + tracker state — examples are shipped instead
 /WORKFLOW.md
-/kanban/
+/kanban
 /log/
 *.log
 

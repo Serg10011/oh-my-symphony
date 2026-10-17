@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests._backend_windows_stub import mocked_windows_transport  # noqa: F401
 
 import symphony._shell as shell_module
 import symphony.backends.codex as codex_module
@@ -823,6 +824,8 @@ async def test_per_turn_unconfirmed_normal_return_blocks_next_turn_until_stop_re
 async def test_per_turn_preserves_spawn_identity_across_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # This case models POSIX process-group reuse, independently of the host OS.
+    monkeypatch.setattr(shell_module.sys, "platform", "linux")
     cfg = _make_cfg("gemini", workspace_root=tmp_path)
     cwd = tmp_path / "ws"
     cwd.mkdir()
@@ -904,6 +907,8 @@ async def test_per_turn_failed_stop_retains_process_for_retry_and_next_turn(
 async def test_codex_stop_never_signals_reused_group_after_parent_exit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Windows jobs have separate exact-token guards in test_windows_containment.
+    monkeypatch.setattr(shell_module.sys, "platform", "linux")
     cfg = _make_cfg("codex", workspace_root=tmp_path)
     cwd = tmp_path / "ws"
     cwd.mkdir()

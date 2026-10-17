@@ -17,7 +17,7 @@ import asyncio
 import os
 import tempfile
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
@@ -261,6 +261,7 @@ class ProgressFileWriter:
         self._state = workflow_state
         self._path = Path(path)
         self._max_transitions = max(int(max_transitions), 0)
+        self._server_port: int | None = None
         self._last_states: dict[str, str] = {}
         self._transitions: deque[_Transition] = deque(maxlen=max(self._max_transitions, 1))
         self._first_render_done = False
@@ -269,6 +270,10 @@ class ProgressFileWriter:
     @property
     def path(self) -> Path:
         return self._path
+
+    def set_server_port(self, port: int) -> None:
+        """Keep the advertised endpoint tied to the listener across workflow reloads."""
+        self._server_port = port
 
     def register(self) -> None:
         self._orch.add_observer(self.on_change)
@@ -291,6 +296,8 @@ class ProgressFileWriter:
         cfg = self._state.current()
         if cfg is None:
             return
+        if self._server_port is not None:
+            cfg = replace(cfg, server=replace(cfg.server, port=self._server_port))
         issues = await asyncio.to_thread(self._scan_tracker, cfg)
         now = datetime.now(timezone.utc)
         seen: dict[str, str] = {}

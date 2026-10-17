@@ -10,9 +10,16 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.27.0] - 2026-10-16 - PM Workspace and portable planning demo
+## [0.27.0] - 2026-10-17 - Autonomous factory, PM Workspace and Windows recovery
 
 ### Added
+- `symphony factory init|sync|start` for the beginner Wayfinder -> Symphony ->
+  Supergoal file-board path, with package-owned templates and Doctor-gated
+  managed startup.
+- Strict, graph-validated Wayfinder synchronization with stable provenance,
+  dependency mapping, explicit skill overlays, and no post-dispatch rewrites.
+- A factory-specific stage contract for `Build` evidence and independent
+  `Verify` evidence.
 - Add the default-off local PM Workspace: five planning artifacts, managed WBS, constrained XLSX exchange, pinned OpenSpec integration, proposal-only assistance, revision approval, native ticket handoff, evidence checks, and fenced actual-process dispatch authority. A trimmed OpenSpec 1.14.2 CLI ships inside Symphony and runs with the host's Node.js 20.19.0 or newer whenever `pm.openspec_executable` is absent; set that key only to use your own OpenSpec 1.14.2.
 - Add `symphony pm demo [--path DIR] [--lang en|ko]`: a disposable, loopback-only PM Workspace with one validated sample change in English or Korean. It never starts an agent; Ctrl-C stops it and keeps the folder. Not verified on Windows. Each planning screen gains a "What do these buttons do?" guide (collapsed by default), `?lang=en|ko` sets the page language, and buttons that need a missing host tool are disabled up front with the reason: Approve revision and Preview archive without Node.js 20.19.0+, the planning assistant without a compatible installed Codex CLI and a Codex login. `symphony pm` now always runs this command, even when a `./pm` directory exists; run a workflow there with `symphony ./pm`.
 - PM approval and handoff remain separate local actions. This change does not enable automatic merge/push, deployment, publication, or real-project archive.
@@ -24,6 +31,11 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - XLSX exports include a UTC export time, native execution snapshots/links and leaf-status summary, derived display numbers/dependency summaries/adjacent titles, frozen identifying columns, parent indentation, read-only shading, and advisory controlled-field dropdowns while retaining version 1 import compatibility and custom task values.
 
 ### Changed
+- `symphony board new --skills` attaches ticket-local skills. Workflow-aware
+  ticket creation defaults to the first configured active state; raw `--root`
+  creation remains `Todo`.
+- The documented beginner default is the factory CLI. Existing workflow files,
+  prompts, lane defaults, and production contracts remain compatible.
 - PM planning assistance uses the installed Codex CLI after shared binary-generated schema and strict initialize checks, with executable replacement invalidating compatibility admission. GPT-6.1 Sol at medium reasoning, isolation, read-only/tool-disabled/no-network execution, and no provider fallback remain required. No automatic upgrade or downgrade is performed.
 - PM planning configuration rejects `pm.planning_codex_version`, `pm.planning_model`, and `pm.planning_reasoning_effort`; the dedicated planning client checks installed CLI capabilities and pins model and effort. Other unknown `pm.*` keys are still ignored, so use only documented settings.
 - PM mutations refuse untrusted cross-origin requests with `403 forbidden_origin`. Reverse-proxy operators must declare the browser origin in `SYMPHONY_TRUSTED_ORIGINS`; the disposable demo remains loopback-only and ignores that setting. `X-Symphony-PM-Owner` is an audit claim, not authentication.
@@ -44,10 +56,15 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - PM planning screens put secondary controls in mobile disclosures, keep the active artifact tab visible, serialize WBS refreshes, and manage keyboard focus for overlays.
 - Bundled OpenSpec 1.14.2 depends on `braces` 3.0.3, which [GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm) (HIGH, no patched release) lets deeply nested patterns crash Node with a stack overflow. The bundle now wraps `braces` with a guard that refuses patterns nested more than 16 levels (`scripts/openspec-bundle/stubs/braces.cjs`), so the bundled CLI is no longer byte-for-byte upstream there. OpenSpec's own 16-level guard already refused the comma-nested shape in schema output and `apply.tracks` globs. `tests/test_pm_openspec_bundle.py` pins both guards.
 - PM request work (transactions, XLSX exchange, JSON parsing) runs on a dedicated 2-thread pool (`pm.exchange_concurrency` + 1 when that is higher) instead of the default executor. On a 4-CPU Linux host, serving a 1,000-task plan left the server 59.5 MiB above idle, over the 50 MiB budget, because glibc keeps freed memory in per-thread malloc arenas; with the pool two runs of the same benchmark measured 34.8 and 30.8 MiB with all 11 reference budgets passing. Verification, acceptance and host-tool probes stay on the default executor.
+- Preserve factory work and explicit pause state after token cancellation, Git delivery failure, and Windows owner-only service interruption; recover only after an explicit resume and fresh Verify.
+- Preserve shared host boards through advanced setup and cleanup, and remove owned deep Windows worktrees with a command-local long-path option. Recognized factory delivery diagnostics become resolved history only after durable host delivery.
+- Route Human Review confirmation through host history and merge gates before cleanup, including the TUI and HTTP APIs. Windows Codex grants include linked-board targets on every turn.
 
 ### Known limitations
 - Remaining PM findings include broad `ValueError` classification (`400 invalid_body`, unchanged pending separate contract approval), the test-only receipt builder, ignored unknown `pm.*` keys, and the runtime origin error omitting `SYMPHONY_TRUSTED_ORIGINS`. See the [finding IDs and operational effects](docs/pm-workspace-operations.md#accepted-findings-and-current-handling).
 - On a host without `ps`, a surviving process-group member that ignores SIGTERM can escape the final SIGKILL after its leader exits; cleanup stays uncertain and `stop()` raises. Native Windows PM behavior and real provider quota fallback remain unverified. The [human review checklist](docs/pm-workspace.md#final-human-review) is separate from automated proof and merge approval.
+- The independently assessed factory candidate scored **75% (FAIL against the >90% target)**. This release is explicitly authorized with those known limits; the score is historical candidate evidence, not a new score for the combined release. Native screen-reader/presentation, actual partial-write interruption, complete external-host/request-category evidence, and complete fresh-install comparisons remain unverified. A real-model recovery delivered preserved product bytes, but its original diagnostic text was absent afterward; the writer and timing are unknown. See the [assessment](docs/quality/factory-recovery/ASSESSMENT.md) and [verification boundaries](docs/quality/factory-recovery/VERIFICATION.md).
+- Existing copied workflows and setup hooks require a reviewed refresh with the updated package. Legacy worker records with unknown ownership remain fenced. One low KaTeX/Mermaid advisory affects bundled PM assets; CLI exploitability is untested.
 
 ## [0.26.0] - 2026-09-22 - First-run experience: demo keeps the generated workflow, project-facing agent files, clean git status
 

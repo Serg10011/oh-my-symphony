@@ -897,3 +897,356 @@ def test_stage_kinds_route_backend_kind_into_backend_factory(
     entry = o._running.get("MT-1")
     if entry is not None:
         assert entry.agent_kind == "gemini"
+
+
+_FACTORY_VERIFY_BODY = """## Proof commands
+
+- `python -m unittest -q`
+
+## Acceptance criteria
+
+- verified
+
+## Verification
+
+| criterion | command | result |
+| --- | --- | --- |
+| verified | `python -m unittest -q` | pass |
+"""
+
+
+@pytest.mark.parametrize(
+    ("body", "expected_state", "has_failure"),
+    [
+        ("## QA Failure\n\nmissing proof", "Verify", True),
+        (_FACTORY_VERIFY_BODY, "Done", False),
+        (
+            _FACTORY_VERIFY_BODY + "\nNo browser surface or attached `superqa` applies.\n",
+            "Done",
+            False,
+        ),
+        (_FACTORY_VERIFY_BODY + "\n## Browser Verification\n\nClaimed complete.", "Verify", True),
+    ],
+)
+def test_factory_verify_to_done_enforces_contract_before_terminal_exit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    body: str,
+    expected_state: str,
+    has_failure: bool,
+) -> None:
+    board_root = tmp_path / "board"
+    ticket_path = _write_initial_ticket(board_root, state="Verify", body=body)
+    cfg = _make_file_tracker_config(
+        board_root=board_root,
+        active_states=("Ready", "Build", "Verify"),
+        max_turns=1,
+    )
+    cfg.raw["contract_profile"] = "factory"
+    _install_file_tracker_backend(
+        monkeypatch,
+        ticket_path=ticket_path,
+        transitions=[
+            (
+                "Done",
+                body + "\nVerified at: 2026-10-17T00:00:00Z\nOutput: 1 test passed\n",
+            )
+        ],
+    )
+    workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
+    orchestrator = _orch(workspace_path)
+    issue = _make_issue_from_disk("Verify", body)
+    _seed_running_entry(orchestrator, issue, workspace_path)
+
+    asyncio.run(orchestrator._run_agent_attempt(issue, attempt=None, cfg=cfg))
+
+    final_front, final_body = parse_ticket_file(ticket_path)
+    assert final_front["state"] == expected_state
+    assert _has_contract_failure_heading(final_body) is has_failure
+
+
+def test_token_cap_does_not_accept_unproven_factory_stage_advance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    board_root = tmp_path / "board"
+    body = "## Implementation\n\ncode exists"
+    ticket_path = _write_initial_ticket(board_root, state="Verify", body=body)
+    cfg = _make_file_tracker_config(
+        board_root=board_root,
+        active_states=("Ready", "Build", "Verify"),
+    )
+    cfg.raw["contract_profile"] = "factory"
+    cfg = replace(
+        cfg,
+        agent=replace(cfg.agent, budget_exhausted_state="Blocked"),
+    )
+    workspace_path = tmp_path / "workspace"
+    workspace_path.mkdir()
+    orchestrator = _orch(workspace_path)
+    monkeypatch.setattr(orchestrator._workflow_state, "current", lambda: cfg)
+    issue = _make_issue_from_disk("Build", body)
+    _seed_running_entry(orchestrator, issue, workspace_path)
+    entry = orchestrator._running[issue.id]
+    entry.hit_token_budget = True
+    entry.token_budget_cap = 400_000
+    entry.codex_state_total_tokens = 412_607
+    entry.state_at_turn_start = "build"
+
+    asyncio.run(orchestrator._on_worker_exit_impl(issue.id, "normal", None))
+
+    final_front, final_body = parse_ticket_file(ticket_path)
+    assert final_front["state"] == "Blocked"
+    assert _has_contract_failure_heading(final_body)
+    assert "## Budget Exceeded" in final_body
+
+
+@pytest.mark.parametrize(
+    ("source", "destination", "body", "expected"),
+    [
+        (
+            "Build",
+            "Done",
+            "\n\n".join(
+                f"## {heading}\n\nComplete"
+                for heading in (
+                    "Implementation",
+                    "Full Spec Review",
+                    "Edge Case Review",
+                    "Adversarial Review",
+                    "Test Evidence",
+                )
+            ),
+            "Build",
+        ),
+        (
+            "Verify",
+            "Blocked",
+            "## Blocker\n\nRequired browser environment unavailable.",
+            "Blocked",
+        ),
+        ("Verify", "Blocked", "## Verification\n\npass", "Verify"),
+        (
+            "Verify",
+            "Build",
+            "## QA Failure\n\nExpected successful save, got HTTP 500.",
+            "Build",
+        ),
+    ],
+)
+def test_factory_worker_destination_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+    destination: str,
+    body: str,
+    expected: str,
+) -> None:
+    board_root = tmp_path / "board"
+    ticket_path = _write_initial_ticket(board_root, state=source, body="Start")
+    cfg = _make_file_tracker_config(
+        board_root=board_root, active_states=("Ready", "Build", "Verify"), max_turns=1
+    )
+    cfg.raw["contract_profile"] = "factory"
+    _install_file_tracker_backend(
+        monkeypatch, ticket_path=ticket_path, transitions=[(destination, body)]
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    orch = _orch(workspace)
+    issue = _make_issue_from_disk(source, "Start")
+    _seed_running_entry(orch, issue, workspace)
+
+    asyncio.run(orch._run_agent_attempt(issue, attempt=None, cfg=cfg))
+
+    assert parse_ticket_file(ticket_path)[0]["state"] == expected
+
+
+@pytest.mark.parametrize("fresh", [False, True])
+def test_factory_exit_gate_requires_fresh_verification(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fresh: bool,
+) -> None:
+    from symphony.orchestrator.factory_contracts import factory_verification_text
+
+    board_root = tmp_path / "board"
+    body = _FACTORY_VERIFY_BODY + "\nVerified at: old run\nOutput: 1 test passed\n"
+    ticket_path = _write_initial_ticket(
+        board_root,
+        state="Done",
+        body=(
+            body + "\nVerified at: 2026-10-17T00:00:00Z\nOutput: 1 test passed\n"
+            if fresh
+            else body
+        ),
+    )
+    cfg = _make_file_tracker_config(
+        board_root=board_root, active_states=("Ready", "Build", "Verify")
+    )
+    cfg.raw["contract_profile"] = "factory"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    orch = _orch(workspace)
+    issue = _make_issue_from_disk("Verify", body)
+    _seed_running_entry(orch, issue, workspace)
+    entry = orch._running.pop(issue.id)
+    entry.state_at_turn_start = "verify"
+    entry.factory_verification_baseline = factory_verification_text(body)
+    entry.factory_verify_completed = True
+
+    passed = asyncio.run(orch._enforce_factory_exit_contract(cfg, entry))
+
+    assert passed is fresh
+    assert parse_ticket_file(ticket_path)[0]["state"] == ("Done" if fresh else "Verify")
+
+
+def test_factory_exit_rejects_worker_rewriting_both_declared_and_reported_proof(
+    tmp_path: Path,
+) -> None:
+    board_root = tmp_path / "board"
+    body = _FACTORY_VERIFY_BODY.replace("python -m unittest -q", "python easier.py")
+    ticket_path = _write_initial_ticket(board_root, state="Done", body=body)
+    cfg = _make_file_tracker_config(board_root=board_root, active_states=("Ready", "Build", "Verify"))
+    cfg.raw["contract_profile"] = "factory"
+    orch = _orch(tmp_path)
+    issue = _make_issue_from_disk("Verify", _FACTORY_VERIFY_BODY)
+    _seed_running_entry(orch, issue, tmp_path)
+    entry = orch._running[issue.id]
+    entry.state_at_turn_start = "verify"
+    orch._start_factory_verify_phase(cfg, issue, entry)
+    entry.factory_verify_completed = True
+
+    assert not asyncio.run(orch._enforce_factory_exit_contract(cfg, entry))
+    front, final_body = parse_ticket_file(ticket_path)
+    assert front["state"] == "Verify"
+    assert "declared proof commands changed" in final_body
+
+
+def test_factory_build_runs_independent_verify_context_before_done(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ledger = "\n\n".join(
+        f"## {heading}\n\nComplete"
+        for heading in (
+            "Implementation",
+            "Full Spec Review",
+            "Edge Case Review",
+            "Adversarial Review",
+            "Test Evidence",
+        )
+    )
+    build_body = (
+        ledger
+        + "\n\n## Acceptance criteria\n\n- verified\n\n## Proof commands\n\n- `python -m unittest -q`\n"
+    )
+    done_body = (
+        ledger
+        + "\n\n"
+        + _FACTORY_VERIFY_BODY
+        + "\nVerified at: 2026-10-17T00:00:00Z\nOutput: 1 test passed\n"
+    )
+    board_root = tmp_path / "board"
+    ticket_path = _write_initial_ticket(board_root, state="Build", body=build_body)
+    cfg = _make_file_tracker_config(
+        board_root=board_root, active_states=("Ready", "Build", "Verify"), max_turns=3
+    )
+    cfg.raw["contract_profile"] = "factory"
+    backends = _install_file_tracker_backend(
+        monkeypatch,
+        ticket_path=ticket_path,
+        transitions=[("Verify", build_body), ("Done", done_body)],
+    )
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    orch = _orch(workspace)
+    issue = _make_issue_from_disk("Build", build_body)
+    _seed_running_entry(orch, issue, workspace)
+
+    asyncio.run(orch._run_agent_attempt(issue, attempt=None, cfg=cfg))
+
+    assert parse_ticket_file(ticket_path)[0]["state"] == "Done"
+    assert len(backends) == 2
+    assert "stop" in [call[0] for call in backends[0].calls]
+    assert (
+        sum(call[0] == "run_turn" for backend in backends for call in backend.calls)
+        == 2
+    )
+
+
+@pytest.mark.parametrize("initial_state", ["Build", "Verify"])
+@pytest.mark.parametrize("attachment", ["skill", "heading"])
+def test_factory_browser_requirement_survives_worker_removing_original_attachment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    initial_state: str,
+    attachment: str,
+) -> None:
+    board_root = tmp_path / "board"
+    build_body = (
+        "\n\n".join(
+            f"## {heading}\n\nComplete"
+            for heading in (
+                "Implementation",
+                "Full Spec Review",
+                "Edge Case Review",
+                "Adversarial Review",
+                "Test Evidence",
+            )
+        )
+        + "\n\n"
+        + _FACTORY_VERIFY_BODY
+    )
+    original_body = build_body if initial_state == "Build" else _FACTORY_VERIFY_BODY
+    if attachment == "heading":
+        original_body += "\n## Browser Verification\n\nBrowser report pending.\n"
+    ticket_path = _write_initial_ticket(
+        board_root, state=initial_state, body=original_body
+    )
+    front, _ = parse_ticket_file(ticket_path)
+    front["skills"] = ["superqa"] if attachment == "skill" else []
+    write_ticket_atomic(ticket_path, front, original_body)
+    cfg = _make_file_tracker_config(
+        board_root=board_root,
+        active_states=("Ready", "Build", "Verify"),
+        max_turns=2,
+    )
+    cfg.raw["contract_profile"] = "factory"
+    transitions = []
+    if initial_state == "Build":
+        transitions.append(("Verify", build_body))
+    transitions.append(
+        (
+            "Done",
+            _FACTORY_VERIFY_BODY
+            + "\nVerified UTC: 2026-10-17T00:00:00Z\nOutput: 1 test passed\n",
+        )
+    )
+    _install_file_tracker_backend(
+        monkeypatch, ticket_path=ticket_path, transitions=transitions
+    )
+    original_run_turn = _TicketMutatingBackend.run_turn
+
+    async def strip_attachment(self, **kwargs):
+        await original_run_turn(self, **kwargs)
+        front, body = parse_ticket_file(ticket_path)
+        front["skills"] = []
+        write_ticket_atomic(ticket_path, front, body)
+
+    monkeypatch.setattr(_TicketMutatingBackend, "run_turn", strip_attachment)
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    orchestrator = _orch(workspace)
+    issue = replace(
+        _make_issue_from_disk(initial_state, original_body),
+        skills=tuple(front["skills"]),
+    )
+    _seed_running_entry(orchestrator, issue, workspace)
+    entry = orchestrator._running[issue.id]
+    asyncio.run(orchestrator._run_agent_attempt(issue, attempt=None, cfg=cfg))
+    final_front, final_body = parse_ticket_file(ticket_path)
+    assert final_front["state"] == "Verify"
+    assert entry.factory_browser_required
+    assert "## Browser Verification requires" in final_body
+    assert final_front["skills"] == []

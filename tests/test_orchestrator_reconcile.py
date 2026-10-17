@@ -6,12 +6,14 @@ import asyncio
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
 from symphony.issue import Issue
 from symphony.orchestrator import Orchestrator, RunningEntry
 from symphony.orchestrator.constants import ESCALATION_MAX_ATTEMPTS
+from symphony.workspace import COMMIT_NOOP, CommitOutcome
 from symphony.workflow import (
     AgentConfig,
     ClaudeConfig,
@@ -150,6 +152,10 @@ async def _drain(task: asyncio.Task[None]) -> None:
 
 
 async def test_reconcile_drift_state_cleans_workspace(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "symphony.orchestrator.core.commit_workspace_on_done",
+        AsyncMock(return_value=CommitOutcome(COMMIT_NOOP)),
+    )
     orch = _orch()
     cfg = _make_config()
     issue = _issue("MT-1", "In Progress")
@@ -172,6 +178,10 @@ async def test_reconcile_drift_state_cleans_workspace(monkeypatch) -> None:
 
 
 async def test_reconcile_isolates_per_issue_failures(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "symphony.orchestrator.core.commit_workspace_on_done",
+        AsyncMock(return_value=CommitOutcome(COMMIT_NOOP)),
+    )
     orch = _orch()
     cfg = _make_config()
     first = _issue("MT-1", "In Progress")

@@ -596,7 +596,7 @@ def _exited_during_startup(pid: int, *, interval_s: float = 0.1) -> bool:
     while True:
         if not _IS_WIN32:
             try:
-                reaped, _status = os.waitpid(pid, os.WNOHANG)
+                reaped, _status = os.waitpid(pid, getattr(os, "WNOHANG"))
             except OSError:  # ChildProcessError when pid is not our child
                 reaped = 0
             if reaped == pid:

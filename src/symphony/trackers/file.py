@@ -569,13 +569,18 @@ def _strip_warning_blocks(body: str) -> str:
 
 def write_ticket_atomic(path: Path, front: dict[str, Any], body: str) -> None:
     """Atomic write: temp file in same dir + rename."""
+    content = serialize_ticket(front, body).replace("\n", os.linesep).encode("utf-8")
+    _write_ticket_bytes_atomic(path, content)
+
+
+def _write_ticket_bytes_atomic(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(
         prefix=".tmp-symphony-ticket-", suffix=".tmp", dir=path.parent
     )
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(serialize_ticket(front, body))
+        with os.fdopen(fd, "wb") as f:
+            f.write(content)
         os.replace(tmp, path)
     except Exception:
         try:
@@ -583,6 +588,85 @@ def write_ticket_atomic(path: Path, front: dict[str, Any], body: str) -> None:
         except OSError:
             pass
         raise
+
+
+def _is_factory_recovery_note(note: bytes) -> bool:
+    git = (
+        rb"Git history snapshot failed; workspace preserved; operator action required\.\n\n"
+        rb"The host could not record this workspace in Git\. Delivery and cleanup "
+        rb"were stopped, and the workspace and its product files were preserved\.\n\n"
+        rb"- status: `[^`\n]+`\n- classification: `[^`\n]*`\n"
+        rb"- workspace: `[^`\n]+`\n- detail: [\s\S]*?\n\n"
+        rb"Fix the reported Git/index problem without deleting the workspace\. "
+        rb"Then return this ticket to its verification lane and resume it through "
+        rb"the operator resume control\. Do not treat this ticket as delivered\."
+    )
+    token = (
+        rb"max_total_tokens reached \(\d+/\d+ in [^\n]+\); worker cancelled before "
+        rb"delivery; workspace preserved; operator action required\.\n\n"
+        rb"The worker wrote [^\n]+, but token-budget cancellation stopped delivery\. "
+        rb"Delivery and cleanup were stopped, and the workspace and its product "
+        rb"files were preserved\. Do not treat this ticket as delivered\.\n\n"
+        rb"- workspace: `[^`\n]+`\n\n"
+        rb"Fix the token-budget cause without deleting the workspace\. Check "
+        rb"`agent\.max_total_tokens` and `agent\.max_total_tokens_by_state`\. Then "
+        rb"return this ticket to Verify and resume it through the operator resume "
+        rb"control so verification can run again before delivery\."
+    )
+    normalized = note.replace(b"\r\n", b"\n").strip()
+    # The first complete footer ends the note; later operator content is not detail.
+    git_match = re.match(git, normalized)
+    return (git_match is not None and git_match.end() == len(normalized)) or re.fullmatch(token, normalized) is not None
+
+
+def _resolved_factory_recovery_bytes(content: bytes) -> bytes:
+    lines = content.splitlines(keepends=True)
+    if not lines or lines[0].strip() != b"---":
+        return content
+    end = next((i for i in range(1, len(lines)) if lines[i].strip() == b"---"), None)
+    if end is None:
+        return content
+    front = yaml.safe_load(b"".join(lines[1:end]))
+    if not isinstance(front, dict) or normalize_state(str(front.get("state", ""))) != "done":
+        return content
+    # Splice raw sections: the normal serializer would rewrite operator YAML and whitespace.
+    headings: list[tuple[int, int, bytes]] = []
+    offset = sum(len(line) for line in lines[:end + 1])
+    fence: bytes | None = None
+    for line in lines[end + 1:]:
+        marker = re.match(rb" {0,3}(`{3,}|~{3,})", line)
+        if marker:
+            run = marker[1]
+            if fence is None:
+                fence = run
+            elif run[:1] == fence[:1] and len(run) >= len(fence) and not line[marker.end():].strip():
+                fence = None
+        elif fence is None and re.match(rb"#{1,2} ", line):
+            headings.append((offset, offset + len(line), line.rstrip(b"\r\n")))
+        offset += len(line)
+    original = content
+    for index in range(len(headings) - 1, -1, -1):
+        start, body_start, heading = headings[index]
+        if heading != b"## Blocker":
+            continue
+        # Hook headings may be detail, but another Blocker is an ambiguous boundary.
+        following = headings[index + 1:]
+        boundary = next((pos for pos, _, name in following if name in (
+            b"## Blocker", b"## Resolved Blocker (history)",
+        )), len(original))
+        section_ends = [pos for pos, _, _ in following if pos < boundary] + [boundary]
+        # A repeated footer before that boundary could be quoted detail; preserve it.
+        if original[body_start:boundary].count(b"Fix the reported Git/index problem without deleting the workspace.") > 1:
+            continue
+        if not any(_is_factory_recovery_note(original[body_start:end]) for end in section_ends):
+            continue
+        newline = b"\r\n" if content[start:body_start].endswith(b"\r\n") else b"\n"
+        resolved = newline.join((
+            b"## Resolved Blocker (history)", b"",
+            b"Resolved after durable target delivery. The original diagnostic below is historical.",
+        )) + newline
+        content = content[:start] + resolved + content[body_start:]
+    return content
 
 
 def _is_owned_tracker_temp(path: Path) -> bool:
@@ -916,6 +1000,21 @@ class FileBoardTracker:
             return front, combined
 
         self._mutate_ticket(issue.identifier, mutate)
+
+    def _resolve_factory_recovery_blockers(self, identifier: str) -> None:
+        with _exclusive_lock(self._ticket_lock_path(identifier)):
+            path = self.find_path(identifier)
+            if path is None:
+                return
+            for _ in range(3):
+                before = path.read_bytes()
+                after = _resolved_factory_recovery_bytes(before)
+                if after == before:
+                    return
+                if path.read_bytes() == before:
+                    _write_ticket_bytes_atomic(path, after)
+                    return
+            raise SymphonyError("ticket changed during recovery-history update", identifier=identifier)
 
     def upsert_artifacts_section(
         self, identifier: str, section_body: str

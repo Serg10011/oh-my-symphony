@@ -211,6 +211,8 @@ _DEEP_VERIFY_VERDICT_RE = re.compile(r"^verdict:\s*(GREEN|RED)\s*$", re.MULTILIN
 
 def contract_producing_states(preset: str | None) -> frozenset[str]:
     """Normalized producing states the contract validator checks for `preset`."""
+    if preset == "factory":
+        return frozenset({"build", "verify"})
     if preset == "deep":
         return _DEEP_PRODUCING_STATES
     return _DEFAULT_PRODUCING_STATES
@@ -239,6 +241,7 @@ def evaluate_contract(
     request: str | None = None,
     advanced_state: str | None = None,
     app_release: bool = False,
+    profile: str = "advanced",
 ) -> ContractResult:
     """Evaluate the producing stage's contract against the ticket body.
 
@@ -258,18 +261,25 @@ def evaluate_contract(
     state = (producing_state or "").strip().lower()
     body = ticket_body or ""
     advanced = (advanced_state or "").strip().lower()
-    result = _evaluate_lane_contract(
-        producing_state,
-        state,
-        body,
-        identifier,
-        docs_root,
-        artifact_store_root=artifact_store_root,
-        preset=preset,
-        request=request,
-        advanced=advanced,
-        app_release=app_release,
-    )
+    if profile.strip().lower() == "factory":
+        from .factory_contracts import evaluate_factory_contract
+
+        result = evaluate_factory_contract(
+            producing_state, body, advanced, docs_root=docs_root
+        )
+    else:
+        result = _evaluate_lane_contract(
+            producing_state,
+            state,
+            body,
+            identifier,
+            docs_root,
+            artifact_store_root=artifact_store_root,
+            preset=preset,
+            request=request,
+            advanced=advanced,
+            app_release=app_release,
+        )
     # `artifacts.require_for_done` guards the move INTO Done from whichever
     # lane makes it (Document on the default board, any deep lane); the
     # Done-as-producing-state branch above keeps its own copy for boards
@@ -624,7 +634,9 @@ def _markdown_table_header(body: str, heading: str) -> tuple[str, ...]:
     return ()
 
 
-def _parse_markdown_table_rows(body: str, heading: str) -> list[MarkdownTableRow]:
+def _parse_markdown_table_rows(
+    body: str, heading: str, *, escaped_pipes: bool = False
+) -> list[MarkdownTableRow]:
     """Parse table data rows under `heading`, preserving data-row numbers."""
     section = _section_body_text(body, heading)
     if not section:
@@ -634,7 +646,13 @@ def _parse_markdown_table_rows(body: str, heading: str) -> list[MarkdownTableRow
         stripped = line.strip()
         if not stripped.startswith("|"):
             continue
-        cells = tuple(c.strip() for c in stripped.strip("|").split("|"))
+        if escaped_pipes:
+            cells = tuple(
+                cell.strip().replace(r"\|", "|")
+                for cell in re.split(r"(?<!\\)\|", stripped.strip("|"))
+            )
+        else:
+            cells = tuple(c.strip() for c in stripped.strip("|").split("|"))
         # Drop the header/body separator row (cells made only of - : spaces).
         if cells and all(set(c) <= set("-: ") and c for c in cells):
             continue

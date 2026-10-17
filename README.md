@@ -28,6 +28,50 @@ usage, and whatever rate-limit headroom the selected CLI reports.
 
 [**Try it in 60 seconds, no AI CLI required →**](#try-it-in-60-seconds-no-agent-cli-required)
 
+## Default: autonomous development factory
+
+For a new file-board project, start with the small Wayfinder -> Symphony ->
+Supergoal loop in a separate product repository:
+
+```bash
+git init my-product
+cd my-product
+symphony factory init . --agent opencode
+git add . && git commit -m "Initialize Symphony factory"
+# Create Wayfinder tickets under wayfinder/tickets/, then:
+symphony factory sync ./wayfinder
+symphony factory start ./wayfinder
+```
+
+Factory init preserves existing `.gitignore` content and adds ignores for
+live board cards, worktrees, logs, and `WORKFLOW-PROGRESS.md`. These are shared
+runtime state; Wayfinder specs and delivered product code remain commit-ready.
+
+The generated board uses `Ready -> Build -> Verify -> Done`, with `Blocked`
+for missing authority or environment. Supergoal owns each ticket's test-first
+delivery loop; Symphony owns dependency scheduling, worktrees, retries, and a
+fresh Verify turn. Sync imports the complete graph and blocker edges by
+default, so later slices start automatically when their dependencies finish;
+`--frontier-only` opts into the narrower view. Add optional overlays explicitly
+in Wayfinder frontmatter:
+`superdesign` for UI, `superpm` for product research/spec work, and `superqa`
+for browser/runtime proof. The former production profile remains at
+`examples/advanced/WORKFLOW.file.example.md`. Verified Done tickets merge into
+the launch branch locally, and bounded Build/Verify budgets stop runaway agent
+loops. Publishing is opt-in through `agent.auto_merge_push_target: true` after
+configuring an upstream. `symphony project create` retains the advanced workflow.
+
+The four standard skills are pinned inside the Symphony package and copied
+into each project, so beginners do not install them separately and can still
+customize the project copies. Browser execution is not dependency-free.
+Superdesign gates require Node.js 18+, `@playwright/cli`
+(`npm install -g @playwright/cli@latest`), `playwright-cli install --skills`,
+and either system Chrome or Playwright Chromium
+(`npx playwright install chromium`). A SuperQA browser run needs `textual`,
+`playwright`, `pyyaml`, and `pillow`, plus Playwright Chromium
+(`python -m playwright install chromium`). These runtimes may require a
+network-enabled first-time setup.
+
 ## Contents
 
 > **Printable manual:** [cheatsheet (PDF)](https://cskwork.github.io/oh-my-symphony/manual/pdf/oh-my-symphony-cheatsheet-en.pdf) · [tutorial (PDF)](https://cskwork.github.io/oh-my-symphony/manual/pdf/oh-my-symphony-tutorial-en.pdf) · [HTML + Korean](https://cskwork.github.io/oh-my-symphony/#manual). Rendered from `docs/manual/` on every deploy; key tables come from the code.

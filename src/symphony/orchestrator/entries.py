@@ -118,6 +118,12 @@ class RunningEntry:
     # 2026-05-17 reproduced this on the old long pipeline; the same hazard
     # applies to Todo -> In Progress -> Verify transitions.
     state_at_turn_start: str = ""
+    # Factory proof is fresh only after this phase's independent Verify turn.
+    factory_verification_baseline: str | None = None
+    factory_verify_started_at: float = 0.0
+    factory_verify_completed: bool = False
+    factory_declared_proof: tuple[str, ...] | None = None
+    factory_browser_required: bool = False
     agent_pgid: int | None = None
     # A backend stop raised after teardown began. Some drivers become closed
     # before the failing await, so a later idempotent stop cannot confirm that

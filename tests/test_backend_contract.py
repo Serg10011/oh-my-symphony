@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests._backend_windows_stub import mocked_windows_transport  # noqa: F401
 
 import symphony.backends.claude_code as claude_module
 import symphony.backends.codex as codex_module

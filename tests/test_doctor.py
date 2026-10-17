@@ -248,9 +248,13 @@ def test_agent_cli_warns_when_binary_fails_its_version_probe(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A PATH hit is not enough: a broken launcher stub exits non-zero."""
-    stub = tmp_path / "bin" / "opencode"
+    stub = tmp_path / "bin" / ("opencode.cmd" if os.name == "nt" else "opencode")
     stub.parent.mkdir()
-    stub.write_text("#!/bin/sh\necho 'postinstall stub: run npm install' >&2\nexit 1\n")
+    stub.write_text(
+        "@echo off\necho postinstall stub: run npm install 1>&2\nexit /b 1\n"
+        if os.name == "nt"
+        else "#!/bin/sh\necho 'postinstall stub: run npm install' >&2\nexit 1\n"
+    )
     stub.chmod(0o755)
     monkeypatch.setenv("PATH", f"{stub.parent}{os.pathsep}{os.environ.get('PATH', '')}")
     cfg = _build_cfg(
@@ -1394,6 +1398,28 @@ def test_stage_contracts_doctor_row_passes_on_default_board(tmp_path: Path) -> N
         """,
     )
     assert check_stage_contracts(cfg).status == "pass"
+
+
+@pytest.mark.parametrize("mode", ["auto", "on", "off"])
+def test_factory_doctor_reports_mandatory_contracts(tmp_path: Path, mode: str) -> None:
+    from symphony.cli.doctor import check_stage_contracts
+
+    cfg = _build_cfg(
+        tmp_path,
+        f"""
+        contract_profile: factory
+        tracker:
+          kind: file
+          board_root: ./kanban
+          active_states: [Ready, Build, Verify]
+          terminal_states: [Done, Blocked]
+        agent: {{ kind: codex, stage_contracts: '{mode}' }}
+        """,
+    )
+    result = check_stage_contracts(cfg)
+    assert result.status == "pass"
+    assert "factory" in result.message
+    assert "mandatory" in result.message
 
 
 def test_stage_contracts_doctor_row_warns_when_explicitly_off(tmp_path: Path) -> None:

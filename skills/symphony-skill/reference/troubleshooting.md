@@ -25,11 +25,11 @@ tail -F log/symphony.log
 
 | Log line                                 | Meaning                                                  | Fix                                                                                 |
 |------------------------------------------|----------------------------------------------------------|-------------------------------------------------------------------------------------|
-| `hook_failed hook=after_create rc=128`   | Worktree/clone failed (e.g. `git worktree add` against a non-repo, placeholder URL, or branch already checked out elsewhere) | Confirm `SYMPHONY_WORKFLOW_DIR` is a real git repo; `cd $HOST_REPO && git worktree list` to spot dangling registrations (`git worktree prune` to clean). For clone-mode hooks, replace placeholder repo URL or set `after_create: \|\n  : noop`. If the hook parses ticket frontmatter, see "awk vs sed for YAML values" below |
+| `hook_failed hook=after_create rc=128`   | Worktree/clone failed (e.g. `git worktree add` against a non-repo, placeholder URL, or branch already checked out elsewhere) | Confirm `SYMPHONY_WORKFLOW_DIR` is the intended Git repo and inspect `git -C "$HOST_REPO" worktree list --porcelain`. Keep other active/locked worktrees intact; inspect the full hook diagnostic before retrying. For clone-mode hooks, correct the configured repository URL. If the hook parses ticket frontmatter, see "awk vs sed for YAML values" below |
 | `hook_failed hook=after_create rc=1 stderr="rmdir: ... Device or resource busy"` (Windows) | Pre-`worktree add` `rmdir` raced the Windows file indexer | Update to a Symphony build ≥ 2026-05-15 (the shipped hook no longer rmdirs); see `reference/platform-compat.md` |
-| `hook_failed hook=after_create rc=128 stderr="missing but already registered worktree"` | Crashed prior attempt left `.git/worktrees/<ID>` registered | The 2026-05-15 hook does `worktree remove --force` + `prune` before `add`; if you're on the old hook, run `git worktree remove --force $WORKTREE_PATH` once and update WORKFLOW.md |
+| `hook_failed hook=after_create rc=128 stderr="missing but already registered worktree"` | A prior attempt left a stale worktree registration | Preserve the workspace and update the copied setup script and cleanup hooks with the matching Symphony package. Current setup validates the exact stale target before its existing metadata prune and ordinary add. Prune may also remove other unlocked stale registrations; valid and locked registrations remain. Do not substitute raw removal while shared junctions remain attached |
 | `hook_failed hook=after_create ... Not a directory` under `.git/symphony-*` | The hook wrote temp files under `.git/...`, but linked worktrees often have `.git` as a file pointing at the real metadata dir | Use `git rev-parse --git-path <name>` for hook scratch files instead of hardcoding `.git/<name>` |
-| `hook_failed hook=after_create rc=127 stderr="python3.11: command not found"`            | Hook hardcoded a Python version not installed       | The 2026-05-15 hook walks `python3.11/3.12/3.13/python3/python`; update WORKFLOW.md from the example or accept that the venv step will be skipped |
+| `hook_failed hook=after_create rc=127 stderr="python3.11: command not found"`            | Hook hardcoded a Python version not installed       | Refresh the copied setup script from the matching source revision. Its venv selection checks `python3.12/3.13/3.11/python3/python`; cleanup separately uses the interpreter injected by Symphony |
 | `worker_exit reason=error error="module 'os' has no attribute 'WIFEXITED'"` (Windows)   | `_shell.safe_proc_wait` hit POSIX-only `os.WIF*`     | Update to a Symphony build ≥ 2026-05-15 (`safe_proc_wait` now delegates to `proc.wait()` on Windows) |
 | `worker_exit reason=error`               | Worker terminated abnormally                             | Read the preceding `hook_failed` event or backend stderr for the actual cause       |
 | `outcome=turn_error`                     | Turn ended in error (timeout, agent crash, tool failure) | Inspect backend stderr; for timeouts, raise `<kind>.turn_timeout_ms`                |
@@ -40,7 +40,7 @@ tail -F log/symphony.log
 | `agent_internal_retry phase=start/end`   | Pi backend retried an upstream LLM call internally (transient error)                              | Informational — recoverable; if `final_error` is set the turn ultimately failed   |
 | `empty_response_loop consecutive_empty_turns=N` with `input_tokens=0` AND `output_tokens=0` every turn | Backend CLI output schema drifted (often after an opencode/gemini upgrade) — Symphony parsed neither text nor tokens, so every turn looks empty | See "Backend CLI update broke response parsing" below; fix the backend extractor, do NOT raise the threshold |
 | `worker_exit reason=issue_state_refresh_failed` after a nonblank turn | Worker finished, but Symphony could not re-read the ticket state; malformed file-tracker frontmatter can make the ticket disappear from the board | Run `symphony board ls --workflow ./WORKFLOW.md`, inspect the ticket's YAML frontmatter, and fix indentation/key syntax. The v0.9.3 release auto-heals the common `  updated_at:` top-level-key misindent on read |
-| `hook before_run exited 42` with `workspace kanban points to <other-project>/kanban` | A reused workspace path belongs to another Symphony board with the same ticket ID, so host-board symlinks point at the wrong project | Use a project-scoped `workspace.root` such as `~/symphony_workspaces/<project>`, then resume. If the foreign worktree is no longer needed, remove it from its owning repo with `git -C <foreign-repo> worktree remove --force <path>` after checking `git status --short` |
+| `hook before_run exited 42` with `workspace kanban points to <other-project>/kanban` | A reused workspace path belongs to another Symphony board with the same ticket ID, so host-board links point at the wrong project | Use a project-scoped `workspace.root` such as `~/symphony_workspaces/<project>`, then resume. Preserve the foreign worktree; any retirement belongs to that project's operator and its validated cleanup path |
 | `OSError [Errno 48]` on startup          | Port already in use                                      | `lsof -ti :9999 \| xargs -r kill`                                                   |
 | `workflow_path_missing`                  | `WORKFLOW.md` not at the path you passed                 | Pass an explicit path; default is `./WORKFLOW.md`                                   |
 | `dispatch_validation_failed`             | Config invalid for the chosen `agent.kind`               | Check the matching `<kind>:` block in `WORKFLOW.md` (command, timeouts)             |
@@ -119,13 +119,17 @@ code changes.
 
 ### "Card is in `Done` but workspace still exists"
 
-By design — workspaces persist for inspection. With the worktree-default
-hooks, clean up with `git -C <HOST_REPO> worktree remove --force
-~/symphony_workspaces/<ID>` (this removes both the directory and the
-`.git/worktrees/<ID>` registration). For clone-mode hooks, plain
-`rm -rf ~/symphony_workspaces/<ID>` is enough. The `symphony/<ID>`
-branch is left alone either way — delete with `git branch -D` once
-you've merged or discarded it.
+A Done label alone does not prove delivery. Inspect the service log, host
+branch and `git worktree list --porcelain`: the workspace may contain
+undelivered work, a failed cleanup, or intentionally retained inspection data.
+Keep it until delivery is established.
+
+For the shipped worktree lifecycle, refresh the copied setup/cleanup hooks and
+matching package, fix the reported failure, run Doctor, and let the managed
+service retry its normal guarded cleanup. This detaches shared links before
+Git removal and preserves the feature branch. Do not use raw recursive removal
+on a workspace containing shared-board junctions. Custom clone hooks need their
+own reviewed cleanup; the shipped helper refuses foreign or unregistered paths.
 
 ### "Branch exists but has zero commits — agent's work is gone"
 

@@ -12,7 +12,10 @@ from symphony.workflow import build_service_config, load_workflow
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-WORKFLOW_FILES = ("WORKFLOW.file.example.md", "WORKFLOW.example.md")
+WORKFLOW_FILES = (
+    "examples/advanced/WORKFLOW.file.example.md",
+    "WORKFLOW.example.md",
+)
 
 STAGE_HEADINGS_BY_STATE = {
     "Todo": "### TRIAGE",
@@ -127,6 +130,12 @@ HUMAN_REVIEW_HANDOFF_SHAPE = (
 
 
 def _load(name: str):
+    if name.startswith("examples/advanced/"):
+        from symphony.workflow import parse_workflow_text
+
+        return build_service_config(parse_workflow_text(
+            (REPO_ROOT / name).read_text(encoding="utf-8"), REPO_ROOT / "WORKFLOW.md"
+        ))
     return build_service_config(load_workflow(REPO_ROOT / name))
 
 
@@ -248,7 +257,7 @@ def test_verify_stage_demands_review_qa_and_merge_evidence(workflow: str) -> Non
 
 
 def test_file_verify_stage_carries_the_app_release_machine_gate() -> None:
-    cfg = _load("WORKFLOW.file.example.md")
+    cfg = _load("examples/advanced/WORKFLOW.file.example.md")
     rendered = render(
         cfg.prompt_template_for_state("Verify"),
         build_prompt_env(_issue("Verify"), attempt=None),
@@ -455,7 +464,7 @@ def test_base_prompt_omits_token_budget_directive_by_default(workflow: str) -> N
 
 
 def test_file_base_prompt_renders_full_ticket_path_outside_description() -> None:
-    cfg = _load("WORKFLOW.file.example.md")
+    cfg = _load("examples/advanced/WORKFLOW.file.example.md")
     rendered = render(
         cfg.prompt_template_for_state("Verify"),
         build_prompt_env(
@@ -480,7 +489,7 @@ def test_file_base_prompt_renders_full_ticket_path_outside_description() -> None
 
 
 def test_file_base_prompt_does_not_direct_workers_to_kanban_without_path() -> None:
-    cfg = _load("WORKFLOW.file.example.md")
+    cfg = _load("examples/advanced/WORKFLOW.file.example.md")
     rendered = render(
         cfg.prompt_template_for_state("Verify"),
         build_prompt_env(_issue("Verify"), attempt=None),

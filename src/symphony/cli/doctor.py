@@ -21,6 +21,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import os
 import re
@@ -100,9 +101,10 @@ def _bind_port(
             if workflow_path is not None
             else None
         )
+        owner_command = f"Get-NetTCPConnection -LocalPort {port}" if _IS_WIN32 else f"lsof -ti :{port}"
         suffix = hint or (
             "run `symphony service status <workflow>` or "
-            f"`lsof -ti :{port}` to identify the owner"
+            f"`{owner_command}` to identify the owner"
         )
         return CheckResult(
             name, "fail", f"cannot bind {host}:{port} — {exc}; {suffix}"
@@ -645,6 +647,8 @@ def check_stage_contracts(cfg: ServiceConfig) -> CheckResult:
     from ..orchestrator.contracts import board_uses_default_contracts
 
     name = "agent.stage_contracts"
+    if str(cfg.raw.get("contract_profile", "")).strip().lower() == "factory":
+        return CheckResult(name, "pass", "factory: mandatory Build and Verify contracts enforced")
     mode = (cfg.agent.stage_contracts or "auto").strip().lower()
     enabled = cfg.agent.stage_contracts_enabled(cfg.tracker.active_states)
     if enabled:
@@ -1170,6 +1174,12 @@ def main(argv: list[str]) -> int:
         help="host to test the JSON API port against (default: 127.0.0.1)",
     )
     parser.add_argument(
+        "--port",
+        type=int,
+        default=None,
+        help="override the workflow server port for this preflight",
+    )
+    parser.add_argument(
         "--no-color",
         action="store_true",
         help="disable ANSI color even when stdout is a tty",
@@ -1186,6 +1196,8 @@ def main(argv: list[str]) -> int:
     except SymphonyError as exc:
         print(f"FAIL  workflow load failed: {exc}", file=sys.stderr)
         return 2
+    if args.port is not None:
+        cfg = replace(cfg, server=replace(cfg.server, port=args.port))
 
     color = (not args.no_color) and sys.stdout.isatty()
     results = run_checks(cfg, host=args.host)

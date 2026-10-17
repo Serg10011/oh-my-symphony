@@ -4,6 +4,11 @@ Use this when introducing Symphony to a repo that does not already carry the
 standard operator bundle. The Symphony source checkout is protected and must
 not be used as the project repository.
 
+For the beginner file-board factory, use `symphony factory init <target>` in
+a separate product repository and follow [Factory](factory.md). It copies the
+Ready -> Build -> Verify prompts, worktree hook, and bundled skills from the
+installed package. Use the advanced workflow below for other pipelines.
+
 ## Preferred: create or register a project
 
 ```bash
@@ -25,9 +30,9 @@ From inside the `oh-my-symphony` checkout:
 TARGET=/path/to/target-project
 cp tui-open.sh tui-open.bat "$TARGET/"
 # Pick the example that matches the tracker you will use:
-#   file board (Markdown tickets in the repo, the default) -> WORKFLOW.file.example.md
+#   advanced file board -> examples/advanced/WORKFLOW.file.example.md
 #   Linear                                                 -> WORKFLOW.example.md
-cp WORKFLOW.file.example.md "$TARGET/WORKFLOW.md"         # then edit
+cp examples/advanced/WORKFLOW.file.example.md "$TARGET/WORKFLOW.md" # then edit
 mkdir -p "$TARGET/docs" "$TARGET/scripts"
 cp -R docs/symphony-prompts "$TARGET/docs/"
 cp scripts/symphony-setup-worktree.sh "$TARGET/scripts/"  # required by default after_create hook

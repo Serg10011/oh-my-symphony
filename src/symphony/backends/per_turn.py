@@ -37,6 +37,7 @@ from .._shell import (
     terminate_process_tree,
 )
 from ..errors import PortExit, ResponseError, TurnFailed, TurnTimeout
+from .._windows_backend import spawn_backend
 from ..logging import get_logger
 from ..utils.git_sandbox import git_roots_env
 from ..workspace import validate_agent_cwd
@@ -176,6 +177,7 @@ class PerTurnCliBackend(BaseAgentBackend):
         self._on_process_started = init.on_process_started
         self._on_process_identified = init.on_process_identified
         self._process_launch_guard = init.process_launch_guard
+        self._require_durable_process = init._require_durable_process
         self._session_id: str | None = None
         self._closed = False
         self._active_proc: asyncio.subprocess.Process | None = None
@@ -349,34 +351,33 @@ class PerTurnCliBackend(BaseAgentBackend):
         proc: asyncio.subprocess.Process | None = None
         try:
             async with self._process_launch_guard() as publish_started:
-                proc = await asyncio.create_subprocess_exec(
-                    resolve_bash(),
-                    "-lc",
-                    command,
-                    cwd=str(self._cwd),
-                    stdin=asyncio.subprocess.PIPE
-                    if pipe_stdin
-                    else asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    env={**os.environ, **self._git_roots_env(), **self._extra_env},
-                    limit=MAX_LINE_BYTES,
-                    # Own process group so terminate/kill reaches the agent CLI
-                    # behind the bash wrapper (POSIX only).
-                    start_new_session=os.name == "posix",
-                )
-                spawned_identity = process_identity(proc.pid)
+                if os.name == "nt":
+                    proc, spawned_identity = await spawn_backend(
+                        [resolve_bash(), "-lc", command], cwd=str(self._cwd),
+                        env={**os.environ, **self._git_roots_env(), **self._extra_env},
+                        limit=MAX_LINE_BYTES, pipe_stdin=pipe_stdin,
+                        on_identified=self._on_process_identified,
+                        on_started=self._on_process_started, publish_started=publish_started,
+                        require_durable=self._require_durable_process,
+                        track_process=self._track_windows_process,
+                    )
+                else:
+                    proc = await self._spawn_posix(command, pipe_stdin=pipe_stdin)
+                    spawned_identity = process_identity(proc.pid)
                 self._active_proc = proc
                 self._active_process_identity = spawned_identity
-                if self._on_process_identified is not None:
-                    self._on_process_identified(proc.pid, spawned_identity)
-                elif self._on_process_started is not None:
-                    self._on_process_started(proc.pid)
-                await publish_started(proc.pid)
+                if os.name != "nt":
+                    if self._on_process_identified is not None:
+                        self._on_process_identified(proc.pid, spawned_identity)
+                    elif self._on_process_started is not None:
+                        self._on_process_started(proc.pid)
+                    await publish_started(proc.pid)
                 return proc
         except FileNotFoundError as exc:
             raise PortExit("bash not available", error=str(exc)) from exc
         except BaseException as launch_exc:
+            if proc is None:
+                proc = self._active_proc
             if proc is not None:
                 try:
                     cleanup = await terminate_process_tree(
@@ -395,6 +396,27 @@ class PerTurnCliBackend(BaseAgentBackend):
                 self._active_proc = None
                 self._active_process_identity = None
             raise
+
+    def _track_windows_process(self, proc: asyncio.subprocess.Process, identity: str) -> None:
+        self._active_proc, self._active_process_identity = proc, identity
+
+    async def _spawn_posix(self, command: str, *, pipe_stdin: bool) -> asyncio.subprocess.Process:
+        return await asyncio.create_subprocess_exec(
+            resolve_bash(),
+            "-lc",
+            command,
+            cwd=str(self._cwd),
+            stdin=asyncio.subprocess.PIPE
+            if pipe_stdin
+            else asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, **self._git_roots_env(), **self._extra_env},
+            limit=MAX_LINE_BYTES,
+            # Own process group so terminate/kill reaches the agent CLI
+            # behind the bash wrapper (POSIX only).
+            start_new_session=os.name == "posix",
+        )
 
     async def _write_prompt(
         self, proc: asyncio.subprocess.Process, prompt: str

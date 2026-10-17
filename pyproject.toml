@@ -31,6 +31,9 @@ dev = [
     "oh-my-symphony[pm-exchange]",
     "ruff>=0.8",
     "pyright>=1.1.390",
+    # The full-source type gate includes the bundled SuperQA runtime.
+    "playwright>=1.48",
+    "pillow>=10.0",
 ]
 browser = [
     "playwright>=1.48",
@@ -48,9 +51,39 @@ symphony-pyright = "symphony.pyright:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools]
+include-package-data = false
+
 [tool.setuptools.package-data]
 symphony = [
     "web/static/*",
+    "factory/templates/*.md",
+    "factory/templates/docs/symphony-prompts/file/*.md",
+    "factory/templates/docs/symphony-prompts/file/stages/*.md",
+    "factory/templates/scripts/*.sh",
+    "factory/templates/wayfinder/*.md",
+    "factory/bundled_skills/*.md",
+    "factory/bundled_skills/*.json",
+    "factory/bundled_skills/third_party_licenses/*.txt",
+    "factory/bundled_skills/*/*.md",
+    "factory/bundled_skills/*/LICENSE",
+    "factory/bundled_skills/*/pyproject.toml",
+    "factory/bundled_skills/*/agents/*.md",
+    "factory/bundled_skills/*/reference/*.md",
+    "factory/bundled_skills/*/scripts/*.sh",
+    "factory/bundled_skills/*/templates/*.md",
+    "factory/bundled_skills/*/templates/*.sh",
+    "factory/bundled_skills/*/templates/*.mjs",
+    "factory/bundled_skills/*/templates/*.json",
+    "factory/bundled_skills/*/templates/*.html",
+    "factory/bundled_skills/*/templates/*.js",
+    "factory/bundled_skills/*/templates/*/*",
+    "factory/bundled_skills/*/templates/*/.env.example",
+    "factory/bundled_skills/*/templates/*/*/*",
+    "factory/bundled_skills/*/templates/*/*/*/*",
+    "factory/bundled_skills/*/superqa_tui/*.py",
+    "factory/bundled_skills/*/superqa_tui/*.js",
+    "factory/bundled_skills/*/superqa_tui/*.tcss",
     "web/static/**/*",
     "pm/resources/**/*",
 ]

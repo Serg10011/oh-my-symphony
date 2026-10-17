@@ -887,6 +887,9 @@ class WorkspaceManager:
             env.update(self._hook_env)
         if extra_env:
             env.update(extra_env)
+        # Cleanup uses the host interpreter and root, never inherited path guesses.
+        env["SYMPHONY_PYTHON"] = sys.executable
+        env["SYMPHONY_WORKSPACE_ROOT"] = str(self._root)
 
         def _do_run() -> subprocess.CompletedProcess[bytes]:
             # `stdin=DEVNULL` is mandatory, not cosmetic. When Symphony is
@@ -995,12 +998,14 @@ def _strip_shell_exit_trailer(stdout: bytes) -> bytes:
     return stdout
 
 
-def _coerce_output_bytes(value: bytes | str | None) -> bytes:
+def _coerce_output_bytes(
+    value: bytes | bytearray | memoryview | str | None,
+) -> bytes:
     if value is None:
         return b""
-    if isinstance(value, bytes):
-        return value
-    return value.encode("utf-8", errors="replace")
+    if isinstance(value, str):
+        return value.encode("utf-8", errors="replace")
+    return bytes(value)
 
 
 COMMIT_OK = "committed"
@@ -1114,19 +1119,19 @@ async def commit_workspace_on_done(
         '    BASE="$MB"\n'
         '  fi\n'
         'fi\n'
-        'ADD_PATHS=(.)\n'
+        'EXCLUDE_PATHS=("")\n'
         # Caller-supplied exclusions (the ticket artifact directory) are
         # applied in *this* worktree's repo, whichever that is. The
         # `.git/info/exclude` rule written at startup only covers the
         # workflow repo, and a custom `after_create` hook may build the
         # worktree in a different one — the shipped monorepo template does.
         + "".join(
-            "ADD_PATHS+=(%s)\n" % shlex.quote(f":(exclude){item}")
+            "EXCLUDE_PATHS+=(%s)\n" % shlex.quote(item)
             for item in extra_excludes
             if item
         )
         + 'while IFS= read -r exclude_path; do\n'
-        '  [ -n "$exclude_path" ] && ADD_PATHS+=(":(exclude)$exclude_path")\n'
+        '  [ -n "$exclude_path" ] && EXCLUDE_PATHS+=("$exclude_path")\n'
         'done < <(git config --get-all symphony.autocommitExclude 2>/dev/null || true)\n'
         'HAS_NEW_COMMITS=0\n'
         'if [ -n "$BASE" ] && git rev-parse --verify "$BASE" >/dev/null 2>&1; then\n'
@@ -1143,10 +1148,24 @@ async def commit_workspace_on_done(
         '  git reset --soft "$BASE" || exit 44\n'
         '  git reset "$BASE" -- . || exit 44\n'
         'fi\n'
-        'git add -A -- "${ADD_PATHS[@]}" || exit 42\n'
+        'git add -A -- . || exit 42\n'
         'HAS_STAGED=1\n'
         'git diff --cached --quiet -- . && HAS_STAGED=0\n'
         'if [ "$HAS_STAGED" -eq 0 ]; then\n'
+        '  echo "auto_commit: nothing to commit"\n'
+        '  exit 0\n'
+        'fi\n'
+        '# Ignored shared-board links cannot be negative git-add pathspecs.\n'
+        '# Restore excluded index entries after rebuilding the workspace index.\n'
+        'for exclude_path in "${EXCLUDE_PATHS[@]}"; do\n'
+        '  [ -n "$exclude_path" ] || continue\n'
+        '  if git rev-parse --verify HEAD >/dev/null 2>&1; then\n'
+        '    git reset -q HEAD -- "$exclude_path" || exit 42\n'
+        '  else\n'
+        '    git rm -r -q --cached --ignore-unmatch -- "$exclude_path" || exit 42\n'
+        '  fi\n'
+        'done\n'
+        'if git diff --cached --quiet -- .; then\n'
         '  echo "auto_commit: nothing to commit"\n'
         '  exit 0\n'
         'fi\n'

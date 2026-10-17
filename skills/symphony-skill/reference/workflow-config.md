@@ -186,15 +186,16 @@ Each hook is a shell script that runs in the workspace directory:
 | `after_create`  | when workspace is first created (`reuse_policy: preserve`); on every reuse with `reuse_policy: refresh` | attach a `git worktree` of the host repo on a `symphony/<ID>` branch + record fork-point (`git config symphony.basesha <HEAD>`) for the end-of-run squash |
 | `before_run`    | before every turn                   | `git fetch` to pull latest remote refs — **never `git reset --hard`**; that would discard the agent's mid-run work |
 | `after_run`     | after every turn                    | per-turn **commit-or-amend**: first turn creates `wip: turn …`, every subsequent turn `--amend --no-edit`s into it. Branch stays at one commit but each turn is durably written to `.git/objects` |
-| `before_remove` | before workspace cleanup            | `git worktree remove --force` to drop the registration before Symphony rmtree's the dir |
+| `before_remove` | before workspace cleanup            | validate the owned worktree, detach shared links, then remove its Git registration and directory |
 
 ### Default workspace mechanism: `git worktree`
 
 `WORKFLOW.example.md` and `WORKFLOW.file.example.md` ship with
 `after_create` hooks that attach the per-ticket workspace as a **git
 worktree** of `$SYMPHONY_WORKFLOW_DIR` on a fresh `symphony/<ID>`
-branch. The host's working tree is never modified, and the operator
-sees each feature branch immediately. `agent.feature_base_branch` selects
+branch. Code changes stay on that branch until delivery; shared board files
+remain live in the host checkout. The operator sees each feature branch
+immediately. `agent.feature_base_branch` selects
 the start point for new `symphony/<ID>` branches; empty means the current
 host branch. The default Document prompt merges `symphony/<ID>` into
 `agent.auto_merge_target_branch` before the ticket moves to `Done`; empty
@@ -218,9 +219,24 @@ hook uses a bounded compare-and-swap refresh of the branch ref before
 attaching the worktree. Set `reuse_policy: refresh` only when rerunning the
 configured lifecycle hook on reuse is intentional.
 
-The matching `before_remove` hook runs `git worktree remove --force`
-so cleanup also drops the `.git/worktrees/<ID>` registration; without
-it the registration lingers until `git worktree prune`.
+The matching setup and `before_remove` hooks share validated cleanup. They
+check the workspace location, repository, registration and board links before
+detaching links and removing the worktree. Windows removal enables Git's
+long-path support for that command only. A raw removal while a directory
+junction is attached can delete the host board.
+
+Fresh precreated empty directories stay in place for `worktree add`. For a
+validated stale empty registration, setup retains Git's existing default metadata
+prune before ordinary reattachment. That prune can also remove unrelated
+unlocked stale registrations; valid and locked registrations are retained.
+Failures and a registration that remains after prune stop setup explicitly.
+The hook does not force a second checkout of a branch.
+
+Update an existing project's copied `scripts/symphony-setup-worktree.sh` and
+cleanup hooks together with its Symphony package, preserving customizations.
+Package installation alone does not refresh those files. Custom hooks retain
+their existing lifecycle behavior; a hook failure is not a promise that the
+workspace manager will keep its directory.
 
 If your code lives in a *different* remote than the WORKFLOW.md repo
 (common for Linear setups where the config repo is config-only), swap

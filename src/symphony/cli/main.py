@@ -4,6 +4,7 @@ Subcommands:
     symphony [WORKFLOW]            run orchestrator (optionally with HTTP API via --port)
     symphony tui [WORKFLOW]        run orchestrator + Jira-style CLI Kanban TUI
     symphony board ...             file-tracker board helper
+    symphony factory ...           initialize, sync, and start a beginner factory
     symphony doctor [WORKFLOW]     preflight checks for WORKFLOW.md
     symphony release check ...     validate app release evidence
     symphony service ...           managed background orchestrator
@@ -44,6 +45,7 @@ SUBCOMMANDS: tuple[tuple[str, str], ...] = (
     ("tui", "open the Kanban TUI (same as --tui)"),
     ("doctor", "preflight a WORKFLOW.md before launching"),
     ("board", "manage the file-based Kanban board (init/ls/new/mv/update/show/graph)"),
+    ("factory", "initialize, sync, and start an autonomous development factory"),
     ("service", "run the orchestrator as a managed background service"),
     ("project", "register and run independent project services"),
     ("pm", "create and serve a disposable PM Workspace demo"),
@@ -248,6 +250,8 @@ async def _run(args: argparse.Namespace) -> int:
     if keep_awake is not None:
         keep_awake.start()
 
+    server_port = args.port if args.port is not None else cfg.server.port
+    progress_writer: ProgressFileWriter | None = None
     # Register the progress writer BEFORE any subsequent `await` so the
     # first tick's `_notify_observers` sees it. CLI flag > WORKFLOW.md
     # `progress.enabled` > default True.
@@ -268,10 +272,11 @@ async def _run(args: argparse.Namespace) -> int:
             progress_path,
             max_transitions=cfg.progress.max_transitions,
         )
+        if server_port is not None:
+            progress_writer.set_server_port(server_port)
         progress_writer.register()
         log.info("progress_md_active", path=str(progress_path))
 
-    server_port = args.port if args.port is not None else cfg.server.port
     runner = None
     if server_port is not None:
         app = build_app(orchestrator)
@@ -300,6 +305,9 @@ async def _run(args: argparse.Namespace) -> int:
                 port=server_port,
                 error=str(exc),
             )
+        if progress_writer is not None:
+            progress_writer.set_server_port(bound)
+            await progress_writer.on_change()
         log.info("http_extension_active", host=args.host, port=bound)
         print(
             f"symphony: board ready at http://{args.host}:{bound}",
@@ -453,6 +461,10 @@ def main(argv: list[str] | None = None) -> int:
         from . import board
 
         return board.main(raw_argv[1:])
+    if raw_argv and raw_argv[0] == "factory":
+        from . import factory
+
+        return factory.main(raw_argv[1:])
     if raw_argv and raw_argv[0] == "doctor":
         from . import doctor
 

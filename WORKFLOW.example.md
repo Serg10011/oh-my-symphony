@@ -165,14 +165,13 @@ hooks:
     # `.git/worktrees/<ID>` lingers until `git worktree prune`. By this
     # point the orchestrator has already auto-committed any leftover
     # changes (see agent.auto_commit_on_done).
-    set -uo pipefail
-    HOST_REPO="${SYMPHONY_WORKFLOW_DIR:?}"
-    WORKTREE_PATH="$PWD"
-    ISSUE_ID="${SYMPHONY_ISSUE_ID:-$(basename "$WORKTREE_PATH")}"
-    for dir in ${SYMPHONY_BOARD_ROOT_NAME:-kanban}; do
-      git -C "$HOST_REPO" update-index --no-skip-worktree -- "$dir/$ISSUE_ID.md" 2>/dev/null || true
-    done
-    git -C "$HOST_REPO" worktree remove --force "$WORKTREE_PATH" 2>/dev/null || true
+    set -euo pipefail
+    workspace="$PWD"
+    if [ "${OS:-}" = "Windows_NT" ]; then
+      workspace="$(cygpath -w "$workspace")"
+    fi
+    cd "${SYMPHONY_WORKFLOW_DIR:?SYMPHONY_WORKFLOW_DIR not set}"
+    exec "${SYMPHONY_PYTHON:?SYMPHONY_PYTHON not set}" -m symphony._worktree_cleanup "$workspace" --restore-board-tracking
 
 agent:
   kind: codex          # codex | claude | gemini | agy | kiro | opencode | pi | prime-agent

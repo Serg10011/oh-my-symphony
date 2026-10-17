@@ -28,6 +28,7 @@ State the route in one line, then open only the reference that route needs.
 | one prompt should become a full evidence-gated delivery pipeline | ONESHOT | `oneshot/reference/operations.md` |
 | OneShot plan quality, ticket slicing, QA/PDF, vault, or lane gates | ONESHOT-DEEP | `oneshot/reference/decomposition.md`, then the needed OneShot reference |
 | bootstrap Symphony into another repo | BOOTSTRAP | `reference/bootstrapping.md` |
+| initialize or run the beginner autonomous development factory | FACTORY | `reference/factory.md` |
 | bootstrap isolated worktrees for a monorepo/polyrepo | MONOREPO | `monorepo/references/workflow-template.md` and `monorepo/scripts/setup-monorepo.sh` |
 | `worker_exit`, `hook_failed`, auth stall, blank TUI, stuck service | TRIAGE | `reference/troubleshooting.md` |
 | set up or debug Windows, macOS, Linux behavior | PLATFORM | `reference/platform-compat.md` |
@@ -147,6 +148,16 @@ unwritable workspaces, and missing board directories.
   previous-turn work before it is finalized.
 
 ## Common Starts
+
+Beginner autonomous factory in a separate product repository:
+
+```bash
+symphony factory init ../my-app --agent opencode
+```
+
+Continue with the FACTORY route for graph creation, Git initialization, and
+Doctor-gated startup. The advanced file workflow is available at
+`examples/advanced/WORKFLOW.file.example.md`.
 
 Create a separate project or register an existing repository, then use the hub:
 

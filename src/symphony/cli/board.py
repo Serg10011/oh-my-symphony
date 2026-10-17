@@ -176,6 +176,7 @@ def _collect_labels(args: argparse.Namespace) -> list[str] | None:
 def cmd_new(args: argparse.Namespace) -> int:
     tracker = _get_tracker(args)
     fbt = FileBoardTracker(tracker)
+    requested_state = args.state or (tracker.active_states[0] if args.root is None else "Todo")
     try:
         identifier = validate_identifier(args.id)
     except SymphonyError as exc:
@@ -184,7 +185,7 @@ def cmd_new(args: argparse.Namespace) -> int:
     legal_states = {
         s.lower(): s for s in (*tracker.active_states, *tracker.terminal_states)
     }
-    state = legal_states.get(args.state.lower())
+    state = legal_states.get(requested_state.lower())
     if state is None:
         print(
             f"error: unknown state {args.state!r}; "
@@ -215,6 +216,7 @@ def cmd_new(args: argparse.Namespace) -> int:
             labels=_collect_labels(args),
             description=description,
             agent_kind=args.agent_kind,
+            skills=args.skills.split(",") if args.skills else None,
             blocked_by=blocked_by or None,
             request=args.request,
         )
@@ -415,7 +417,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_workflow_args(p_new)
     p_new.add_argument("id", help="ticket identifier (e.g. DEV-001)")
     p_new.add_argument("title", help="ticket title")
-    p_new.add_argument("--state", default="Todo")
+    p_new.add_argument("--state", default=None)
     p_new.add_argument("--priority", type=int, default=None)
     p_new.add_argument("--labels", default=None, help="comma-separated labels")
     p_new.add_argument(
@@ -425,6 +427,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="add one label (repeatable)",
     )
     p_new.add_argument("--description", default=None)
+    p_new.add_argument("--skills", default=None, help="comma-separated attached skills")
     p_new.add_argument(
         "--description-file",
         default=None,

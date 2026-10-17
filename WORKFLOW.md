@@ -70,7 +70,7 @@ hooks:
         echo "FAIL: workspace $dir must be a symlink to $source; got non-symlink $target" >&2
         exit 42
       fi
-      if [ -L "$target" ] && [ "$(readlink "$target")" != "$source" ]; then
+      if [ ! "$target" -ef "$source" ]; then
         echo "FAIL: workspace $dir points to $(readlink "$target"), expected $source" >&2
         exit 42
       fi
@@ -208,14 +208,13 @@ hooks:
     # Detach the worktree from the host before Symphony rmtree's the dir,
     # otherwise `.git/worktrees/<ID>` lingers until `git worktree prune`.
     # auto_commit_on_done already snapshotted any leftover changes by now.
-    set -uo pipefail
-    HOST_REPO="${SYMPHONY_WORKFLOW_DIR:?}"
-    WORKTREE_PATH="$PWD"
-    ISSUE_ID="${SYMPHONY_ISSUE_ID:-$(basename "$WORKTREE_PATH")}"
-    for dir in ${SYMPHONY_BOARD_ROOT_NAME:-kanban}; do
-      git -C "$HOST_REPO" update-index --no-skip-worktree -- "$dir/$ISSUE_ID.md" 2>/dev/null || true
-    done
-    git -C "$HOST_REPO" worktree remove --force "$WORKTREE_PATH" 2>/dev/null || true
+    set -euo pipefail
+    workspace="$PWD"
+    if [ "${OS:-}" = "Windows_NT" ]; then
+      workspace="$(cygpath -w "$workspace")"
+    fi
+    cd "${SYMPHONY_WORKFLOW_DIR:?SYMPHONY_WORKFLOW_DIR not set}"
+    exec "${SYMPHONY_PYTHON:?SYMPHONY_PYTHON not set}" -m symphony._worktree_cleanup "$workspace" --restore-board-tracking
   # after_done: fires once when the ticket reaches `Done` (after the
   # squash commit lands). Receives the same env as the other hooks plus
   # `SYMPHONY_ISSUE_ID` and `SYMPHONY_ISSUE_TITLE`. Cwd is the ticket's

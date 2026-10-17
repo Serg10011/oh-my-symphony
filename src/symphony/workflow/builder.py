@@ -961,7 +961,7 @@ def build_service_config(
         cfg.get("continuous_improvement")
     )
 
-    if log_decisions:
+    if log_decisions and str(cfg.get("contract_profile", "")).strip().lower() != "factory":
         _log_stage_contracts_decision(agent, tracker)
 
     return ServiceConfig(

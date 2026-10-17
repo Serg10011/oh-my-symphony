@@ -403,3 +403,42 @@ def test_workflow_progress_rejects_non_bool_enabled(tmp_path):
     wf = parse_workflow_text(text, workflow_path)
     with pytest.raises(Exception, match="progress.enabled"):
         build_service_config(wf)
+
+
+@pytest.mark.parametrize("env_url", [None, "", "https://board.example/custom"])
+async def test_observer_keeps_runtime_port_across_reload_and_preserves_url_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, env_url: str | None,
+) -> None:
+    if env_url is None:
+        monkeypatch.delenv("SYMPHONY_BOARD_URL", raising=False)
+    else:
+        monkeypatch.setenv("SYMPHONY_BOARD_URL", env_url)
+    workflow = tmp_path / "WORKFLOW.md"
+    text = "---\ntracker:\n  kind: file\n  board_root: ./board\nserver:\n  port: 9999\n---\nPrompt\n"
+    workflow.write_text(text, encoding="utf-8")
+    (tmp_path / "board").mkdir()
+    state = WorkflowState(workflow)
+    cfg, error = state.reload()
+    assert error is None and cfg is not None
+
+    class StubOrchestrator:
+        def snapshot(self):
+            return {"running": [], "retrying": []}
+
+    target = tmp_path / "PROGRESS.md"
+    writer = ProgressFileWriter(StubOrchestrator(), state, target)
+    writer.set_server_port(52363)
+    await writer.on_change()
+    assert state.current() is cfg and cfg.server.port == 9999
+    workflow.write_text(text.replace("9999", "8090"), encoding="utf-8")
+    reloaded, error = state.reload()
+    assert error is None and reloaded is not None
+    await writer.on_change()
+    assert state.current() is reloaded and reloaded.server.port == 8090
+    output = target.read_text(encoding="utf-8")
+    if env_url == "":
+        assert "_Board:_" not in output
+    else:
+        expected = env_url or "http://127.0.0.1:52363/"
+        assert f"[{expected}]({expected})" in output
+    assert "http://127.0.0.1:8090/" not in output
