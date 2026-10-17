@@ -69,6 +69,8 @@ upstream을 설정하고 `agent.auto_merge_push_target: true`를 명시해야 �
 `Resolved Blocker (history)`로 표시되고 원문은 이력으로 남는다.
 운영자가 직접 작성한 Blocker는 유지된다. 상세 한도와 복구 절차는
 [팩토리 운영 안내](skills/symphony-skill/reference/factory.md)를 참고한다.
+카드의 `Done`만으로 대상 브랜치 병합이나 worktree 정리를 확인할 수는 없다.
+PowerShell에서는 [복구 명령 예시](skills/symphony-skill/reference/factory.md#powershell-recovery)를 따른다.
 
 네 가지 표준 skill은 Symphony 패키지에 고정되어 프로젝트로 복사되므로 별도
 설치가 필요 없고, 복사본은 프로젝트에 맞게 수정할 수 있다. 브라우저 실행에는

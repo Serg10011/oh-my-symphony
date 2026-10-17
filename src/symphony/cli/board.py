@@ -334,6 +334,9 @@ def cmd_show(args: argparse.Namespace) -> int:
         print(f"agent: {agent['kind']}")
     elif front.get("agent_kind"):
         print(f"agent: {front['agent_kind']}")
+    state = front.get("state")
+    if isinstance(state, str) and normalize_state(state.strip()) == "done":
+        print("delivery: Done alone does not confirm target merge or workspace cleanup.")
     if body:
         print()
         print(body)

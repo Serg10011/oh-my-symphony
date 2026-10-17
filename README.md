@@ -61,6 +61,9 @@ the launch branch locally, and bounded Build/Verify budgets stop runaway agent
 loops. Publishing is opt-in through `agent.auto_merge_push_target: true` after
 configuring an upstream. `symphony project create` retains the advanced workflow.
 
+Board `Done` alone does not confirm target merge or worktree cleanup. For a
+blocked or paused ticket, follow the [PowerShell recovery steps](skills/symphony-skill/reference/factory.md#powershell-recovery).
+
 The four standard skills are pinned inside the Symphony package and copied
 into each project, so beginners do not install them separately and can still
 customize the project copies. Browser execution is not dependency-free.

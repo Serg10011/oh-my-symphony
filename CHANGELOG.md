@@ -10,6 +10,10 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+- `symphony board show` explains that a Done ticket alone does not confirm target merge or workspace cleanup; ticket data and non-Done output remain unchanged.
+- The factory guide provides copyable PowerShell recovery and delivery inspection, with explicit stops after failed native commands or HTTP requests and separate handling for an uncleared pause.
+
 ## [0.27.0] - 2026-10-17 - Autonomous factory, PM Workspace and Windows recovery
 
 ### Added

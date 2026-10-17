@@ -3,7 +3,22 @@
 Scope and approved bar: [.quality.md](.quality.md). Findings and causal evidence:
 [PR 57 repair](docs/quality/pr57/REPAIR.md).
 
-## Current state
+## Current iteration
+
+Quality fix round 10 improves the operator guidance for recovery and completion.
+The last full independent score is the historical **75%, FAIL** below; this
+narrow change has no new whole-product score and does not establish the >90% bar.
+Native accessibility, partial-write interruption, exhaustive privacy mapping,
+original live-diagnostic attribution and fresh-install comparison remain open.
+
+The owner subsequently authorized merging and releasing the existing work with
+those limits. [PR74](https://github.com/cskwork/oh-my-symphony/pull/74),
+[PR75](https://github.com/cskwork/oh-my-symphony/pull/75) and the
+[main promotion](https://github.com/cskwork/oh-my-symphony/pull/76) are merged;
+`main` is `f266479`. That authorization does not change the assessment or floors.
+This next iteration is a separate PR against `dev`, with no automatic merge.
+
+## Latest full assessment (historical candidate)
 
 - Result: **75%, FAIL**, average 3.75/5, independent receipt-only follow-up
   assessment dated 2026-10-17. The required greater-than-90% bar is not met.
@@ -13,7 +28,7 @@ Scope and approved bar: [.quality.md](.quality.md). Findings and causal evidence
 - Runtime: `c68b9224ffddb20a54781c844281eb8e257c6b8b`; reviewed test-only head
   `ef9fa36703278373272e019118137938f44ffb81`. Wheel SHA-256
   `170a3c6c1d9e9094797460b0ca4882b600d19b781d6cdc5e2afd9097e60440fa`.
-- Delivery: [PR57](https://github.com/cskwork/oh-my-symphony/pull/57) merged to
+- Delivery at assessment time: [PR57](https://github.com/cskwork/oh-my-symphony/pull/57) merged to
   `dev` as `6b89e6e` with owner authorization. The follow-up is
   [draft PR74](https://github.com/cskwork/oh-my-symphony/pull/74), against `dev`.
   No follow-up merge, release or promotion to `main`.
@@ -243,6 +258,45 @@ privacy and partial-write receipts do not exist to reuse. The three limited
 atomic before/after/denial cases use identical writer/Python/dependency inputs
 with `tests_rerun=false`, and do not close the missing mid-write case.
 
+## Fix 10: copyable recovery and honest Done output
+
+The observed user problem was an unqualified Done state and recovery instructions
+that required PowerShell adaptation. `board show` now adds one delivery reminder
+for string Done values, including case/whitespace variants. Missing and non-string
+states retain their printable behavior. Headings, metadata, bodies, exit codes,
+ticket bytes, workflow states, persistence and delivery logic are unchanged.
+
+The canonical factory guide now separates inspection, correction and explicit
+resume from delivery inspection. Failed native inspection/update commands stop
+before HTTP resume; HTTP errors stop the block; `changed=false` is not reported as
+success. The recipe uses the actual service URI and encoded ticket path segment.
+English and Korean README links point to the same guidance.
+
+Review caught a real documentation edge case: host finalization can consolidate
+worker commits. The delivery recipe therefore inspects the actual host delivery
+commit and target product/proof rather than requiring the earlier tested worker
+SHA to remain an ancestor. It still requires the operator to match delivered
+changes and rerun the recorded proof; no generic command can certify every product.
+
+Guards and bounded evidence:
+
+- The new Done regression fails on the old code and passes after the three-line
+  change; the complete board CLI test file passes 67 tests.
+- Twelve actual source-CLI cases cover Done, other states, missing/non-string
+  states and missing tickets, with exact card hashes unchanged.
+- All three public PowerShell fences parse. Seven actual-CLI/owned-HTTP-stub
+  scenarios pass, including `changed=true/false`, HTTP404/500 and three native
+  command failures that issue zero resume requests.
+- Real disposable Git squash fixtures prove that the old tested-SHA ancestry
+  requirement rejects valid consolidation; corrected inspection succeeds without
+  claiming overall completion.
+
+These receipts qualify the changed text and commands, not native screen-reader
+behavior, real provider recovery or a higher quality score. Public instructions
+changed, so prior fresh-operator comparison receipts are not fresh evidence for
+this guide. The earlier full assessment remains bound to its own source. Runtime
+or recipe changes invalidate the corresponding guards and command receipts.
+
 ## Regression guards
 
 | Area | Guard |
@@ -255,6 +309,7 @@ with `tests_rerun=false`, and do not close the missing mid-write case.
 | Sync | Concurrent import, worker update, retained-child dependency closure, retry |
 | Failed commit | Exit, reconciliation, startup and release-handoff retention tests; installed index-lock recovery |
 | Browser applicability | Negative prose, explicit heading/skill and within-attempt removal tests |
+| Recovery clarity | Done reminder, raw-state compatibility and byte-preserving board show; fail-stop PowerShell commands and consolidated-history inspection |
 | Operator diagnostics | Port override, assigned port, reload and explicit-URL tests; profile policy text tests |
 | Token cancellation | Successful-state aliases, persisted pause across tracker failures/restart, explicit resume; installed overrun-to-recovery journey |
 | Resolved recovery history | Exact owned signatures, raw-byte/CRLF preservation, multiline/fence boundaries, mixed user notes, idempotence and durable-delivery gates |

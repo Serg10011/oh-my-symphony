@@ -204,6 +204,76 @@ def test_show_prints_front_matter_and_body(
     assert "body line one" in out
 
 
+@pytest.mark.parametrize("state", ["Done", "done", "DONE", "dOnE", " Done ", "\tDone\t"])
+@pytest.mark.parametrize("newline", ["\n", "\r\n"], ids=["lf", "crlf"])
+def test_show_done_qualifies_delivery_without_changing_ticket(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], state: str, newline: str
+) -> None:
+    workflow = _make_workflow(tmp_path)
+    board = tmp_path / "board"
+    board.mkdir()
+    ticket = board / "TKT-4.md"
+    original = (
+        "---\n# Preserve this comment.\nidentifier: TKT-4\ntitle: show me\n"
+        f'state: "{state}"\n'
+        "priority: 2\nlabels: [x, y]\nrequest: REQ-1\nagent: {kind: codex}\n"
+        "---\n\n## Proof\n\nKeep  two spaces.\n"
+    ).replace("\n", newline).encode()
+    ticket.write_bytes(original)
+
+    assert board_cli.main(["show", "--workflow", str(workflow), "TKT-4"]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == (
+        f"# TKT-4 ({state})\n"
+        "title: show me\npriority: 2\nlabels: x, y\nrequest: REQ-1\nagent: codex\n"
+        "delivery: Done alone does not confirm target merge or workspace cleanup.\n"
+        "\n## Proof\n\nKeep  two spaces.\n"
+    )
+    assert ticket.read_bytes() == original
+
+
+@pytest.mark.parametrize(("state_yaml", "display_state"), [
+    ("state: Verify", "Verify"),
+    ("state: Blocked", "Blocked"),
+    ("state: Human Review", "Human Review"),
+    ("state: undone", "undone"),
+    ("", "?"),
+    ('state: ""', ""),
+    ("state: null", "None"),
+    ("state: 42", "42"),
+    ("state: false", "False"),
+    ("state: [Done]", "['Done']"),
+    ("state: {value: Done}", "{'value': 'Done'}"),
+])
+def test_show_other_states_preserves_output_and_ticket(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], state_yaml: str, display_state: str
+) -> None:
+    workflow = _make_workflow(tmp_path)
+    board = tmp_path / "board"
+    board.mkdir()
+    ticket = board / "TKT-4.md"
+    original = (
+        "---\n# Preserve this comment.\nidentifier: TKT-4\ntitle: show me\n"
+        f"{state_yaml}\n"
+        "priority: 2\nlabels: [x, y]\nrequest: REQ-1\nagent_kind: codex\n"
+        "---\n\n## Proof\n\nKeep  two spaces.\n"
+    ).replace("\n", "\r\n").encode()
+    ticket.write_bytes(original)
+
+    assert board_cli.main(["show", "--workflow", str(workflow), "TKT-4"]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.err == ""
+    assert captured.out == (
+        f"# TKT-4 ({display_state})\n"
+        "title: show me\npriority: 2\nlabels: x, y\nrequest: REQ-1\nagent: codex\n"
+        "\n## Proof\n\nKeep  two spaces.\n"
+    )
+    assert ticket.read_bytes() == original
+
+
 def test_show_returns_nonzero_when_ticket_missing(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

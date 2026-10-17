@@ -95,6 +95,71 @@ Resuming a ticket, entering Done, or committing its worktree alone
 does not resolve a delivery failure. For workflows that publish remotely, local
 ancestry alone is insufficient to mark a previous delivery failure resolved.
 
+### PowerShell recovery
+
+Use these steps for the factory file board after inspecting its `Blocker`.
+Set the project path and ticket below; copy the running service's base URI from
+`factory start` when prompted. Keep the retained worktree and database intact.
+
+```powershell
+$projectPath = 'C:\Work\My Product'
+$workflow = Join-Path $projectPath 'WORKFLOW.md'
+$ticket = 'TASK-1'
+$baseUri = (Read-Host 'Paste the running factory service base URI').TrimEnd('/')
+$ticketSegment = [Uri]::EscapeDataString($ticket)
+symphony board show "$ticket" --workflow "$workflow"
+if ($LASTEXITCODE -ne 0) { throw 'Ticket inspection failed; stop here.' }
+```
+
+Fix the named cause before continuing. Use `Verify` when product work is ready
+for fresh proof; use `Build` instead when product work remains. Inspect existing
+budget diagnostics before changing limits. The next block explicitly changes
+the card and resumes its persisted pause; moving the card alone cannot resume it.
+For an authenticated service, supply its configured authorization header to the
+HTTP command; keep the credential out of shared output.
+
+```powershell
+symphony board show "$ticket" --workflow "$workflow"
+if ($LASTEXITCODE -ne 0) { throw 'Ticket inspection failed; resume was not requested.' }
+symphony board update "$ticket" --state Verify --workflow "$workflow"
+if ($LASTEXITCODE -ne 0) { throw 'State update failed; resume was not requested.' }
+$resume = Invoke-RestMethod -Method Post -Uri "$baseUri/api/v1/$ticketSegment/resume" -ErrorAction Stop
+if ($resume.changed -eq $true) {
+    Write-Output 'Pause cleared; fresh verification and delivery still need inspection.'
+} else {
+    Write-Warning 'No pause was cleared (changed=false). Inspect the current state; delivery is not confirmed.'
+}
+```
+
+HTTP errors stop the block. A resume `404` means no resumable entry was found;
+a detail-API `404` also does not prove delivery. Inspect the board and service
+log instead of treating either response as completion.
+
+After fresh Verify succeeds, inspect its criterion/proof-command results.
+The host may consolidate worker commits before delivery, so the worker's tested
+commit need not be an ancestor of the target branch. Use the actual launch/target
+branch below, then select the host delivery commit from its log:
+
+```powershell
+$targetBranch = Read-Host 'Target branch used by this factory run'
+git -C "$projectPath" log -5 --oneline "$targetBranch"
+if ($LASTEXITCODE -ne 0) { throw 'Target branch log inspection failed.' }
+$deliveryCommit = Read-Host 'Host delivery commit from the target branch log'
+git -C "$projectPath" show --stat --oneline "$deliveryCommit"
+if ($LASTEXITCODE -ne 0) { throw 'Host delivery commit inspection failed.' }
+git -C "$projectPath" status --short
+if ($LASTEXITCODE -ne 0) { throw 'Target Git status inspection failed.' }
+git -C "$projectPath" worktree list --porcelain
+if ($LASTEXITCODE -ne 0) { throw 'Worktree inspection failed.' }
+```
+
+Match the intended product changes and verification evidence to that host
+delivery commit, and rerun the ticket's recorded proof commands on the delivered
+tree. Review any dirty files, and compare the retained worktree path from `Blocker`
+with the worktree list and disk. Preserve unexpected remaining work for
+inspection. Board `Done`, a cleared pause, and local commit ancestry each leave
+other delivery checks open; remote publication needs its own configured proof.
+
 ### Worker timeouts and recovery
 
 The local objective is bounded failure detection with retained work and a usable
