@@ -26,7 +26,7 @@ src/symphony/
 ├── service.py           # managed `symphony service` lifecycle
 ├── skills.py            # SKILL.md discovery + prompt injection
 ├── stats.py             # append-only run stats store + aggregation
-├── webapi.py            # web board REST routes + static SPA serving
+├── webapi/             # web board REST routes + static SPA serving — see below
 ├── workspace.py         # git-worktree lifecycle + commit_workspace_on_done
 │
 ├── backends/            # agent CLI adapters (codex, claude, gemini, opencode, pi, prime_agent)
@@ -97,6 +97,34 @@ reference:
 
 The package still re-exports both names, but those bindings are no
 longer load-bearing for tests.
+
+## Web API package (`symphony.webapi`)
+
+Replaces the former single-file `webapi.py`. Route modules register their
+handlers through `_register_<resource>_routes(app, ctx, ...)`; the package
+`__init__.register_web_routes` calls them in the original order (aiohttp
+matches routes in registration order).
+
+| file | role |
+| --- | --- |
+| `security.py` | constants, app keys, loopback / origin / token gates, `_api_guard`, `_read_json`, `_wrap` |
+| `context.py` | `_Ctx`: per-request config, file tracker, stats, artifacts |
+| `payloads.py` | issue card, schedule, column, and workflow JSON payloads |
+| `validation.py` | request-body validators (`_check_*`, `_parse_*`) |
+| `issue_routes.py` | board + issue routes |
+| `workflow_routes.py` | columns, prompts, branch policy, continuous improvement |
+| `git_routes.py` | host-repo history, task branches, manual merge |
+| `project_routes.py` | project registry routes + `_create_or_adopt_registered_project` |
+| `chat_routes.py` | chat sessions + WebSocket |
+| `preview_routes.py` | product preview |
+| `meta_routes.py` | stats, SPA index, static assets |
+| `__init__.py` | re-exports + `register_web_routes` |
+
+Tests patch the consumer module, e.g.
+`symphony.webapi.git_routes.auto_merge_on_done_best_effort`,
+`symphony.webapi.issue_routes.MAX_DEPENDENCY_NODES`, and
+`ProjectRegistry` / `_create_or_adopt_registered_project` on both
+`chat_routes` and `project_routes`.
 
 ## Orchestrator package (`symphony.orchestrator`)
 

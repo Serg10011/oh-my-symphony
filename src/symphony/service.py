@@ -267,12 +267,6 @@ def load_record(workflow_path: str | Path) -> ServiceRecord | None:
         return None
 
 
-def is_symphony_api_reachable(host: str, port: int) -> bool:
-    """Return whether the recorded service port responds like Symphony."""
-    payload = _probe_json(host, port, "/api/v1/state")
-    return isinstance(payload, dict) and "health" in payload and "counts" in payload
-
-
 def _payload_serves_workflow(payload: object, workflow_path: str | Path) -> bool:
     if not isinstance(payload, dict):
         return False

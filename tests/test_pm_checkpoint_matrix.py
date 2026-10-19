@@ -31,7 +31,7 @@ from typing import Any, Callable, Iterator, cast
 import pytest
 import yaml
 
-import symphony.orchestrator.run_registry as registry_module
+import symphony.orchestrator.run_registry_pm as registry_module
 import symphony.pm.application as application_module
 import symphony.pm.documents as documents_module
 import symphony.trackers.file as tracker_module

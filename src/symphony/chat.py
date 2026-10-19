@@ -76,7 +76,8 @@ from .intent import (
 )
 from .logging import get_logger
 from .projects import ProjectTargetExpectation, project_target_expectation
-from .workflow import SUPPORTED_AGENT_KINDS, ServiceConfig
+from .workflow import SUPPORTED_AGENT_KINDS as SUPPORTED_AGENT_KINDS
+from .workflow import ServiceConfig, selectable_agent_kinds
 from .workflow.presets import preset_names
 
 log = get_logger()
@@ -761,8 +762,11 @@ class ChatManager:
         mode = _check_mode(mode)
         cfg = self._config_provider()
         kind = (agent_kind or cfg.agent.kind).strip()
-        if kind not in SUPPORTED_AGENT_KINDS:
-            raise SymphonyError(f"unsupported agent kind {kind!r}")
+        if kind not in selectable_agent_kinds(cfg.agent.profiles):
+            raise SymphonyError(
+                f"unsupported agent kind {kind!r}; "
+                f"supported: {sorted(selectable_agent_kinds(cfg.agent.profiles))}"
+            )
         session_id = (
             datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
         )
@@ -822,8 +826,11 @@ class ChatManager:
             raise ChatNoSessionError(f"unknown chat session {session_id!r}")
         cfg = self._config_provider()
         kind = cfg.agent.kind
-        if kind not in SUPPORTED_AGENT_KINDS:
-            raise SymphonyError(f"unsupported agent kind {kind!r}")
+        if kind not in selectable_agent_kinds(cfg.agent.profiles):
+            raise SymphonyError(
+                f"unsupported agent kind {kind!r}; "
+                f"supported: {sorted(selectable_agent_kinds(cfg.agent.profiles))}"
+            )
         session = ChatSession(
             session_id=session_id,
             mode="qa",
@@ -1105,7 +1112,7 @@ class ChatManager:
             "active_id": self._active_id,
             "max_sessions": MAX_SESSIONS,
             "default_agent_kind": cfg.agent.kind,
-            "supported_agent_kinds": sorted(SUPPORTED_AGENT_KINDS),
+            "supported_agent_kinds": sorted(selectable_agent_kinds(cfg.agent.profiles)),
             "sessions": live,
             "resumable": resumable,
         }

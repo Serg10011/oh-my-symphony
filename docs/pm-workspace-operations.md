@@ -81,7 +81,7 @@ Successful admission is cached only against the resolved executable's device/ino
 
 ## Accepted findings and current handling
 
-These IDs preserve the original accepted Low/Medium findings in `.sdlc/work/261004-pm-workspace/evidence.md:176–191` (R32, R33, and R35 round two). Current handling reflects the local hardening changes and their focused regressions; it does not establish final installed lifecycle, performance, or quality approval. N1 process-group cleanup changes are already recorded in the changelog.
+These IDs preserve the original accepted Low/Medium findings (R32, R33, and R35 round two) from the PM Workspace review; that local evidence file was never committed. Current handling reflects the local hardening changes and their focused regressions; it does not establish final installed lifecycle, performance, or quality approval. N1 process-group cleanup changes are already recorded in the changelog.
 
 | Finding | Current behavior or handling |
 |---|---|
@@ -95,7 +95,7 @@ These IDs preserve the original accepted Low/Medium findings in `.sdlc/work/2610
 | N5 | Unchanged: `guarded()` maps every `ValueError` to HTTP 400 `invalid_body`, which can obscure an internal cause. Response-status changes require separately scoped contract approval. |
 | N6 | Manual evidence checks and report downloads run off the event loop with the existing PM operation timeout. Timed-out Git processes are killed and reaped; immutable hashes, project checks, and existing refusal errors remain enforced. |
 | N7 | PM project switching uses the localized draft-discard guard. Cancel retains the current selection and draft; confirmed discard follows the existing switch flow. |
-| N8 | `PmVerificationService.build_from_receipts` is used only by tests. |
+| N8 | Removed the unused `PmVerificationService.build_from_receipts` helper. Production receipt and acceptance flows remain covered. |
 | R2-M1 (Medium) | On a host without `ps`, if a process leader exits on SIGTERM while a group member ignores it, final group SIGKILL may not run. Cleanup stays uncertain and `stop()` raises. This is an existing limitation relative to main. |
 | R2-L1 (Low) | Proxy guidance now covers PM `forbidden_origin` above. The runtime PM error still omits `SYMPHONY_TRUSTED_ORIGINS`. |
 | R2-L2 (Low) | Unreleased notes now disclose cross-origin PM refusal and rejected pinned planning settings. This is documentation of existing behavior. |

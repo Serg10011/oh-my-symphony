@@ -23,8 +23,8 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.error import YAMLError
 
 from ..errors import ConfigValidationError, SymphonyError
-from .builder import validated_ci_modes
-from .constants import DEFAULT_CI_MIN_INTERVAL_MS, SUPPORTED_AGENT_KINDS
+from .builder import _validated_agent_profiles, validated_ci_modes
+from .constants import DEFAULT_CI_MIN_INTERVAL_MS, selectable_agent_kinds
 from .presets import LanePreset, get_lane_preset
 
 _STATE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _/-]{0,39}$")
@@ -472,11 +472,6 @@ def set_continuous_improvement_settings(
                 "continuous_improvement.agent_kind must be a string"
             )
         normalized_agent_kind = agent_kind.strip().lower()
-        if normalized_agent_kind and normalized_agent_kind not in SUPPORTED_AGENT_KINDS:
-            raise WorkflowMutationError(
-                f"unknown continuous_improvement.agent_kind {normalized_agent_kind!r}; "
-                f"supported: {sorted(SUPPORTED_AGENT_KINDS)}"
-            )
 
     normalized_modes: list[str] | None = None
     if modes is not None:
@@ -486,6 +481,20 @@ def set_continuous_improvement_settings(
             raise WorkflowMutationError(exc.message) from exc
 
     data, body = _load_frontmatter(workflow_path)
+    if normalized_agent_kind:
+        agent = data.get("agent") or {}
+        if not isinstance(agent, dict):
+            raise WorkflowMutationError("agent must be a map")
+        try:
+            profiles = _validated_agent_profiles(agent.get("profiles"))
+        except ConfigValidationError as exc:
+            raise WorkflowMutationError(exc.message) from exc
+        kinds = selectable_agent_kinds(profiles)
+        if normalized_agent_kind not in kinds:
+            raise WorkflowMutationError(
+                f"unknown continuous_improvement.agent_kind {normalized_agent_kind!r}; "
+                f"supported: {sorted(kinds)}"
+            )
     ci = _ensure_map(data, "continuous_improvement")
     if enabled is not None:
         ci["enabled"] = enabled

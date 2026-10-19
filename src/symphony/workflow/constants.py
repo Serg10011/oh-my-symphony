@@ -10,6 +10,7 @@ pulling the whole config builder.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 
 SUPPORTED_TRACKER_KINDS = {"linear", "file", "jira"}
 LINEAR_DEFAULT_ENDPOINT = "https://api.linear.app/graphql"
@@ -95,6 +96,13 @@ DEFAULT_CI_MAX_IMPROVEMENT_TICKETS_PER_RUN = 3
 
 SUPPORTED_AGENT_KINDS = {"agy", "codex", "claude", "gemini", "kiro", "opencode", "pi", "prime-agent"}
 DEFAULT_AGENT_KIND = "codex"
+# `agent.profiles` — plain-CLI backends declared as data. Only `text` (stdout
+# is the final assistant message) is implemented; stream protocols keep their
+# own backend modules.
+SUPPORTED_PROFILE_FORMATS = ("text",)
+# Where a profile's continuation flag goes: appended to the command, or
+# inserted before a trailing `"$(cat)"` positional prompt argument.
+SUPPORTED_PROFILE_CONTINUATION_POSITIONS = ("append", "before_prompt_arg")
 DEFAULT_CLAUDE_COMMAND = (
     "claude -p --output-format stream-json --include-partial-messages --verbose"
 )
@@ -138,3 +146,8 @@ SYMPHONY_BRANCH_PREFIX = "symphony/"
 _AFTER_DONE_FAILURE_POLICIES = ("warn", "block")
 
 _VAR_PATTERN = re.compile(r"^\$([A-Za-z_][A-Za-z0-9_]*)$")
+
+
+def selectable_agent_kinds(profiles: Iterable[str] = ()) -> set[str]:
+    """Return built-in agent kinds plus configured profile names."""
+    return {*SUPPORTED_AGENT_KINDS, *profiles}

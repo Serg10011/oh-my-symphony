@@ -333,15 +333,12 @@ class ProjectRegistry:
 # Files required to operate a standalone Symphony project.  Directory bundles
 # are merged recursively so adopting a repository never replaces local files.
 _BUNDLE_FILES = {
-    "tui-open.sh": "tui-open.sh",
-    "tui-open.bat": "tui-open.bat",
     "WORKFLOW.file.example.md": "WORKFLOW.md",
     "scripts/symphony-setup-worktree.sh": "scripts/symphony-setup-worktree.sh",
-    # Project-facing entry points. The source checkout's own AGENTS.md /
-    # GEMINI.md describe *Symphony's* repository and must not be copied into
-    # a user project, where they would tell Codex "this repo is Symphony".
-    "AGENTS.project.md": "AGENTS.md",
-    "GEMINI.project.md": "GEMINI.md",
+    # Project-facing entry point. The source checkout's own AGENTS.md
+    # describes *Symphony's* repository and must not be copied into a user
+    # project, where it would tell agents "this repo is Symphony".
+    "examples/project/AGENTS.md": "AGENTS.md",
 }
 _BUNDLE_DIRS = {
     "docs/symphony-prompts": "docs/symphony-prompts",
@@ -808,11 +805,7 @@ def _bootstrap_missing(
             destination.write_text(content, encoding="utf-8")
         if (
             os.name != "nt"
-            and target_name
-            in {
-                "tui-open.sh",
-                "scripts/symphony-setup-worktree.sh",
-            }
+            and target_name == "scripts/symphony-setup-worktree.sh"
             and destination in created_files
         ):
             destination.chmod(destination.stat().st_mode | 0o111)

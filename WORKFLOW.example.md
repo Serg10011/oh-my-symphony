@@ -174,13 +174,28 @@ hooks:
     exec "${SYMPHONY_PYTHON:?SYMPHONY_PYTHON not set}" -m symphony._worktree_cleanup "$workspace" --restore-board-tracking
 
 agent:
-  kind: codex          # codex | claude | gemini | agy | kiro | opencode | pi | prime-agent
+  kind: codex          # codex | claude | gemini | agy | kiro | opencode | pi | prime-agent | <profile name>
   # Optional per-state backend routing: cheap/fast agents on light lanes,
   # the default `kind` everywhere else. Precedence per dispatch:
   # per-ticket `agent_kind` frontmatter pin > stage_kinds > kind.
   # stage_kinds:
   #   Todo: gemini
   #   Document: gemini
+  # Optional plain-text agent CLIs declared as data (no Python needed). The
+  # prompt goes to stdin; stdout is the final answer. Select one with
+  # `kind: <name>` or a stage_kinds value. Names cannot reuse a built-in kind.
+  # Ticket pins and fallback_kinds accept built-in kinds only.
+  # profiles:
+  #   my-cli:
+  #     command: 'my-cli run "$(cat)"'
+  #     format: text                       # only `text` is supported
+  #     unattended_flags: [--yes]          # added unless already present
+  #     continuation_flag: --continue      # added on continuation turns
+  #     continuation_position: before_prompt_arg   # or append (default)
+  #     resume_across_turns: true          # default false
+  #     turn_timeout_ms: 3600000
+  #     read_timeout_ms: 20000
+  #     stall_timeout_ms: 300000
   max_concurrent_agents: 1
   # This is the per-attempt execution cap. In prompt templates,
   # {{ turn_number }}/{{ max_turns }} reports the ticket lifetime position/cap.

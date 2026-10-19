@@ -520,7 +520,8 @@ def test_legacy_temp_files_are_ignored_by_every_board_read(tmp_path):
     ] == [("LIVE-1", "Todo")]
     assert fbt.fetch_issue_full_by_id("GHOST-1") is None
     assert fbt.find_path("GHOST-1") is None
-    assert fbt.next_identifier("LIVE") == "LIVE-2"
+    identifier, _ = fbt.create_with_next_identifier("LIVE", title="next live ticket")
+    assert identifier == "LIVE-2"
 
 
 def test_stale_tracker_temp_is_swept_on_startup_with_warning(tmp_path, monkeypatch):

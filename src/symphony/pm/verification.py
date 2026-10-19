@@ -16,7 +16,7 @@ from typing import Any, Callable, cast, Literal
 
 from ..artifacts import ArtifactStore
 from ..orchestrator.run_registry import RunRegistry
-from .models import ManualEvidencePreview, PmError, PmFinding, VerificationReceipt, VerificationReport, WbsTask
+from .models import ManualEvidencePreview, PmError, PmFinding, VerificationReceipt
 from .models import AcceptancePreview, AcceptanceRecord, canonical_receipt_set_hash
 from .locks import change_authority_lock
 
@@ -427,57 +427,6 @@ class PmVerificationService:
                 raise PmError("invalid_artifact_ref", "artifact evidence is missing or has different run provenance", status=409)
             if _sha256_path(path) != record.sha256:
                 raise PmError("artifact_tampered", "artifact evidence bytes no longer match the host record", status=409)
-
-    def build_from_receipts(
-        self, tasks: tuple[WbsTask, ...], task_revisions: dict[str, str],
-        receipt_ids: tuple[str, ...], *, project_id: str, tested_commit: str,
-    ) -> VerificationReport:
-        executable = {task.task_id for task in tasks if task.executable}
-        covered: set[str] = set()
-        passing_by_task: dict[str, set[str]] = {}
-        ticket_by_task: dict[str, str] = {}
-        artifacts: set[str] = set()
-        findings: list[PmFinding] = []
-        for receipt_id in receipt_ids:
-            row = self.registry.get_pm_verification_receipt(receipt_id)
-            if row is None:
-                findings.append(PmFinding("missing_receipt", f"verification receipt {receipt_id} is missing", severity="blocking"))
-                continue
-            mapping = self.registry.get_pm_managed_ticket(project_id, str(row["ticket_identifier"]))
-            policy = _procedure_policy(
-                self.registry.get_pm_required_procedures(
-                    project_id, str(row["ticket_identifier"])
-                ).get(str(row["procedure_id"])),
-                str(row["procedure_id"]),
-            )
-            if (
-                mapping is None or mapping.task_id not in executable
-                or mapping.task_revision != str(row["task_revision"])
-                or task_revisions.get(mapping.task_id) != mapping.task_revision
-                or str(row["tested_commit"]) != tested_commit
-                or not _receipt_qualifies(row, policy)
-            ):
-                findings.append(PmFinding("invalid_receipt", f"verification receipt {receipt_id} does not match approved scope", severity="blocking"))
-                continue
-            passing_by_task.setdefault(mapping.task_id, set()).add(str(row["procedure_id"]))
-            ticket_by_task[mapping.task_id] = mapping.ticket_identifier
-            for artifact in json.loads(str(row["artifact_refs_json"])):
-                artifacts.add(str(artifact.get("ref")) if isinstance(artifact, dict) else str(artifact))
-        for task_id, procedures in passing_by_task.items():
-            required = set(self.registry.get_pm_required_procedures(
-                project_id, ticket_by_task[task_id]
-            ))
-            if required and required.issubset(procedures):
-                covered.add(task_id)
-            else:
-                findings.append(PmFinding(
-                    "incomplete_procedure_set",
-                    f"task {task_id} is missing required verification procedures",
-                    severity="blocking", item_id=task_id,
-                ))
-        missing = tuple(sorted(executable - covered))
-        findings.extend(PmFinding("missing_evidence", f"task {task_id} has no passing host receipt", severity="blocking", item_id=task_id) for task_id in missing)
-        return VerificationReport(not findings, tested_commit, tuple(sorted(covered)), missing, tuple(sorted(artifacts)), tuple(findings))
 
 
 def _git(path: Path, *args: str) -> str:

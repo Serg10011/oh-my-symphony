@@ -56,6 +56,7 @@ from symphony.tui import (
 )
 from symphony.workflow import (
     AgentConfig,
+    AgentProfileConfig,
     ClaudeConfig,
     CodexConfig,
     GeminiConfig,
@@ -1558,6 +1559,39 @@ async def _boot_file_board_with_card(app: KanbanApp, pilot: Any) -> IssueCard:
     cards[0].focus()
     await pilot.pause()
     return cards[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("editing", [False, True])
+async def test_ticket_modals_offer_and_save_workflow_profile(
+    tmp_path: Path, editing: bool,
+) -> None:
+    from symphony.tui import EditIssueScreen, NewIssueScreen
+    from symphony.trackers.file import parse_ticket_file
+
+    cfg = _file_board_config(tmp_path)
+    cfg = replace(cfg, agent=replace(cfg.agent, profiles={
+        "local": AgentProfileConfig(name="local", command="cat"),
+    }))
+    if editing:
+        _write_ticket(tmp_path / "kanban", "T-1.md", "Todo")
+    app = KanbanApp(_StubOrchestrator(), _StaticWorkflowState(cfg))  # type: ignore[arg-type]
+    async with app.run_test(size=(140, 40)) as pilot:
+        if editing:
+            await _boot_file_board_with_card(app, pilot)
+        else:
+            await pilot.pause()
+        await pilot.press("e" if editing else "n")
+        await pilot.pause()
+        assert isinstance(app.screen, EditIssueScreen if editing else NewIssueScreen)
+        prefix = "ei" if editing else "ni"
+        app.screen.query_one(f"#{prefix}-title", TextualInput).value = "profile ticket"
+        app.screen.query_one(f"#{prefix}-agent", Select).value = "local"
+        await pilot.pause()
+        await pilot.click(f"#{prefix}-save" if editing else "#ni-create")
+        await _settle(pilot)
+    ticket = tmp_path / "kanban" / ("T-1.md" if editing else "TASK-1.md")
+    assert parse_ticket_file(ticket)[0]["agent"] == {"kind": "local"}
 
 
 @pytest.mark.asyncio

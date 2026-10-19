@@ -775,7 +775,7 @@ class KanbanApp(App):
         )
 
     async def _open_new_issue(self, cfg: ServiceConfig) -> None:
-        from ..workflow import SUPPORTED_AGENT_KINDS
+        from ..workflow import selectable_agent_kinds
 
         def _on_result(form: dict[str, Any] | None) -> None:
             if form:
@@ -789,7 +789,7 @@ class KanbanApp(App):
         self.push_screen(
             NewIssueScreen(
                 states=list(cfg.tracker.active_states),
-                agent_kinds=sorted(SUPPORTED_AGENT_KINDS),
+                agent_kinds=sorted(selectable_agent_kinds(cfg.agent.profiles)),
             ),
             _on_result,
         )
@@ -866,13 +866,13 @@ class KanbanApp(App):
                     group="edit_issue",
                 )
 
-        from ..workflow import SUPPORTED_AGENT_KINDS
+        from ..workflow import selectable_agent_kinds
 
         self.push_screen(
             EditIssueScreen(
                 issue,
                 states=list(cfg.tracker.active_states) + list(cfg.tracker.terminal_states),
-                agent_kinds=sorted(SUPPORTED_AGENT_KINDS),
+                agent_kinds=sorted(selectable_agent_kinds(cfg.agent.profiles)),
             ),
             _on_result,
         )

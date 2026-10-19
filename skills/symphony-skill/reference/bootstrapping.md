@@ -28,7 +28,6 @@ From inside the `oh-my-symphony` checkout:
 
 ```bash
 TARGET=/path/to/target-project
-cp tui-open.sh tui-open.bat "$TARGET/"
 # Pick the example that matches the tracker you will use:
 #   advanced file board -> examples/advanced/WORKFLOW.file.example.md
 #   Linear                                                 -> WORKFLOW.example.md
@@ -38,10 +37,9 @@ cp -R docs/symphony-prompts "$TARGET/docs/"
 cp scripts/symphony-setup-worktree.sh "$TARGET/scripts/"  # required by default after_create hook
 chmod +x "$TARGET/scripts/symphony-setup-worktree.sh"
 cp -R skills "$TARGET/"
-cp AGENTS.md GEMINI.md "$TARGET/"
+cp examples/project/AGENTS.md "$TARGET/AGENTS.md"
 mkdir -p "$TARGET/.claude/skills"
 ln -s ../../skills/symphony-skill "$TARGET/.claude/skills/symphony-skill"
-chmod +x "$TARGET/tui-open.sh"
 ```
 
 > Note: The browser board is the built-in admin web app served on the
@@ -55,13 +53,12 @@ chmod +x "$TARGET/tui-open.sh"
 > (`symphony board new/update`) additionally need a permission mode that
 > allows Bash — `symphony doctor` reports this as `board.cli`.
 
-Copy `tui-open.sh` and `tui-open.bat` even for headless-first setups. The
-launcher carries safety behavior that plain `symphony tui` does not: port
-collision checks, doctor preflight, venv-first binary lookup, and real terminal
-window spawning.
+`symphony tui` checks the agent CLI and `after_create` hook before it starts
+and names the process holding the server port. Run `symphony doctor` first for
+the full check set.
 
 If the target project has no virtualenv, either install Symphony globally or
-prepare a local one so the launcher can find it:
+prepare a local one:
 
 ```bash
 python3.12 -m venv .venv
@@ -77,9 +74,7 @@ python3.12 -m venv .venv
 | `skills/symphony-skill/` | Canonical operator router skill |
 | `skills/symphony-skill/oneshot/`, `skills/symphony-skill/monorepo/` | Router branch subfolders for templates, scripts, and references |
 | `.claude/skills/symphony-skill` | Claude Code discovery symlink to the router |
-| `AGENTS.md` | Codex entrypoint pointing to repo skills |
-| `GEMINI.md` | Gemini entrypoint pointing to repo skills |
-| `tui-open.sh`, `tui-open.bat` | One-shot board launchers |
+| `AGENTS.md` | Agent entrypoint pointing to repo skills (Gemini CLI: set `context.fileName` to `AGENTS.md`) |
 | `scripts/symphony-setup-worktree.sh` | Worktree-setup body invoked by the default `after_create` hook in both WORKFLOW examples. Without it, every fresh ticket dispatch fails at the hook stage with `No such file or directory`. |
 
 `skills/symphony-skill/SKILL.md` is the only operator activation route. Edit
@@ -125,9 +120,8 @@ is fine when simplicity matters more than disk hygiene.
 Foreground board view:
 
 ```bash
-./tui-open.sh
-./tui-open.sh path/to/WORKFLOW.md
-tui-open.bat
+symphony doctor ./WORKFLOW.md
+symphony tui ./WORKFLOW.md
 ```
 
 For managed headless operation and the admin web app, use

@@ -166,7 +166,8 @@ def test_shipped_workflow_example_passes_dispatch_preflight() -> None:
     validate_for_dispatch(cfg)
 
 
-@pytest.mark.parametrize("relative_path", ["README.md", "README.ko.md"])
+# The 60-second demo moved from both READMEs into the single reference page.
+@pytest.mark.parametrize("relative_path", ["docs/reference.md"])
 def test_readme_quickstart_workflow_passes_dispatch_preflight(
     tmp_path: Path, relative_path: str
 ) -> None:

@@ -1,45 +1,59 @@
-"""Shared one-shot plain-stdout CLI backend helpers."""
+"""Plain-text CLI backend driven by an `AgentProfileConfig`.
+
+Every plain-stdout CLI (built-in `agy` / `kiro`, and any `agent.profiles`
+entry from WORKFLOW.md) runs through this one class: the prompt goes to
+stdin, stdout is the final assistant message, and the profile data decides
+the extra flags. Adding such a CLI needs a profile, not a module.
+"""
 
 from __future__ import annotations
 
+from ..errors import ConfigValidationError
+from ..workflow import AgentProfileConfig
 from . import EVENT_TURN_COMPLETED, BackendInit, TurnResult
 from .per_turn import PerTurnCliBackend, _has_shell_flag
+
+_PROMPT_ARG_MARKERS = ('"$(cat)"', "$(cat)")
 
 
 class PlainCliBackend(PerTurnCliBackend):
     """One subprocess per turn; treats stdout as the final assistant message."""
 
-    def __init__(
-        self,
-        init: BackendInit,
-        *,
-        agent_name: str,
-        command: str,
-        turn_timeout_ms: int,
-        resume_across_turns: bool,
-        unattended_flags: tuple[str, ...] = (),
-        continuation_flag: str | None = None,
-    ) -> None:
-        super().__init__(init, agent_name=agent_name, turn_timeout_ms=turn_timeout_ms)
-        self._command = command
-        self._resume_across_turns = resume_across_turns
-        self._unattended_flags = unattended_flags
-        self._continuation_flag = continuation_flag
+    # Profile to load; None means "the profile named by `agent.kind`".
+    PROFILE: str | None = None
+
+    def __init__(self, init: BackendInit) -> None:
+        name = self.PROFILE or init.cfg.agent.kind
+        profile = init.cfg.agent_profile(name)
+        if profile is None:
+            raise ConfigValidationError(
+                f"no plain-CLI agent profile named {name!r}", value=name
+            )
+        super().__init__(
+            init, agent_name=profile.name, turn_timeout_ms=profile.turn_timeout_ms
+        )
+        self._profile: AgentProfileConfig = profile
 
     def _command_for_turn(self, *, prompt: str, is_continuation: bool) -> str:
         del prompt  # travels via stdin
-        cmd = self._command
-        flags = list(self._unattended_flags)
+        profile = self._profile
+        cmd = profile.command
+        missing = [
+            flag for flag in profile.unattended_flags if not _has_shell_flag(cmd, flag)
+        ]
+        flag = profile.continuation_flag
         if (
-            is_continuation
-            and self._resume_across_turns
-            and self._continuation_flag is not None
+            flag is not None
+            and is_continuation
+            and profile.resume_across_turns
+            and not _has_shell_flag(cmd, flag, *profile.continuation_flag_aliases)
         ):
-            flags.append(self._continuation_flag)
-        for flag in flags:
-            if not _has_shell_flag(cmd, flag):
-                cmd = f"{cmd} {flag}"
-        return cmd
+            missing.append(flag)
+        if not missing:
+            return cmd
+        if profile.continuation_position == "before_prompt_arg":
+            return _insert_before_prompt_arg(cmd, " ".join(missing))
+        return f"{cmd} {' '.join(missing)}"
 
     async def _complete_turn(self, stdout_text: str, rc: int) -> TurnResult:
         await self._emit(
@@ -58,3 +72,13 @@ class PlainCliBackend(PerTurnCliBackend):
             turn_id=self._session_id,
             last_message=stdout_text[:400],
         )
+
+
+def _insert_before_prompt_arg(command: str, flags: str) -> str:
+    """Put *flags* before a trailing `"$(cat)"` prompt argument, else append."""
+    stripped = command.rstrip()
+    for marker in _PROMPT_ARG_MARKERS:
+        if stripped.endswith(marker):
+            prefix = stripped[: -len(marker)].rstrip()
+            return f"{prefix} {flags} {marker}"
+    return f"{stripped} {flags}"

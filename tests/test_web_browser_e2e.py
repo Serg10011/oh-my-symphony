@@ -811,10 +811,11 @@ async def git_web_base_url(
 
     # This browser test proves the Chat UI/API handshake; the domain service's
     # real Git/registry behavior is covered separately without a global fixture.
-    monkeypatch.setattr(webapi_module, "ProjectRegistry", lambda: registry)
-    monkeypatch.setattr(
-        webapi_module, "_create_or_adopt_registered_project", create_project
-    )
+    for module in (webapi_module.chat_routes, webapi_module.project_routes):
+        monkeypatch.setattr(module, "ProjectRegistry", lambda: registry)
+        monkeypatch.setattr(
+            module, "_create_or_adopt_registered_project", create_project
+        )
     state = WorkflowState(git_board_dir / "WORKFLOW.md")
     cfg, err = state.reload()
     assert err is None and cfg is not None

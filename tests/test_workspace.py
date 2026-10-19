@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -616,14 +617,14 @@ def test_setup_worktree_script_preserves_unmerged_branch_tip(tmp_path):
 
 def _preserve_worktree_manager(tmp_path: Path, host: Path, monkeypatch) -> WorkspaceManager:
     """Build a preserve-policy manager using the canonical worktree hook."""
-    monkeypatch.setenv(
-        "PATH", _setup_script_test_path(tmp_path, include_flock=False)
-    )
+    test_path = _setup_script_test_path(tmp_path, include_flock=False)
+    monkeypatch.setenv("PATH", test_path)
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parents[1] / "src"))
     script = Path(__file__).parents[1] / "scripts" / "symphony-setup-worktree.sh"
     return WorkspaceManager(
         tmp_path / "managed-workspaces",
-        _hooks(after_create=f'bash "{script}"'),
+        # bash -lc can reset inherited PATH; keep venv/pip stubbed in the hook.
+        _hooks(after_create=f"PATH={shlex.quote(test_path)} bash {shlex.quote(str(script))}"),
         workflow_dir=host,
         reuse_policy="preserve",
         hook_env={

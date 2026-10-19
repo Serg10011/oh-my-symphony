@@ -426,6 +426,47 @@ async def test_stop_keeps_initial_unknown_when_final_group_is_not_absent(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("initial_group", [None, True])
+@pytest.mark.parametrize("final_group", [False, None, True])
+async def test_stop_rechecks_absence_when_group_exits_during_ownership_scan(
+    monkeypatch: pytest.MonkeyPatch,
+    initial_group: bool | None,
+    final_group: bool | None,
+) -> None:
+    class ReapedProcess:
+        pid = 987654
+        returncode = -9
+
+    observations = iter((initial_group, final_group))
+    signals: list[int] = []
+    monkeypatch.setattr(
+        planning_module, "process_group_exists", lambda _pid: next(observations)
+    )
+    monkeypatch.setattr(
+        planning_module, "process_group_identities", lambda _pid: frozenset()
+    )
+    monkeypatch.setattr(
+        planning_module.os, "killpg", lambda _pid, sig: signals.append(sig)
+    )
+    client = PmPlanningClient()
+    process = ReapedProcess()
+    client.process = process  # type: ignore[assignment]
+    client._process_identity = "spawn-owner"
+    client._owned_process_identities = frozenset({"spawn-owner"})
+
+    if final_group is False:
+        await client.stop()
+        assert client.process is None
+        assert client.cleanup_uncertain is False
+    else:
+        with pytest.raises(PmError, match="could not be confirmed"):
+            await client.stop()
+        assert client.process is process
+        assert client.cleanup_uncertain is True
+    assert signals == []
+
+
+@pytest.mark.asyncio
 async def test_stop_never_reconciles_explicit_ownership_mismatch(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

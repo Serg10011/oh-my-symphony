@@ -24,7 +24,7 @@ from ..issue import Issue, normalize_state, sort_for_dispatch
 from ..logging import get_logger
 from ..notifications import NotificationEvent, dispatch_notification
 from ..ticket_markdown import parse_body_dependency_ids
-from ..workflow import ServiceConfig, SUPPORTED_AGENT_KINDS
+from ..workflow import ServiceConfig, selectable_agent_kinds
 from .constants import (
     _AUTO_TRIAGE_ACCEPTANCE_RE,
     _AUTO_TRIAGE_TRIAGE_RE,
@@ -209,9 +209,10 @@ def _config_for_issue_agent(cfg: ServiceConfig, issue: Issue) -> ServiceConfig:
     the ticket's current state > workflow-level `agent.kind`.
     """
     pin = _requested_agent_kind(issue)
-    if pin is not None and pin not in SUPPORTED_AGENT_KINDS:
+    kinds = selectable_agent_kinds(cfg.agent.profiles)
+    if pin is not None and pin not in kinds:
         raise ConfigValidationError(
-            f"ticket agent.kind must be one of {sorted(SUPPORTED_AGENT_KINDS)}",
+            f"ticket agent.kind must be one of {sorted(kinds)}",
             value=pin,
             issue=issue.identifier,
         )

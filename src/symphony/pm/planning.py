@@ -335,7 +335,7 @@ class PmPlanningClient:
     async def _stop_owned_process(self) -> None:
         process = self.process
         cleanup_error: PmError | None = None
-        reconcile_initial_unknown = False
+        reconcile_unknown = False
         if process is not None:
             if os.name == "posix":
                 try:
@@ -348,8 +348,8 @@ class PmPlanningClient:
                     self._process_identity,
                     self._owned_process_identities,
                 )
-                reconcile_initial_unknown = (
-                    group_state is None and ownership is True
+                reconcile_unknown = (
+                    ownership is None or (group_state is None and ownership is True)
                 )
                 if group_state is None or (not group_gone and ownership is not True):
                     cleanup_error = _uncertain_group_cleanup()
@@ -412,12 +412,12 @@ class PmPlanningClient:
                     pass
                 except PermissionError:
                     cleanup_error = _uncertain_group_cleanup()
-                    reconcile_initial_unknown = False
+                    reconcile_unknown = False
                 if process.returncode is None:
                     try:
                         await asyncio.wait_for(process.wait(), 5)
                     except asyncio.TimeoutError:
-                        reconcile_initial_unknown = False
+                        reconcile_unknown = False
                         cleanup_error = PmError(
                             "planning_cleanup_failed",
                             "planning process could not be reaped",
@@ -425,7 +425,7 @@ class PmPlanningClient:
                         )
             if (
                 cleanup_error is not None
-                and reconcile_initial_unknown
+                and reconcile_unknown
                 and process.returncode is not None
             ):
                 try:
@@ -652,7 +652,8 @@ def _owned_group_signal_is_safe(
         current_identity = process_identity(pid)
         return None if current_identity is None else current_identity == recorded_identity
     current_identities = process_group_identities(pid)
-    if current_identities is None:
+    if not current_identities:
+        # The last member may have exited between the existence and identity scans.
         return None
     return bool(owned_identities.intersection(current_identities))
 

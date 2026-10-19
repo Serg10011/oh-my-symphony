@@ -1007,7 +1007,7 @@ async def test_git_merge_passes_local_only_policy(
         return AutoMergeResult(ok=True, status="merged", detail="local")
 
     monkeypatch.setattr(
-        "symphony.webapi.auto_merge_on_done_best_effort", local_only_merge
+        "symphony.webapi.git_routes.auto_merge_on_done_best_effort", local_only_merge
     )
 
     resp = await client.post("/api/v1/git/merge", json={"branch": "symphony/SEED-1"})
@@ -1455,7 +1455,7 @@ async def test_git_merge_maps_failure_statuses_to_409(
             ok=False, status="dirty_overlap", detail="host has overlapping dirty files"
         )
 
-    monkeypatch.setattr("symphony.webapi.auto_merge_on_done_best_effort", failing_merge)
+    monkeypatch.setattr("symphony.webapi.git_routes.auto_merge_on_done_best_effort", failing_merge)
     resp = await client.post("/api/v1/git/merge", json={"branch": "symphony/SEED-1"})
     assert resp.status == 409
     error = (await resp.json())["error"]
@@ -1474,7 +1474,7 @@ async def test_git_merge_rejects_concurrent_requests(
         await release.wait()
         return AutoMergeResult(ok=True, status="merged", detail="")
 
-    monkeypatch.setattr("symphony.webapi.auto_merge_on_done_best_effort", slow_merge)
+    monkeypatch.setattr("symphony.webapi.git_routes.auto_merge_on_done_best_effort", slow_merge)
 
     async def post() -> tuple[int, dict[str, Any]]:
         resp = await client.post(
@@ -1912,12 +1912,13 @@ class _FakeProjectRegistry:
 async def _project_client(
     board_dir: Path, monkeypatch: pytest.MonkeyPatch, registry: Any
 ) -> TestClient:
-    from symphony import webapi
+    from symphony.webapi import chat_routes, project_routes
 
     state = WorkflowState(board_dir / "WORKFLOW.md")
     cfg, err = state.reload()
     assert err is None and cfg is not None
-    monkeypatch.setattr(webapi, "ProjectRegistry", lambda: registry)
+    for module in (chat_routes, project_routes):
+        monkeypatch.setattr(module, "ProjectRegistry", lambda: registry)
     app = build_app(cast(Orchestrator, _StubOrchestrator(state)))
     client = TestClient(TestServer(app))
     await client.start_server()
@@ -2438,7 +2439,7 @@ async def test_issue_detail_resolves_actual_fix_dependencies_and_missing_cards(c
 
 @pytest.mark.parametrize("oversized", [False, True])
 async def test_issue_detail_survives_unavailable_schedule_board(client, monkeypatch, oversized):
-    import symphony.webapi as module
+    import symphony.webapi.issue_routes as module
 
     if oversized:
         monkeypatch.setattr(module, "MAX_DEPENDENCY_NODES", 0)

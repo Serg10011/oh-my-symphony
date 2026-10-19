@@ -4,7 +4,6 @@ The base file drives the HTTP layer through MockTransport. This file
 covers the pure helpers and the rarer client paths:
 
   * `_flatten_adf` text-tree walk (newlines after blocks, hardBreak, etc.).
-  * `_adf_paragraphs` inverse: plain text -> ADF doc with blank-line handling.
   * `_extract_blockers` filters by inward 'Blocks' link type.
   * `_normalize_issue` priority coercion + minimal vs full shape.
   * JQL builders escape state lists and ids.
@@ -29,7 +28,6 @@ from symphony.issue import Issue
 import symphony.trackers._retry as retry_module
 from symphony.trackers.jira import (
     JiraClient,
-    _adf_paragraphs,
     _extract_blockers,
     _flatten_adf,
     _jql_for_ids,
@@ -126,37 +124,6 @@ class TestFlattenAdf:
         # No text -> no decoration; the "if text" guard fires.
         node = {"type": "paragraph", "content": []}
         assert _flatten_adf(node) == ""
-
-
-# ---------------------------------------------------------------------------
-# _adf_paragraphs (inverse)
-# ---------------------------------------------------------------------------
-
-
-class TestAdfParagraphs:
-    def test_empty_string_produces_one_empty_paragraph(self) -> None:
-        doc = _adf_paragraphs("")
-        assert doc["type"] == "doc"
-        assert doc["version"] == 1
-        assert len(doc["content"]) == 1
-        assert doc["content"][0]["content"] == []
-
-    def test_single_line_makes_one_paragraph_with_text_node(self) -> None:
-        doc = _adf_paragraphs("hello")
-        assert len(doc["content"]) == 1
-        assert doc["content"][0]["content"] == [{"type": "text", "text": "hello"}]
-
-    def test_multiple_lines_become_multiple_paragraphs(self) -> None:
-        doc = _adf_paragraphs("first\nsecond\nthird")
-        assert len(doc["content"]) == 3
-        texts = [p["content"][0]["text"] for p in doc["content"]]
-        assert texts == ["first", "second", "third"]
-
-    def test_blank_line_becomes_empty_paragraph(self) -> None:
-        doc = _adf_paragraphs("a\n\nb")
-        assert len(doc["content"]) == 3
-        # Blank middle line has empty content array.
-        assert doc["content"][1]["content"] == []
 
 
 # ---------------------------------------------------------------------------

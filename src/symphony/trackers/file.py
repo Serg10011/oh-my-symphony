@@ -1123,11 +1123,6 @@ class FileBoardTracker:
 
         return self._mutate_ticket(identifier, mutate, missing_ok=True)
 
-    def next_identifier(self, prefix: str) -> str:
-        """`<PREFIX>-<n+1>` where n is the highest existing number for prefix."""
-        with _exclusive_lock(self._allocator_lock_path()):
-            return self._next_identifier_unlocked(prefix)
-
     def _next_identifier_unlocked(self, prefix: str) -> str:
         highest = 0
         pattern = re.compile(rf"^{re.escape(prefix)}-(\d+)$", re.IGNORECASE)

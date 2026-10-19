@@ -28,7 +28,7 @@ The decision rule that matters at this stage:
 
 **Just remember this: use `symphony.autocommitExclude` for files that are useful during agent work but unsafe or noisy in the final merge.**
 
-When you're ready to go deeper, read `docs/features/SMA-25/index.md`.
+When you're ready to go deeper, read [SMA-25 at v0.27.0](https://github.com/cskwork/oh-my-symphony/blob/v0.27.0/docs/features/SMA-25/index.md).
 
 ## Technical Reference
 
@@ -44,7 +44,7 @@ When you're ready to go deeper, read `docs/features/SMA-25/index.md`.
 - `src/symphony/workspace.py:366` — reads `symphony.autocommitExclude` and builds exclude pathspecs.
 - `src/symphony/workspace.py:377` — resets the index before the final exclude-aware staging pass.
 - `tests/test_workspace.py:464` — starts the default, configured-exclude, and prior-wip regression coverage.
-- `docs/features/SMA-25/index.md:1` — explains the operator-facing As-Is/To-Be usage.
+- [`docs/features/SMA-25/index.md`](https://github.com/cskwork/oh-my-symphony/blob/v0.27.0/docs/features/SMA-25/index.md) (v0.27.0) — explains the operator-facing As-Is/To-Be usage.
 
 **Observability hooks:**
 - log: `auto_commit_start` at `src/symphony/workspace.py:407` — final auto-commit began for a workspace.

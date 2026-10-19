@@ -9,6 +9,7 @@ import pytest
 
 from symphony._shell import resolve_bash
 from symphony.workflow import SUPPORTED_AGENT_KINDS, build_service_config, load_workflow
+from symphony.workflow.constants import DEFAULT_AGY_COMMAND
 from symphony.cli import board as board_cli
 from symphony.cli import factory as factory_cli
 from symphony.factory.wayfinder import parse_wayfinder_ticket
@@ -147,6 +148,8 @@ def test_factory_init_emits_only_the_selected_backend_block(
     assert backend_headers == {agent_kind}
     cfg = build_service_config(load_workflow(target / "WORKFLOW.md"))
     assert cfg.agent.kind == agent_kind
+    if agent_kind == "agy":
+        assert cfg.agy.command == DEFAULT_AGY_COMMAND
 
 
 def test_factory_init_supports_agent_alias_and_prints_wayfinder_prompt(

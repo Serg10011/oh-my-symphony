@@ -167,12 +167,12 @@ symphony project add /path/to/existing-repo
 symphony hub
 ```
 
-Add one file-board ticket and open the managed TUI launcher from that project:
+Add one file-board ticket and open the TUI from that project:
 
 ```bash
 symphony board init ./kanban
 symphony board new TASK-001 "<title>" --description "<spec>"
-./tui-open.sh ./WORKFLOW.md
+symphony tui ./WORKFLOW.md
 ```
 
 For dependent multi-ticket work, use the validated flags: `--blocked-by`

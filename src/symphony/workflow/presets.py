@@ -1,6 +1,6 @@
 """Lane presets — switchable starting-point board layouts.
 
-Two shipped presets (v2.1 owner decisions, docs/plans/minimal-symphony-plan.md):
+Two shipped presets (owner decisions, docs/adr/0006-lean-core.md):
 
 - ``default`` — the succinct 4-lane board (Todo → In Progress → Verify →
   Document) whose stage contracts `orchestrator/contracts.py` enforces.

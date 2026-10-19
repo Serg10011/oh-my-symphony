@@ -14,7 +14,7 @@ otherwise would force every caller to recompute the same `if/elif` ladder.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +47,7 @@ from .constants import (
     DEFAULT_PRIME_AGENT_COMMAND,
     DEFAULT_WORKSPACE_REUSE_POLICY,
     SUPPORTED_CI_MODES,
+    selectable_agent_kinds,
 )
 from .presets import board_uses_shipped_contracts
 
@@ -100,6 +101,54 @@ class HooksConfig:
     # Doctor warning patterns are advisory by default. Workflows that treat
     # setup masking as release-blocking can opt into a fatal doctor result.
     fail_on_warning_patterns: bool = False
+
+
+@dataclass(frozen=True)
+class AgentProfileConfig:
+    """One plain-CLI backend declared as data (`agent.profiles.<name>`).
+
+    The built-in `agy` and `kiro` kinds are profiles too (see
+    `ServiceConfig.agent_profile`); their `agy:` / `kiro:` blocks supply
+    `command`, timeouts and `resume_across_turns`. The CLI reads the prompt
+    on stdin and its stdout is taken as the final assistant message.
+    """
+
+    name: str
+    command: str
+    format: str = "text"
+    # Appended to every turn's command unless already present.
+    unattended_flags: tuple[str, ...] = ()
+    # Added on continuation turns when `resume_across_turns` is true.
+    continuation_flag: str | None = None
+    # Other spellings of `continuation_flag` that count as already present
+    # (built-in data only; kiro accepts `-r`).
+    continuation_flag_aliases: tuple[str, ...] = ()
+    # "append" or "before_prompt_arg" (insert before a trailing "$(cat)").
+    continuation_position: str = "append"
+    turn_timeout_ms: int = DEFAULT_BACKEND_TURN_TIMEOUT_MS
+    read_timeout_ms: int = DEFAULT_BACKEND_READ_TIMEOUT_MS
+    stall_timeout_ms: int = DEFAULT_BACKEND_STALL_TIMEOUT_MS
+    resume_across_turns: bool = False
+
+
+# Flag data for the built-in plain-CLI kinds. Command, timeouts and
+# `resume_across_turns` come from the `agy:` / `kiro:` blocks at lookup time.
+BUILTIN_AGENT_PROFILES: dict[str, AgentProfileConfig] = {
+    "agy": AgentProfileConfig(
+        name="agy",
+        command=DEFAULT_AGY_COMMAND,
+        unattended_flags=("--dangerously-skip-permissions",),
+        continuation_flag="--continue",
+    ),
+    "kiro": AgentProfileConfig(
+        name="kiro",
+        command=DEFAULT_KIRO_COMMAND,
+        continuation_flag="--resume",
+        continuation_flag_aliases=("-r",),
+        continuation_position="before_prompt_arg",
+        resume_across_turns=True,
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -256,6 +305,10 @@ class AgentConfig:
     # to raise the *backend's* stall_timeout_ms for every lane at once.
     # Falls back to the resolved backend's `stall_timeout_ms`.
     stall_timeout_ms_by_state: dict[str, int] = field(default_factory=dict)
+    # User-declared plain-CLI backends (`agent.profiles`), keyed by the
+    # lowercased name that `kind` / `stage_kinds` select. Names never shadow
+    # a built-in kind; the builder rejects that.
+    profiles: dict[str, AgentProfileConfig] = field(default_factory=dict)
 
     def stage_contracts_enabled(self, active_states: "tuple[str, ...]") -> bool:
         """Resolve `agent.stage_contracts` against the board's lanes."""
@@ -698,9 +751,34 @@ class ServiceConfig:
         parts = [self.prompts.base_template, stage_template]
         return "\n\n".join(part for part in parts if part)
 
+    def agent_profile(self, kind: str) -> AgentProfileConfig | None:
+        """Return the plain-CLI profile for *kind*, or None for other kinds.
+
+        Built-in `agy` / `kiro` take their command, timeouts and
+        `resume_across_turns` from the `agy:` / `kiro:` blocks.
+        """
+        if kind == "agy" or kind == "kiro":
+            block = self.agy if kind == "agy" else self.kiro
+            return replace(
+                BUILTIN_AGENT_PROFILES[kind],
+                command=block.command,
+                turn_timeout_ms=block.turn_timeout_ms,
+                read_timeout_ms=block.read_timeout_ms,
+                stall_timeout_ms=block.stall_timeout_ms,
+                resume_across_turns=block.resume_across_turns,
+            )
+        return self.agent.profiles.get(kind)
+
     def backend_timeouts(self) -> tuple[int, int, int]:
         """Return `(turn_ms, read_ms, stall_ms)` for the active backend."""
         kind = self.agent.kind
+        profile = self.agent_profile(kind)
+        if profile is not None:
+            return (
+                profile.turn_timeout_ms,
+                profile.read_timeout_ms,
+                profile.stall_timeout_ms,
+            )
         if kind == "codex":
             return (
                 self.codex.turn_timeout_ms,
@@ -731,18 +809,6 @@ class ServiceConfig:
                 self.gemini.read_timeout_ms,
                 self.gemini.stall_timeout_ms,
             )
-        if kind == "agy":
-            return (
-                self.agy.turn_timeout_ms,
-                self.agy.read_timeout_ms,
-                self.agy.stall_timeout_ms,
-            )
-        if kind == "kiro":
-            return (
-                self.kiro.turn_timeout_ms,
-                self.kiro.read_timeout_ms,
-                self.kiro.stall_timeout_ms,
-            )
         if kind == "opencode":
             return (
                 self.opencode.turn_timeout_ms,
@@ -750,6 +816,6 @@ class ServiceConfig:
                 self.opencode.stall_timeout_ms,
             )
         raise ConfigValidationError(
-            "agent.kind must be one of agy, codex, claude, gemini, kiro, opencode, pi, prime-agent",
+            f"agent.kind must be one of {sorted(selectable_agent_kinds(self.agent.profiles))}",
             value=kind,
         )

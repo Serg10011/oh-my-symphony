@@ -18,8 +18,6 @@ have already been fixed.
 | `symphony` CLI                | ✓     | ✓     | ✓ (via `py -3.11 -m pip install -e .`)          |
 | `symphony tui` (Textual)      | ✓     | ✓     | ✓ — Windows Terminal / ConHost; cmd.exe legacy console may glitch colors |
 | `symphony doctor`             | ✓     | ✓     | ✓                                               |
-| `tui-open.sh`                 | ✓     | ✓     | use `tui-open.bat`                              |
-| `tui-open.bat`                | n/a   | n/a   | ✓                                               |
 | JSON API on `:9999`           | ✓     | ✓     | ✓                                               |
 | File-tracker (`tracker.kind: file`) | ✓ | ✓   | ✓                                               |
 | Worktree-default `after_create` | ✓   | ✓     | ✓ since 2026-05-15 fix; see below              |
@@ -54,7 +52,6 @@ have already been fixed.
   replace its `os.waitpid`-via-thread path with a plain `proc.wait()`
   on macOS — the watcher genuinely fails to reap and you'll see zombie
   `<defunct>` subprocesses + an event loop that hangs.
-- `tui-open.sh` prefers `iTerm.app`, falls back to `Terminal.app`.
 - If you use the `pi` backend, `~/.pi/agent/auth.json` lives under the
   real `$HOME`, not a Homebrew prefix.
 
@@ -64,8 +61,6 @@ have already been fixed.
   makes the worktree-default `after_create` hook log
   `after_create: pip install failed; ...` and continue. Install
   `python3-venv` to silence it, or replace the venv step in your fork.
-- `tui-open.sh` looks for `x-terminal-emulator`, `gnome-terminal`,
-  `konsole`, then falls back to in-place launch.
 
 ## The cross-platform parity tests
 

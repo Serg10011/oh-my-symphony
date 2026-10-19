@@ -23,7 +23,7 @@ from symphony.backends import (
 )
 from symphony.orchestrator import Orchestrator
 from symphony.server import build_app
-from symphony.workflow import WorkflowState
+from symphony.workflow import SUPPORTED_AGENT_KINDS, WorkflowState
 
 WORKFLOW_TEXT = """---
 tracker:
@@ -327,8 +327,9 @@ async def test_chat_numeric_project_choice_uses_server_owned_registration(
             port=10000,
         )
 
-    monkeypatch.setattr(webapi, "_create_or_adopt_registered_project", create_project)
-    monkeypatch.setattr(webapi, "ProjectRegistry", lambda: object())
+    for module in (webapi.chat_routes, webapi.project_routes):
+        monkeypatch.setattr(module, "_create_or_adopt_registered_project", create_project)
+        monkeypatch.setattr(module, "ProjectRegistry", lambda: object())
     state = WorkflowState(board_dir / "WORKFLOW.md")
     cfg, err = state.reload()
     assert err is None and cfg is not None
@@ -561,6 +562,32 @@ async def test_chat_ws_streams_prime_agent_snapshots_and_final_message(
         "Hello"
     ]
     await ws.close()
+
+
+async def test_web_agent_choices_include_workflow_profiles(
+    board_dir: Path, fake_backends: list[_FakeBackend],
+) -> None:
+    workflow = board_dir / "WORKFLOW.md"
+    workflow.write_text(WORKFLOW_TEXT.replace(
+        "  kind: claude\n",
+        "  kind: claude\n  profiles:\n    local:\n      command: cat\n",
+    ), encoding="utf-8")
+    state = WorkflowState(workflow)
+    cfg, err = state.reload()
+    assert cfg is not None and err is None
+    app = build_app(cast(Orchestrator, _StubOrchestrator(state)))
+    expected = sorted({*SUPPORTED_AGENT_KINDS, "local"})
+    async with TestClient(TestServer(app)) as cli:
+        for endpoint, key in (
+            ("/api/v1/board", "agent_kinds"),
+            ("/api/v1/workflow", "agent_kinds"),
+            ("/api/v1/chat/sessions", "supported_agent_kinds"),
+        ):
+            response = await cli.get(endpoint)
+            assert response.status == 200
+            payload = await response.json()
+            choices = payload["board"][key] if endpoint.endswith("board") else payload[key]
+            assert choices == expected
 
 
 async def test_chat_sessions_plural_crud_and_singular_alias(

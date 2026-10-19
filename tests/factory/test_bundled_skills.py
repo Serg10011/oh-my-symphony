@@ -9,6 +9,7 @@ import pytest
 
 from symphony.cli import factory as factory_cli
 from symphony._shell import resolve_bash
+from tests.factory_helpers import install_skills
 
 
 def _directory_link(destination: Path, target: Path) -> None:
@@ -120,7 +121,7 @@ def test_standard_overlay_install_uses_bundle_with_empty_home(
     _isolate_home(monkeypatch, tmp_path)
     target = tmp_path / "project"
 
-    factory_cli._install_skills(target, set(STANDARD_SKILLS), force=False)
+    install_skills(target, set(STANDARD_SKILLS), force=False)
 
     for name in STANDARD_SKILLS:
         assert (target / "skills" / name / "SKILL.md").is_file()
@@ -135,7 +136,7 @@ def test_existing_project_skill_without_entrypoint_is_not_treated_as_valid(
     (incomplete / "agent-qa.md").write_text("runtime support\n", encoding="utf-8")
 
     with pytest.raises(FileExistsError, match="factory sync.*--force"):
-        factory_cli._install_skills(target, {"superqa"}, force=False)
+        install_skills(target, {"superqa"}, force=False)
 
 
 @pytest.mark.parametrize("destination_kind", ["file", "symlink", "broken-symlink"])
@@ -163,7 +164,7 @@ def test_force_replaces_non_directory_project_skill_destinations(
             )
         _directory_link(destination, link_target)
 
-    factory_cli._install_skills(target, {"supergoal"}, force=True)
+    install_skills(target, {"supergoal"}, force=True)
 
     assert destination.is_dir()
     assert not destination.is_symlink()
@@ -180,7 +181,7 @@ def test_broken_project_skill_symlink_requires_force(tmp_path: Path) -> None:
     _directory_link(destination, tmp_path / "missing-supergoal")
 
     with pytest.raises(FileExistsError, match="factory sync.*--force"):
-        factory_cli._install_skills(target, {"supergoal"}, force=False)
+        install_skills(target, {"supergoal"}, force=False)
 
 
 def test_init_preflights_broken_skill_symlink_before_copying_assets(
@@ -261,7 +262,7 @@ def test_third_party_inventory_covers_adapted_sources_and_license_texts() -> Non
 def test_all_source_and_generated_shell_assets_are_executable(tmp_path: Path) -> None:
     bundled = Path(str(files("symphony.factory.bundled_skills")))
     target = tmp_path / "project"
-    factory_cli._install_skills(target, set(STANDARD_SKILLS), force=False)
+    install_skills(target, set(STANDARD_SKILLS), force=False)
 
     for source in bundled.rglob("*.sh"):
         relative = source.relative_to(bundled)
@@ -306,7 +307,7 @@ def test_bundled_and_generated_standard_skills_have_recursive_reference_closure(
 ) -> None:
     bundled = Path(str(files("symphony.factory.bundled_skills")))
     target = tmp_path / "project"
-    factory_cli._install_skills(target, set(STANDARD_SKILLS), force=False)
+    install_skills(target, set(STANDARD_SKILLS), force=False)
 
     for name in STANDARD_SKILLS:
         assert _missing_runtime_references(bundled / name) == []
@@ -328,11 +329,11 @@ def test_existing_standard_skill_requires_complete_pinned_runtime(
     tmp_path: Path,
 ) -> None:
     target = tmp_path / "project"
-    factory_cli._install_skills(target, {"superpm"}, force=False)
+    install_skills(target, {"superpm"}, force=False)
     (target / "skills/superpm/reference/strategy.md").unlink()
 
     with pytest.raises(FileExistsError, match="factory sync.*--force"):
-        factory_cli._install_skills(target, {"superpm"}, force=False)
+        install_skills(target, {"superpm"}, force=False)
 
 
 def test_custom_skill_still_falls_back_to_local_search_roots(
@@ -344,7 +345,7 @@ def test_custom_skill_still_falls_back_to_local_search_roots(
     (custom / "SKILL.md").write_text("# Custom check\n", encoding="utf-8")
     target = tmp_path / "project"
 
-    factory_cli._install_skills(target, {"custom-check"}, force=False)
+    install_skills(target, {"custom-check"}, force=False)
 
     assert (target / "skills/custom-check/SKILL.md").read_text(
         encoding="utf-8"
@@ -371,7 +372,7 @@ def test_skill_install_preflights_all_destinations_before_copy(tmp_path: Path) -
     (incomplete / "SKILL.md").write_text("operator version", encoding="utf-8")
 
     with pytest.raises(FileExistsError, match="incomplete"):
-        factory_cli._install_skills(target, {"supergoal", "superqa"}, force=False)
+        install_skills(target, {"supergoal", "superqa"}, force=False)
 
     assert not (target / "skills/supergoal").exists()
     assert (incomplete / "SKILL.md").read_text(encoding="utf-8") == "operator version"
@@ -406,7 +407,7 @@ def test_copied_skill_shell_scripts_restore_execute_bits(
     monkeypatch.setattr(factory_cli, "_SKILL_SEARCH_ROOTS", (root,))
     target = tmp_path / "project"
 
-    factory_cli._install_skills(target, {"custom-shell"}, force=False)
+    install_skills(target, {"custom-shell"}, force=False)
     generated = target / "skills/custom-shell/check.sh"
     if os.name != "nt":
         assert not script.stat().st_mode & 0o111

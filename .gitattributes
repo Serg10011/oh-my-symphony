@@ -1,4 +1,3 @@
-.sdlc/** text eol=lf
 *.sh text eol=lf
 # Generated, hash-pinned browser bundles (scripts/build_pm_assets.mjs): never hand-edited.
 src/symphony/web/static/pm/vendor/** -whitespace linguist-generated

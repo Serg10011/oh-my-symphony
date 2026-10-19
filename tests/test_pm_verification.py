@@ -97,26 +97,11 @@ def test_verification_rejects_non_successful_run_provenance(
 
 
 def test_host_receipt_derives_pass_from_actual_command_result(tmp_path: Path) -> None:
-    _repo, sha, run_id, _, _, service = _fixture(tmp_path)
+    _repo, _sha, run_id, _, _, service = _fixture(tmp_path)
     passed = service.run_procedure(operation_id="op-pass", project_id="p1", ticket_identifier="PM-1", task_revision="r1", procedure_id="pass", run_id=run_id, artifact_refs=("artifact://PM-1/report.txt",))
     failed = service.run_procedure(operation_id="op-fail", project_id="p1", ticket_identifier="PM-1", task_revision="r1", procedure_id="fail", run_id=run_id)
     assert passed.result == "passed" and passed.return_code == 0
     assert failed.result == "failed" and failed.return_code != 0
-    task = WbsTask("T-ABCDEFGH", None, 10, "Backend", "Implement")
-    report = service.build_from_receipts((task,), {task.task_id: "r1"}, (passed.receipt_id,), project_id="p1", tested_commit=sha)
-    assert not report.valid and "incomplete_procedure_set" in {item.code for item in report.findings}
-
-
-def test_failed_missing_and_tampered_receipts_never_cover_task(tmp_path: Path) -> None:
-    _repo, sha, run_id, registry, _, service = _fixture(tmp_path)
-    failed = service.run_procedure(operation_id="op-fail", project_id="p1", ticket_identifier="PM-1", task_revision="r1", procedure_id="fail", run_id=run_id)
-    task = WbsTask("T-ABCDEFGH", None, 10, "Backend", "Implement")
-    report = service.build_from_receipts((task,), {task.task_id: "r1"}, (failed.receipt_id, "forged"), project_id="p1", tested_commit=sha)
-    assert not report.valid
-    assert {item.code for item in report.findings} >= {"invalid_receipt", "missing_receipt", "missing_evidence"}
-    registry._connect().execute("UPDATE pm_verification_records SET task_revision = 'tampered' WHERE receipt_id = ?", (failed.receipt_id,))
-    tampered = service.build_from_receipts((task,), {task.task_id: "r1"}, (failed.receipt_id,), project_id="p1", tested_commit=sha)
-    assert not tampered.valid
 
 
 def test_artifact_refs_require_host_record_run_and_unchanged_bytes(tmp_path: Path) -> None:

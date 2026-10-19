@@ -37,11 +37,12 @@ from ..trackers.validate import (
 )
 from ..workflow import (
     DEFAULT_BOARD_ROOT_NAME,
-    SUPPORTED_AGENT_KINDS,
+    ServiceConfig,
     TrackerConfig,
     build_service_config,
     load_workflow,
     resolve_workflow_path,
+    selectable_agent_kinds,
 )
 
 
@@ -62,22 +63,15 @@ def _operator_message(exc: BaseException) -> str:
     return str(exc)
 
 
-def _resolve_tracker(args: argparse.Namespace) -> TrackerConfig | None:
-    """Return TrackerConfig from WORKFLOW.md or None to fall back to --root."""
+def _resolve_config(args: argparse.Namespace) -> ServiceConfig | None:
+    """Load WORKFLOW.md when available, retaining the standalone --root fallback."""
     workflow_path = resolve_workflow_path(args.workflow)
     if workflow_path.exists():
         try:
-            cfg = build_service_config(load_workflow(workflow_path))
+            return build_service_config(load_workflow(workflow_path))
         except SymphonyError as exc:
             print(f"warn: workflow load failed ({exc}); using --root", file=sys.stderr)
             return None
-        if cfg.tracker.kind != "file":
-            print(
-                f"warn: tracker.kind is {cfg.tracker.kind!r}, not 'file'; using --root",
-                file=sys.stderr,
-            )
-            return None
-        return cfg.tracker
     return None
 
 
@@ -96,9 +90,14 @@ def _tracker_from_root(root: Path) -> TrackerConfig:
 def _get_tracker(args: argparse.Namespace) -> TrackerConfig:
     if args.root is not None:
         return _tracker_from_root(Path(args.root))
-    cfg = _resolve_tracker(args)
+    cfg = _resolve_config(args)
     if cfg is not None:
-        return cfg
+        if cfg.tracker.kind == "file":
+            return cfg.tracker
+        print(
+            f"warn: tracker.kind is {cfg.tracker.kind!r}, not 'file'; using --root",
+            file=sys.stderr,
+        )
     if args.root is None:
         # Default: ./board next to the workflow.
         wf_path = resolve_workflow_path(args.workflow)
@@ -297,6 +296,7 @@ def cmd_update(args: argparse.Namespace) -> int:
             state=state,
             blocked_by=blocked_by,
             request=args.request,
+            agent_kind=args.agent_kind,
         )
     except (OSError, SymphonyError) as exc:
         print(f"error: {_operator_message(exc)}", file=sys.stderr)
@@ -309,6 +309,8 @@ def cmd_update(args: argparse.Namespace) -> int:
         changes.append(f"blocked_by={','.join(blocked_by) or '(cleared)'}")
     if args.request is not None:
         changes.append(f"request={args.request or '(cleared)'}")
+    if args.agent_kind is not None:
+        changes.append(f"agent={args.agent_kind}")
     print(f"updated {identifier} ({', '.join(changes) or 'no changes'}) -> {path}")
     return 0
 
@@ -453,7 +455,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--agent-kind",
         "--agent",
         dest="agent_kind",
-        choices=sorted(SUPPORTED_AGENT_KINDS),
         default=None,
         help="override backend for this ticket (default: WORKFLOW.md agent.kind)",
     )
@@ -489,6 +490,10 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="REQ",
         help="request grouping id ('' clears it)",
     )
+    p_update.add_argument(
+        "--agent-kind", "--agent", dest="agent_kind", default=None,
+        help="override backend for this ticket (built-in kind or workflow profile)",
+    )
     p_update.set_defaults(func=cmd_update)
 
     p_show = sub.add_parser("show", help="print a ticket's contents")
@@ -512,4 +517,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str]) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if getattr(args, "agent_kind", None) is not None:
+        cfg = _resolve_config(args)
+        kinds = selectable_agent_kinds(cfg.agent.profiles if cfg else ())
+        if args.agent_kind not in kinds:
+            print(
+                f"error: unknown agent kind {args.agent_kind!r}; expected one of {sorted(kinds)}",
+                file=sys.stderr,
+            )
+            return 1
     return args.func(args)

@@ -40,13 +40,8 @@ def init_repo(path: Path) -> Path:
 
 def source_bundle(path: Path) -> Path:
     init_repo(path)
-    for name in (
-        "tui-open.sh",
-        "tui-open.bat",
-        "AGENTS.project.md",
-        "GEMINI.project.md",
-    ):
-        (path / name).write_text(name + "\n", encoding="utf-8")
+    (path / "examples/project").mkdir(parents=True)
+    (path / "examples/project/AGENTS.md").write_text("agents\n", encoding="utf-8")
     (path / "WORKFLOW.file.example.md").write_text("workflow\n", encoding="utf-8")
     (path / "scripts").mkdir()
     (path / "scripts/symphony-setup-worktree.sh").write_text(

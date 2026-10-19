@@ -10,7 +10,25 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.28.0] - 2026-10-20 - Lean core
+
+### Removed
+- `tui-open.sh` and `tui-open.bat`. Run `symphony tui [WORKFLOW.md]`; it checks the agent CLI and `after_create` hook before starting and names the process holding the server port. `symphony project create|add` no longer copies the launchers.
+- `GEMINI.md`, `GEMINI.project.md`, and `AGENTS.project.md`. Bootstrapped projects get one `AGENTS.md` from `examples/project/AGENTS.md`. Gemini CLI users set `context.fileName` to `AGENTS.md` in `.gemini/settings.json`.
+- The printable manual (`docs/manual/`) and its PDF build (`scripts/build_manual_pdf.py`, `scripts/sync_manual_tables.py`, and the Pages PDF steps).
+- Committed development records: `.sdlc/`, `.impeccable/`, `HANDOFF.md`, `CONTEXT.md`, `QUALITY-LEDGER.md`, `.quality.md`, `docs/plans/`, `docs/quality/`, `docs/spec/`, `docs/changelog/`, `docs/features/`, and `docs/handoffs/`. The `v0.27.0` tag keeps them; links now point there.
+
+### Added
+- `agent.profiles` in `WORKFLOW.md` declares plain-text agent CLIs as data (`command`, `format: text`, `unattended_flags`, `continuation_flag`, `continuation_position`, timeouts), selectable anywhere an agent kind is accepted (`agent.kind`, `stage_kinds`, `fallback_kinds`, per-ticket pins, chat, and the web API) and checked by `symphony doctor`; built-in `agy` and `kiro` now run as profiles with unchanged config.
+- `docs/prd/v1.0-lean-core.md` and ADR 0006: v1.0 reduces bloat without removing shipped features.
+
 ### Changed
+- The TUI ticket modals and `symphony board new|update --agent` accept the workflow's `agent.profiles` names; `symphony factory --agent` stays limited to built-in kinds.
+- `symphony factory init --agent agy` writes the shipped default command `agy --print "$(cat)"` instead of `agy --print -`.
+- Removed source helpers that only tests called (`dependency_waves`, `json_value`, `build_from_receipts`, `is_symphony_api_reachable`, `next_identifier`, `_adf_paragraphs`); the factory skill installer used by tests moved into `tests/`. Documented `append_note_once` and the `linear_graphql` passthrough `execute_raw` stay.
+- PM planning cleanup no longer reports "could not be confirmed stopped" when the process group exits between the existence and identity checks; it confirms the group is gone with a read-only check and still never signals a group it cannot prove it owns.
+- Workspace preserve tests no longer run the real venv/pip setup through a login shell, which timed them out under load.
+- Internal split with no behavior change: `orchestrator/core.py` (10,474 lines) into 11 modules of at most 1,629 lines, `orchestrator/run_registry.py` (4,142) into 5 modules of at most 1,397, and `webapi.py` (3,448) into the `symphony.webapi` package of 12 modules of at most 727. Import paths and test patch targets stay valid. Unused helpers were removed.
 - `symphony board show` explains that a Done ticket alone does not confirm target merge or workspace cleanup; ticket data and non-Done output remain unchanged.
 - The factory guide provides copyable PowerShell recovery and delivery inspection, with explicit stops after failed native commands or HTTP requests and separate handling for an uncleared pause.
 
@@ -67,7 +85,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Known limitations
 - Remaining PM findings include broad `ValueError` classification (`400 invalid_body`, unchanged pending separate contract approval), the test-only receipt builder, ignored unknown `pm.*` keys, and the runtime origin error omitting `SYMPHONY_TRUSTED_ORIGINS`. See the [finding IDs and operational effects](docs/pm-workspace-operations.md#accepted-findings-and-current-handling).
 - On a host without `ps`, a surviving process-group member that ignores SIGTERM can escape the final SIGKILL after its leader exits; cleanup stays uncertain and `stop()` raises. Native Windows PM behavior and real provider quota fallback remain unverified. The [human review checklist](docs/pm-workspace.md#final-human-review) is separate from automated proof and merge approval.
-- The independently assessed factory candidate scored **75% (FAIL against the >90% target)**. This release is explicitly authorized with those known limits; the score is historical candidate evidence, not a new score for the combined release. Native screen-reader/presentation, actual partial-write interruption, complete external-host/request-category evidence, and complete fresh-install comparisons remain unverified. A real-model recovery delivered preserved product bytes, but its original diagnostic text was absent afterward; the writer and timing are unknown. See the [assessment](docs/quality/factory-recovery/ASSESSMENT.md) and [verification boundaries](docs/quality/factory-recovery/VERIFICATION.md).
+- The independently assessed factory candidate scored **75% (FAIL against the >90% target)**. This release is explicitly authorized with those known limits; the score is historical candidate evidence, not a new score for the combined release. Native screen-reader/presentation, actual partial-write interruption, complete external-host/request-category evidence, and complete fresh-install comparisons remain unverified. A real-model recovery delivered preserved product bytes, but its original diagnostic text was absent afterward; the writer and timing are unknown. See the [assessment](https://github.com/cskwork/oh-my-symphony/blob/v0.27.0/docs/quality/factory-recovery/ASSESSMENT.md) and [verification boundaries](https://github.com/cskwork/oh-my-symphony/blob/v0.27.0/docs/quality/factory-recovery/VERIFICATION.md).
 - Existing copied workflows and setup hooks require a reviewed refresh with the updated package. Legacy worker records with unknown ownership remain fenced. One low KaTeX/Mermaid advisory affects bundled PM assets; CLI exploitability is untested.
 
 ## [0.26.0] - 2026-09-22 - First-run experience: demo keeps the generated workflow, project-facing agent files, clean git status

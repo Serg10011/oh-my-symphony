@@ -13,6 +13,7 @@ import pytest
 
 import symphony.orchestrator.migrations as migration_mod
 import symphony.orchestrator.run_registry as run_registry_mod
+import symphony.orchestrator.run_registry_records as run_registry_records_mod
 from symphony.issue import Issue
 from symphony.orchestrator.run_registry import ReleaseGate, RunRegistry
 
@@ -2433,7 +2434,7 @@ def test_pid_alive_posix_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(sys, "platform", "linux")
 
     def _with_kill(fake) -> bool:
-        monkeypatch.setattr(run_registry_mod.os, "kill", fake)
+        monkeypatch.setattr(run_registry_records_mod.os, "kill", fake)
         return run_registry_mod._pid_alive(1234)
 
     def _raise(exc: BaseException):

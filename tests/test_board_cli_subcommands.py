@@ -6,7 +6,7 @@ file walks the rest of the surface:
   * init       seeds a sample ticket; idempotent on rerun.
   * ls         filters by --state (case-insensitive).
   * new        --workflow path picks board_root from WORKFLOW.md.
-  * new        rejects unsupported agent-kind via argparse.
+  * new        rejects unsupported agent-kind after loading the workflow.
   * mv         transitions a ticket between states.
   * mv         non-zero exit when the ticket is missing.
   * show       prints front-matter + body.
@@ -100,12 +100,11 @@ def test_new_uses_workflow_board_root_when_no_root_override(tmp_path: Path) -> N
     assert "alpha" in content and "beta" in content
 
 
-def test_new_rejects_unknown_agent_kind_via_argparse(
+def test_new_rejects_unknown_agent_kind(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     workflow = _make_workflow(tmp_path)
-    with pytest.raises(SystemExit):
-        board_cli.main(
+    assert board_cli.main(
             [
                 "new",
                 "--workflow",
@@ -115,9 +114,12 @@ def test_new_rejects_unknown_agent_kind_via_argparse(
                 "--agent-kind",
                 "totally-not-an-agent",
             ]
-        )
-    # argparse error went to stderr.
-    assert "invalid choice" in capsys.readouterr().err
+        ) == 1
+    error = capsys.readouterr().err
+    assert "unknown agent kind 'totally-not-an-agent'" in error
+    assert "expected one of" in error
+    assert "codex" in error
+    assert not (tmp_path / "board" / "TKT-2.md").exists()
 
 
 def test_ls_filters_by_state_case_insensitively(

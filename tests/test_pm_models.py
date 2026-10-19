@@ -9,12 +9,10 @@ import pytest
 from symphony.pm.identity import host_project_identity
 
 from symphony.pm.models import (
-    ChangeView,
     PmError,
     PmFinding,
     PmRequestContext,
     PmResult,
-    json_value,
 )
 
 
@@ -72,20 +70,6 @@ def test_result_json_contract_is_stable_and_nested_findings_are_json_safe():
         "approval_invalidated": True,
         "operation_id": "op-1",
     }
-
-
-def test_json_value_converts_paths_and_immutable_views():
-    view = ChangeView(
-        project_id="p",
-        change_id="c",
-        locator="demo",
-        revision="r",
-        scope_hash="s",
-        state="Draft",
-        base_git_sha="a" * 40,
-        schema_hash="h",
-    )
-    assert json_value({"view": view, "path": Path("/tmp/demo")})["path"] == "/tmp/demo"
 
 
 def test_registered_host_identity_wins_over_duplicate_tracker_slug(

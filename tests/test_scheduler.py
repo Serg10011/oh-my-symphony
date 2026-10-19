@@ -8,7 +8,7 @@ from symphony.issue import BlockerRef, Issue
 from symphony.orchestrator.scheduler import (
     critical_path_lengths,
     dependency_cycle_nodes,
-    dependency_waves,
+    analyze_dependencies,
     group_by_request,
     RequestGroupKey,
     request_group_key,
@@ -63,7 +63,7 @@ def test_dag_orders_priority_then_downstream_length_then_registration() -> None:
         "TASK-2",
         "TASK-22",
     ]
-    assert dependency_waves(rows) == {
+    assert analyze_dependencies(rows).waves == {
         "TASK-9": 0,
         "TASK-20": 0,
         "TASK-21": 1,

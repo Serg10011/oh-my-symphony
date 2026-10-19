@@ -1315,11 +1315,6 @@ def test_force_stop_terminates_active_backend_processes_from_registry(
         "is_process_running",
         lambda pid: pid in live_pids,
     )
-    monkeypatch.setattr(
-        service_module,
-        "is_symphony_api_reachable",
-        lambda host, port: False,
-    )
 
     def _stop_pid(pid, *, force=False):  # noqa: ANN001, ANN002
         stopped.append((pid, force))

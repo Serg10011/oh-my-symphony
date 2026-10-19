@@ -1755,18 +1755,6 @@ def _cancel_task_source(
     return updated[:start] + f"- Cancelled: {target.title}" + updated[end:]
 
 
-def _write_identity(
-    root: Path, identity: dict[str, Any], ledger: dict[str, Any]
-) -> None:
-    updated = dict(identity)
-    updated["semantic_ids"] = {
-        "active": list(ledger["active"]),
-        "retired": list(ledger["retired"]),
-        "inherited": list(ledger.get("inherited", [])),
-    }
-    _atomic_write(root / "symphony.yaml", yaml.safe_dump(updated, sort_keys=False))
-
-
 def _identity_source(
     identity: dict[str, Any], ledger: dict[str, Any]
 ) -> str:

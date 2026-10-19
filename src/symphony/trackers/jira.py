@@ -87,19 +87,6 @@ def _flatten_adf(node: Any) -> str:
     return text
 
 
-def _adf_paragraphs(text: str) -> dict[str, Any]:
-    """Wrap plain text into a minimal ADF doc (one paragraph per line)."""
-    paragraphs: list[dict[str, Any]] = []
-    for line in (text or "").splitlines() or [""]:
-        paragraphs.append(
-            {
-                "type": "paragraph",
-                "content": [{"type": "text", "text": line}] if line else [],
-            }
-        )
-    return {"type": "doc", "version": 1, "content": paragraphs}
-
-
 def _adf_inline(text: str) -> list[dict[str, Any]]:
     """`code` and **strong** spans → ADF text nodes with marks."""
     parts: list[dict[str, Any]] = []
