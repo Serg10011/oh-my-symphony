@@ -4,9 +4,9 @@
 
 ## Этап 0 — основа
 
-- [ ] Форк, ветка `our-main`, Claude GitHub App установлен только на форк.
-- [ ] Облачное окружение со скриптом установки `pip install -e ".[dev]"`.
-- [ ] `CLAUDE.md` и `docs/our/` в ветке `our-main`.
+- [x] Форк, ветка `our-main`, Claude GitHub App установлен только на форк.
+- [x] Облачное окружение со скриптом установки `pip install -e ".[dev]"`.
+- [x] `CLAUDE.md` и `docs/our/` в ветке `our-main`.
 
 ## Этап 1 — исследование кода
 
