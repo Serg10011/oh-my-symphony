@@ -29,6 +29,11 @@ class _Ctx:
     def workflow_dir(self) -> Path:
         return self.config().workflow_path.parent
 
+    def code_dir(self) -> Path:
+        """Repo for read-only git routes: `workspace.code_repo`, else the board dir."""
+        cfg = self.config()
+        return cfg.code_repo or cfg.workflow_path.parent
+
     def file_tracker(self) -> FileBoardTracker:
         cfg = self.config()
         if cfg.tracker.kind != "file":

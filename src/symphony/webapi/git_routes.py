@@ -51,7 +51,7 @@ def _register_git_routes(
 
     async def handle_git_branches(_request: web.Request) -> web.Response:
         branches = await asyncio.to_thread(
-            git_inspect.list_branches, ctx.workflow_dir()
+            git_inspect.list_branches, ctx.code_dir()
         )
         return web.json_response({"branches": branches})
 
@@ -65,15 +65,15 @@ def _register_git_routes(
                 limit = int(raw_limit)
             except ValueError:
                 return _json_error(400, "invalid_limit", "limit must be an integer")
-        workflow_dir = ctx.workflow_dir()
+        code_dir = ctx.code_dir()
 
         def _load() -> tuple[str | None, list[dict[str, object]] | None]:
-            if not git_inspect.is_git_repo(workflow_dir):
+            if not git_inspect.is_git_repo(code_dir):
                 return "not_a_git_repo", []
-            if branch and not git_inspect.ref_exists(workflow_dir, branch):
+            if branch and not git_inspect.ref_exists(code_dir, branch):
                 return None, None
             return None, git_inspect.commit_log(
-                workflow_dir, ref=branch or None, limit=limit
+                code_dir, ref=branch or None, limit=limit
             )
 
         note, commits = await asyncio.to_thread(_load)
@@ -85,13 +85,13 @@ def _register_git_routes(
 
     async def handle_git_task_branches(_request: web.Request) -> web.Response:
         cfg = ctx.config()
-        workflow_dir = cfg.workflow_path.parent
+        code_dir = ctx.code_dir()
 
         def _load() -> tuple[str | None, list[dict[str, object]], str | None]:
-            if not git_inspect.is_git_repo(workflow_dir):
+            if not git_inspect.is_git_repo(code_dir):
                 return None, [], "not_a_git_repo"
-            target = _effective_target(cfg, workflow_dir)
-            return target, git_inspect.list_task_branches(workflow_dir, target), None
+            target = _effective_target(cfg, code_dir)
+            return target, git_inspect.list_task_branches(code_dir, target), None
 
         target, rows, note = await asyncio.to_thread(_load)
         tickets: dict[str, Issue] = {}
@@ -138,12 +138,12 @@ def _register_git_routes(
         raw_target = (request.query.get("target") or "").strip()
         target = _check_branch(raw_target, key="target") if raw_target else None
         cfg = ctx.config()
-        workflow_dir = cfg.workflow_path.parent
+        code_dir = ctx.code_dir()
 
         def _load() -> tuple[str, str, None] | tuple[None, None, dict[str, object]]:
-            if not git_inspect.is_git_repo(workflow_dir):
+            if not git_inspect.is_git_repo(code_dir):
                 return "not_a_git_repo", "workflow dir is not a git repository", None
-            resolved = target or _effective_target(cfg, workflow_dir)
+            resolved = target or _effective_target(cfg, code_dir)
             if not resolved:
                 return (
                     "no_target",
@@ -151,9 +151,9 @@ def _register_git_routes(
                     None,
                 )
             for ref in (branch, resolved):
-                if not git_inspect.ref_exists(workflow_dir, ref):
+                if not git_inspect.ref_exists(code_dir, ref):
                     return "unknown_ref", f"unknown ref {ref!r}", None
-            return None, None, git_inspect.compare_refs(workflow_dir, branch, resolved)
+            return None, None, git_inspect.compare_refs(code_dir, branch, resolved)
 
         code, message, payload = await asyncio.to_thread(_load)
         if payload is None:
@@ -164,18 +164,18 @@ def _register_git_routes(
     async def handle_git_diff(request: web.Request) -> web.Response:
         commit = (request.query.get("commit") or "").strip()
         cfg = ctx.config()
-        workflow_dir = cfg.workflow_path.parent
+        code_dir = ctx.code_dir()
 
         if commit:
             if not _COMMIT_RE.match(commit):
                 raise WorkflowMutationError(f"invalid commit {commit!r}")
 
             def _load_commit() -> dict[str, object] | None:
-                if not git_inspect.is_git_repo(workflow_dir):
+                if not git_inspect.is_git_repo(code_dir):
                     return None
-                if not git_inspect.ref_exists(workflow_dir, commit):
+                if not git_inspect.ref_exists(code_dir, commit):
                     return None
-                return git_inspect.commit_patch(workflow_dir, commit)
+                return git_inspect.commit_patch(code_dir, commit)
 
             payload = await asyncio.to_thread(_load_commit)
             if payload is None:
@@ -190,9 +190,9 @@ def _register_git_routes(
             raise WorkflowMutationError(f"invalid path {path!r}")
 
         def _load() -> tuple[str, str, None] | tuple[None, str, dict[str, object]]:
-            if not git_inspect.is_git_repo(workflow_dir):
+            if not git_inspect.is_git_repo(code_dir):
                 return "not_a_git_repo", "workflow dir is not a git repository", None
-            resolved = target or _effective_target(cfg, workflow_dir)
+            resolved = target or _effective_target(cfg, code_dir)
             if not resolved:
                 return (
                     "no_target",
@@ -200,12 +200,12 @@ def _register_git_routes(
                     None,
                 )
             for ref in (branch, resolved):
-                if not git_inspect.ref_exists(workflow_dir, ref):
+                if not git_inspect.ref_exists(code_dir, ref):
                     return "unknown_ref", f"unknown ref {ref!r}", None
             return (
                 None,
                 resolved,
-                git_inspect.diff_patch(workflow_dir, branch, resolved, path),
+                git_inspect.diff_patch(code_dir, branch, resolved, path),
             )
 
         code, detail, payload = await asyncio.to_thread(_load)

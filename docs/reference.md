@@ -408,6 +408,16 @@ listed, and anything other than a list of non-empty strings is a config error.
 Once the ticket leaves such a state (`confirm_done` to `Done`, `Archive`, …),
 its workspace is cleaned up by the usual rules.
 
+`workspace.code_repo` (absolute path string, default unset) points the read-only
+web Git routes — branch list, log, task branches, compare and diff — at a git
+repository other than the `WORKFLOW.md` directory, for boards kept outside the
+code repo. Unset or empty keeps the old behaviour (the `WORKFLOW.md` directory).
+It must be an absolute path to the root of a git repository (checked whenever
+the workflow loads; `~` and `$VAR` are not expanded); anything else is a config
+error. Routes that change a repository (merge, push, pull request, branch
+delete) never use it and keep working on the `WORKFLOW.md` directory, so with an
+external board they refuse, and merging stays a manual step in the code repo.
+
 ## Trackers: file, Linear, Jira
 
 - **File** (`tracker: { kind: file, board_root: ./kanban }`): Markdown tickets
