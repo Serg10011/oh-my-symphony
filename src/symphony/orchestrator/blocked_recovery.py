@@ -524,6 +524,8 @@ async def _auto_normalize_legacy_human_review_done(self: Orchestrator, cfg: Serv
         Older file boards used it as the normal "Confirm Done" lane, which
         freezes dependencies once Human Review becomes intervention-only.
         """
+    if not cfg.agent.normalize_legacy_human_review:
+        return 0
     if cfg.tracker.kind != "file":
         return 0
     done_state = _human_review_done_state(cfg)

@@ -365,6 +365,13 @@ In Progress with a one-line `## Triage` note without spending a model turn.
 Bug tickets, blocked tickets, ambiguous tickets, and Linear trackers still use
 the Todo prompt.
 
+For file-board workflows, `agent.normalize_legacy_human_review` defaults to
+`true`: on every tick Symphony moves a `Human Review` card to `Done` by itself
+when the card has a `## As-Is -> To-Be Report` (or `## Unblock Note`) section,
+or a `Confirm Done` line, and no intervention marker. Set it to `false` to keep
+such cards in `Human Review` until a person moves them. The value must be a
+real YAML boolean; `"false"` or `0` is a config error.
+
 ## Trackers: file, Linear, Jira
 
 - **File** (`tracker: { kind: file, board_root: ./kanban }`): Markdown tickets
