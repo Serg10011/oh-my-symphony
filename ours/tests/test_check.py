@@ -1,9 +1,10 @@
-"""Tests for ours/hooks/check.py (TASK-K05).
+"""Tests for ours/hooks/check.py (TASK-K05, TASK-K08a).
 
-Every scenario builds a real host repository plus a linked worktree laid out
-like `scripts/symphony-setup-worktree.sh` does (branch `symphony/<ID>`,
-`kanban` symlinked back to the host board and hidden from git), a card on
-the host board, and a fake `symphony` executable that records its calls and
+Every scenario builds a real code repository, a board folder outside it
+(project.toml, test.sh, kanban/, .ours-state/<ID>.base.json) and a linked
+worktree laid out like ours/hooks/worktree.py does (branch `symphony/<ID>`,
+`kanban` symlinked to the board, hidden through core.excludesFile), a card
+on the board, and a fake `symphony` executable that records its calls and
 rewrites the card state. check.py always runs as a real subprocess.
 
 Run: python -m pytest ours/tests -q
@@ -11,13 +12,16 @@ Run: python -m pytest ours/tests -q
 
 from __future__ import annotations
 
+import fcntl
 import importlib.util
 import json
 import os
 import subprocess
 import sys
 import textwrap
+import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -26,6 +30,7 @@ pytestmark = pytest.mark.skipif(os.name != "posix", reason="check.py is POSIX-on
 
 CHECK = Path(__file__).resolve().parents[1] / "hooks" / "check.py"
 ID = "T-1"
+sys.path.insert(0, str(CHECK.parent))
 
 _spec = importlib.util.spec_from_file_location("ours_check", CHECK)
 assert _spec is not None and _spec.loader is not None
@@ -77,44 +82,38 @@ def write(path: Path, text: str) -> Path:
 
 
 class Env:
-    """Host repo + worktree + board + fake symphony for one scenario."""
+    """Code repo + board folder + worktree + fake symphony for one scenario."""
 
     def __init__(self, tmp: Path) -> None:
         self.tmp = tmp
-        self.host = tmp / "host"
+        self.code = tmp / "code"
+        self.board = tmp / "board"
         self.ws = tmp / "workspaces" / ID
         self.calls = tmp / "calls.jsonl"
         self.bin = tmp / "bin"
         self.marker = tmp / "tests-ran"
-        self.host.mkdir()
-        git(self.host, "init", "-q", "-b", "main")
-        git(self.host, "config", "user.email", "t@example.invalid")
-        git(self.host, "config", "user.name", "t")
-        write(self.host / "README.md", "readme\n")
-        write(self.host / "WORKFLOW.md", "---\n---\n")
-        write(self.host / "src" / "app.py", "x = 1\n")
-        write(self.host / "tests" / "test_app.py", "def test_a():\n    assert True\n")
-        write(self.host / "pkg" / "deep" / "test_deep.py", "def test_b():\n    pass\n")
-        write(self.host / "web" / "button.test.ts", "it('x', () => {})\n")
-        write(self.host / "kanban" / "OTHER.md", "---\nid: OTHER\nstate: Todo\n---\n")
-        git(self.host, "add", "-A")
-        git(self.host, "commit", "-q", "-m", "base")
-        # Worktree as after_create builds it.
+        self.code.mkdir()
+        git(self.code, "init", "-q", "-b", "main")
+        git(self.code, "config", "user.email", "t@example.invalid")
+        git(self.code, "config", "user.name", "t")
+        write(self.code / "README.md", "readme\n")
+        write(self.code / "WORKFLOW.md", "---\n---\n")
+        write(self.code / "src" / "app.py", "x = 1\n")
+        write(self.code / "tests" / "test_app.py", "def test_a():\n    assert True\n")
+        write(self.code / "pkg" / "deep" / "test_deep.py", "def test_b():\n    pass\n")
+        write(self.code / "web" / "button.test.ts", "it('x', () => {})\n")
+        git(self.code, "add", "-A")
+        git(self.code, "commit", "-q", "-m", "base")
+        # Board folder and worktree as project-new / worktree.py build them.
+        (self.board / "kanban").mkdir(parents=True)
+        exclude = write(self.board / "worktree-exclude", "/kanban\n/.venv/\n")
         self.ws.parent.mkdir(parents=True)
-        git(self.host, "worktree", "add", "-q", "-b", f"symphony/{ID}", str(self.ws), "main")
-        git(self.ws, "update-index", "--skip-worktree", "kanban/OTHER.md")
-        exclude = Path(git(self.ws, "rev-parse", "--git-path", "info/exclude").strip())
-        if not exclude.is_absolute():
-            exclude = self.ws / exclude
-        exclude.parent.mkdir(parents=True, exist_ok=True)
-        with exclude.open("a") as fh:
-            fh.write("kanban\n")
-        import shutil
-
-        shutil.rmtree(self.ws / "kanban")
-        (self.ws / "kanban").symlink_to(self.host / "kanban")
-        # Board card and fake CLI.
-        self.card = self.host / "kanban" / f"{ID}.md"
+        git(self.code, "worktree", "add", "-q", "-b", f"symphony/{ID}", str(self.ws), "main")
+        git(self.ws, "config", "extensions.worktreeConfig", "true")
+        git(self.ws, "config", "--worktree", "core.excludesFile", str(exclude))
+        (self.ws / "kanban").symlink_to(self.board / "kanban")
+        self.record(git(self.code, "rev-parse", "main").strip())
+        self.card = self.board / "kanban" / f"{ID}.md"
         self.set_card("Human Review", GOOD_BODY)
         self.bin.mkdir()
         self.symphony = write(
@@ -128,11 +127,26 @@ class Env:
     def set_card(self, state: str, body: str = GOOD_BODY) -> None:
         write(self.card, f"---\nid: {ID}\nidentifier: {ID}\ntitle: t\nstate: {state}\n---\n\n{body}")
 
-    def config(self, raw: str | None = None, **keys: object) -> None:
+    def record(self, sha: str) -> None:
+        payload = {"base_sha": sha, "base_branch": "main", "created_at": "2026-10-24T00:00:00Z"}
+        write(self.board / ".ours-state" / f"{ID}.base.json", json.dumps(payload))
+
+    def config(self, raw: str | None = None, timeouts: dict | None = None, **keys: object) -> None:
+        """project.toml; `test_command` becomes the board test.sh."""
+        if "test_command" in keys:
+            write(self.board / "test.sh", f"{keys.pop('test_command')}\n")
         if raw is None:
-            values = {"base_ref": "main", "symphony_bin": str(self.symphony), **keys}
-            raw = "".join(f"{k} = {json.dumps(v)}\n" for k, v in values.items())
-        write(self.host / "gate.toml", raw)
+            project = {"name": "t", "repo": str(self.code), "id_prefix": "TT", "port": 9990,
+                       "base_branch": keys.pop("base_ref", "main")}
+            tools = {"python": sys.executable, "claude": "/bin/true",
+                     "symphony": keys.pop("symphony_bin", str(self.symphony))}
+            sections = {"project": project, "tools": tools, "checks": keys,
+                        "timeouts": timeouts or {}}
+            raw = "".join(
+                f"[{name}]\n" + "".join(f"{k} = {json.dumps(v)}\n" for k, v in values.items())
+                for name, values in sections.items()
+            )
+        write(self.board / "project.toml", raw)
 
     def commit(self, message: str = "work") -> None:
         git(self.ws, "add", "-A")
@@ -141,7 +155,7 @@ class Env:
     # -- running ---------------------------------------------------------
     def env(self, **extra: str | None) -> dict[str, str]:
         env = {k: v for k, v in os.environ.items() if not k.startswith("SYMPHONY_")}
-        env["SYMPHONY_WORKFLOW_DIR"] = str(self.host)
+        env["SYMPHONY_WORKFLOW_DIR"] = str(self.board)
         env["SYMPHONY_PYTHON"] = sys.executable
         for key, value in extra.items():
             if value is None:
@@ -171,10 +185,10 @@ class Env:
         return [c for c in calls if c[:2] == ["board", "mv"]]
 
     def counter(self) -> dict:
-        return json.loads((self.host / ".ours-state" / f"{ID}.json").read_text())
+        return json.loads((self.board / ".ours-state" / f"{ID}.json").read_text())
 
     def log(self) -> list[dict]:
-        path = self.host / ".ours-state" / "check.log"
+        path = self.board / ".ours-state" / "check.log"
         if not path.exists():
             return []
         return [json.loads(line) for line in path.read_text().splitlines()]
@@ -405,14 +419,14 @@ def test_all_fast_violations_are_collected(env: Env) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 4. test_command
+# 4. test.sh
 # ---------------------------------------------------------------------------
 
 
 def test_test_command_failure_refused(env: Env) -> None:
     env.config(test_command="echo 'FAILED tests/test_x.py'; exit 1")
     result = env.run("gate")
-    assert_refused(result, "test_command failed (exit 1)", "FAILED tests/test_x.py")
+    assert_refused(result, "test.sh failed (exit 1)", "FAILED tests/test_x.py")
 
 
 def test_test_command_output_tail_is_bounded(env: Env) -> None:
@@ -449,7 +463,7 @@ def test_test_command_timeout_kills_whole_group(env: Env) -> None:
     started = time.monotonic()
     result = env.run("gate")
     assert time.monotonic() - started < 30
-    assert_refused(result, "test_command timed out after 1s")
+    assert_refused(result, "test.sh timed out after 1s")
     recorded = [int(p) for p in pids.read_text().split()]
     assert len(recorded) == 2
     deadline = time.monotonic() + 5
@@ -485,48 +499,59 @@ def _assert_hook_rolls_back(env: Env, reason: str) -> None:
     env.set_card("Done")
     result = env.run("hook")
     assert result.returncode == 0
-    assert env.mv_calls() == [["board", "mv", ID, "In Progress", "--root", str(env.host / "kanban")]]
+    assert env.mv_calls() == [["board", "mv", ID, "In Progress", "--root", str(env.board / "kanban")]]
     assert env.state() == "In Progress"
     assert reason in env.card.read_text()
 
 
-@pytest.mark.parametrize(
-    ("raw", "reason"),
-    [
-        (None, "not found"),
-        ("base_ref = [unclosed\n", "is not valid TOML"),
-        ('test_command = "true"\n', "missing required key 'base_ref'"),
-        ('base_ref = "main"\n', "missing required key 'test_command'"),
-        ('base_ref = "nope-k05"\ntest_command = "true"\n', "ref 'nope-k05' not found"),
-        ('base_ref = "main"\ntest_command = "true"\nforbiden_paths = []\n', "unknown key(s) forbiden_paths"),
-        ('base_ref = "main"\ntest_command = "true"\ntest_timeout_s = "9"\n', "positive integer"),
-        ('base_ref = "main"\ntest_command = "true"\nforbidden_paths = "ours"\n', "list of non-empty"),
-        ('base_ref = "-x"\ntest_command = "true"\n', "must not start with '-'"),
-    ],
-)
-def test_bad_config_or_base_refused(env: Env, raw: str | None, reason: str) -> None:
-    if raw is None:
-        (env.host / "gate.toml").unlink()
-    else:
-        env.config(raw + f'symphony_bin = "{env.symphony}"\n' if "symphony_bin" not in raw else raw)
+def _drop_line(prefix: str):
+    def mutate(env: Env) -> None:
+        path = env.board / "project.toml"
+        lines = path.read_text().splitlines(keepends=True)
+        path.write_text("".join(line for line in lines if not line.startswith(prefix)))
+    return mutate
+
+
+def _append(text: str):
+    def mutate(env: Env) -> None:
+        path = env.board / "project.toml"
+        path.write_text(path.read_text() + text)
+    return mutate
+
+
+def _base_not_ancestor(env: Env) -> None:
+    write(env.code / "README.md", "moved\n")
+    git(env.code, "commit", "-qam", "main moves on")
+    env.record(git(env.code, "rev-parse", "main").strip())
+
+
+BAD_CONFIG_OR_BASE = [
+    (lambda env: (env.board / "project.toml").unlink(), "project.toml"),
+    (lambda env: write(env.board / "project.toml", "[project\n"), "ошибка TOML"),
+    (_drop_line("base_branch"), "нет ключа [project] base_branch"),
+    (_drop_line("[tools]"), "неизвестный ключ(и) в [project]: claude"),
+    (_append("[extra]\n"), "неизвестный раздел(ы) extra"),
+    (lambda env: env.config(test_command="true", forbiden_paths=[]),
+     "неизвестный ключ(и) в [checks]: forbiden_paths"),
+    (lambda env: env.config(test_command="true", test_timeout_s="9"), "целое число"),
+    (lambda env: env.config(test_command="true", forbidden_paths="ours"), "список непустых строк"),
+    (lambda env: env.config(test_command="true", base_ref="-x"), "не может начинаться с '-'"),
+    (lambda env: (env.board / ".ours-state" / f"{ID}.base.json").unlink(), "нет записи базы"),
+    (lambda env: write(env.board / ".ours-state" / f"{ID}.base.json", "{}"), "нет корректного base_sha"),
+    (_base_not_ancestor, "not an ancestor of HEAD (branch rewritten relative to the base)"),
+]
+
+
+@pytest.mark.parametrize(("mutate", "reason"), BAD_CONFIG_OR_BASE)
+def test_bad_config_or_base_refused(env: Env, mutate, reason: str) -> None:
+    mutate(env)
     assert_refused(env.run("gate"), reason)
     assert not env.marker.exists()
 
 
-@pytest.mark.parametrize(
-    ("raw", "reason"),
-    [
-        (None, "not found"),
-        ("base_ref = [unclosed\n", "is not valid TOML"),
-        ('test_command = "true"\n', "missing required key"),
-        ('base_ref = "nope-k05"\ntest_command = "true"\n', "not found"),
-    ],
-)
-def test_bad_config_or_base_hook_rolls_back(env: Env, raw: str | None, reason: str) -> None:
-    if raw is None:
-        (env.host / "gate.toml").unlink()
-    else:
-        env.config(raw)
+@pytest.mark.parametrize(("mutate", "reason"), [BAD_CONFIG_OR_BASE[i] for i in (0, 1, 2, 9, 11)])
+def test_bad_config_or_base_hook_rolls_back(env: Env, mutate, reason: str) -> None:
+    mutate(env)
     # Without a readable config the binary comes from SYMPHONY_PYTHON's dir.
     py_dir = env.tmp / "pybin"
     py_dir.mkdir()
@@ -538,6 +563,74 @@ def test_bad_config_or_base_hook_rolls_back(env: Env, raw: str | None, reason: s
     assert env.state() == "In Progress"
     assert len(env.mv_calls()) == 1
     assert reason in env.card.read_text()
+
+
+def test_base_from_record_survives_merge_into_target(env: Env) -> None:
+    # Verify used to merge the ticket branch into the target; a merge-base
+    # with the moving branch then hid every change (REPORT-07, item 1).
+    write(env.ws / "tests" / "test_app.py", "def test_a():\n    pass\n")
+    env.commit()
+    git(env.code, "merge", "-q", "--ff-only", f"symphony/{ID}")
+    assert_refused(env.run("gate"), "existing test changed: tests/test_app.py")
+
+
+def test_test_sh_runs_without_login_shell(env: Env) -> None:
+    env.config(test_command="shopt -q login_shell && exit 9; [ \"$PWD\" = \"" + str(env.ws)
+               + "\" ] || exit 8; touch " + str(env.marker))
+    assert_passed(env.run("gate"))
+    assert env.marker.exists()
+
+
+def test_timeouts_tests_s_is_the_default_test_timeout(env: Env) -> None:
+    env.config(test_command="sleep 30", timeouts={"tests_s": 1})
+    assert_refused(env.run("gate"), "test.sh timed out after 1s")
+
+
+def test_checks_test_timeout_overrides_timeouts(env: Env) -> None:
+    env.config(test_command="sleep 30", test_timeout_s=1, timeouts={"tests_s": 600})
+    assert_refused(env.run("gate"), "test.sh timed out after 1s")
+
+
+@contextmanager
+def held_lock(env: Env):
+    path = env.board / ".ours-state" / f"{ID}.lock"
+    with open(path, "a") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield handle
+
+
+def test_hook_skips_while_another_check_holds_the_lock(env: Env) -> None:
+    write(env.ws / "ours" / "x", "violation\n")
+    with held_lock(env):
+        result = env.run("hook")
+    assert result.returncode == 0
+    assert env.state() == "Human Review"
+    assert env.mv_calls() == []
+    assert not env.marker.exists()
+    assert env.log()[-1]["outcome"] == "skipped"
+    assert "another check" in env.log()[-1]["reason"]
+
+
+def test_gate_waits_for_the_lock_then_checks(env: Env) -> None:
+    # wait budget = gate 45 s - tests 10 s - margin 30 s = 5 s
+    env.config(test_command=f"touch {env.marker}", test_timeout_s=10, timeouts={"gate_ms": 45000})
+    with held_lock(env) as handle:
+        timer = threading.Timer(1.0, lambda: fcntl.flock(handle.fileno(), fcntl.LOCK_UN))
+        timer.start()
+        started = time.monotonic()
+        result = env.run("gate")
+        timer.join()
+    assert time.monotonic() - started >= 1.0
+    assert_passed(result)
+    assert env.marker.exists()
+
+
+def test_gate_refuses_when_the_lock_stays_busy(env: Env) -> None:
+    env.config(test_command=f"touch {env.marker}", test_timeout_s=10, timeouts={"gate_ms": 41000})
+    with held_lock(env):
+        result = env.run("gate")
+    assert_refused(result, "still runs after 1s")
+    assert not env.marker.exists()
 
 
 def test_not_a_git_repo_refused(env: Env) -> None:
@@ -558,17 +651,19 @@ def test_not_a_git_repo_hook_rolls_back(env: Env) -> None:
     assert "is not a git working tree" in env.card.read_text()
 
 
-def test_config_inside_workspace_refused(env: Env) -> None:
-    inside = write(env.ws / "gate.toml", 'base_ref = "main"\ntest_command = "true"\n')
-    assert_refused(env.run("gate", "--config", str(inside)), "inside the agent workspace")
+def test_board_inside_workspace_refused(env: Env) -> None:
+    inside = env.ws / "board"
+    inside.mkdir()
+    assert_refused(env.run("gate", SYMPHONY_WORKFLOW_DIR=str(inside)), "inside the agent workspace")
 
 
-def test_workspace_gate_toml_is_never_read(env: Env) -> None:
-    # A permissive gate.toml committed on the branch changes nothing.
-    write(env.ws / "gate.toml", 'base_ref = "main"\ntest_command = "true"\n')
+def test_workspace_project_files_are_never_read(env: Env) -> None:
+    # A permissive project.toml / test.sh committed on the branch changes nothing.
+    write(env.ws / "project.toml", "[checks]\n")
+    write(env.ws / "test.sh", "exit 0\n")
+    env.commit()
     env.config(test_command="exit 3")
-    result = env.run("gate")
-    assert_refused(result, "forbidden path changed: gate.toml")
+    assert_refused(env.run("gate"), "test.sh failed (exit 3)")
 
 
 def test_missing_workflow_dir_refused(env: Env) -> None:
@@ -619,7 +714,7 @@ def test_hook_ignores_other_states(env: Env, state: str) -> None:
     assert not env.marker.exists()
     assert env.mv_calls() == []
     assert env.state() == state
-    assert not (env.host / ".ours-state" / f"{ID}.json").exists()
+    assert not (env.board / ".ours-state" / f"{ID}.json").exists()
 
 
 def test_hook_human_review_failure_rolls_back_with_note_and_counter(env: Env) -> None:
@@ -634,7 +729,7 @@ def test_hook_human_review_failure_rolls_back_with_note_and_counter(env: Env) ->
     assert "moved to: In Progress" in text
     assert env.counter()["failures"] == 1
     assert "ours/x" in env.counter()["last_reason"]
-    state_dir = env.host / ".ours-state"
+    state_dir = env.board / ".ours-state"
     assert (state_dir / ".gitignore").read_text() == "*\n"
     outcomes = [e["outcome"] for e in env.log()]
     assert outcomes == ["rollback:In Progress"]
@@ -669,7 +764,7 @@ def test_hook_done_failure_rolls_back(env: Env) -> None:
     assert env.run("hook").returncode == 0
     assert env.state() == "In Progress"
     text = env.card.read_text()
-    assert "test_command failed (exit 2)" in text
+    assert "test.sh failed (exit 2)" in text
     assert "    boom" in text  # tail as an indented block
 
 
@@ -718,7 +813,7 @@ def test_hook_note_falls_back_to_file_append(env: Env) -> None:
     text = env.card.read_text()
     assert "## Check Failure" in text
     assert "forbidden path changed: ours/x" in text
-    assert not list((env.host / "kanban").glob(".tmp-*"))
+    assert not list((env.board / "kanban").glob(".tmp-*"))
     assert env.log()[-1]["note"] == "file"
 
 
@@ -738,7 +833,7 @@ def test_hook_note_cannot_forge_card_sections(env: Env) -> None:
 
 
 def test_hook_without_symphony_binary_logs_error(env: Env) -> None:
-    env.config(raw='base_ref = "main"\ntest_command = "exit 1"\n')
+    env.config(test_command="exit 1", symphony_bin=str(env.tmp / "missing" / "symphony"))
     result = env.run("hook", SYMPHONY_PYTHON=str(env.tmp / "missing" / "python"))
     assert result.returncode == 0
     assert env.state() == "Human Review"
@@ -768,7 +863,7 @@ def test_hook_skips_rollback_when_workspace_removed_during_check(env: Env) -> No
     assert not env.ws.exists()
     assert env.state() == "Done"
     assert env.mv_calls() == []
-    assert not (env.host / ".ours-state" / f"{ID}.json").exists()
+    assert not (env.board / ".ours-state" / f"{ID}.json").exists()
     assert env.log()[-1]["outcome"] == "skipped"
 
 
@@ -836,9 +931,3 @@ def test_issue_title_is_ignored(env: Env) -> None:
     result = env.run("gate", SYMPHONY_ISSUE_TITLE=f"$(touch {pwned})`touch {pwned}`")
     assert_passed(result)
     assert not pwned.exists()
-
-
-def test_example_config_is_valid() -> None:
-    cfg = check.load_config(CHECK.parent / "gate.example.toml")
-    assert cfg.base_ref == "main"
-    assert cfg.forbidden_paths[: len(check.DEFAULT_FORBIDDEN_PATHS)] == check.DEFAULT_FORBIDDEN_PATHS
