@@ -14,6 +14,7 @@ documented defaults. The dispatch-time, harder validation lives in
 from __future__ import annotations
 
 import re
+import subprocess
 import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -294,6 +295,8 @@ def build_service_config(
             f"{sorted(SUPPORTED_WORKSPACE_REUSE_POLICIES)}",
             value=workspace_reuse_policy,
         )
+
+    code_repo = _validated_code_repo(workspace_raw.get("code_repo"))
 
     hooks_raw = cfg.get("hooks") or {}
     if not isinstance(hooks_raw, dict):
@@ -1023,7 +1026,36 @@ def build_service_config(
         preview=preview,
         artifacts=artifacts,
         pm=pm,
+        code_repo=code_repo,
     )
+
+
+def _validated_code_repo(value: Any) -> Path | None:
+    """`workspace.code_repo`: absolute root of a git repo, or None (unset/empty)."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if not isinstance(value, str) or not Path(value.strip()).is_absolute():
+        raise ConfigValidationError(
+            "workspace.code_repo must be an absolute path string", value=value
+        )
+    path = Path(value.strip())
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        proc = None
+    top = proc.stdout.strip() if proc is not None and proc.returncode == 0 else ""
+    if not top or Path(top).resolve() != path.resolve():
+        raise ConfigValidationError(
+            "workspace.code_repo must be the root directory of a git repository",
+            value=value,
+        )
+    return path
 
 
 def _validated_positive_or_default(value: Any, default: int, *, name: str) -> int:

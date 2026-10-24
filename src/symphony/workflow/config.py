@@ -756,6 +756,9 @@ class ServiceConfig:
     artifacts: ArtifactsConfig = field(default_factory=ArtifactsConfig)
     # PM Workspace is appended to preserve positional ServiceConfig callers.
     pm: PmConfig = field(default_factory=PmConfig)
+    # workspace.code_repo: git repo the read-only web git routes inspect when
+    # the board dir is not the code repo. None = use the WORKFLOW.md dir.
+    code_repo: Path | None = None
 
     def prompt_template_for_state(self, state: str) -> str:
         """Return the runtime prompt template for one tracker state."""
