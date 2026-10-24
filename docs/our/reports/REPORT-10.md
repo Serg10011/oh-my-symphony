@@ -36,10 +36,10 @@
 
 | Набор | До | После |
 |---|---|---|
-| `python -m pytest -q` | BASE_RESULT | AFTER_RESULT |
-| `python -m pytest ours/tests -q` | — | OURS_RESULT |
+| `python -m pytest -q` | 3859 прошли, 136 пропущены, 3 упали | 3878 прошли, 136 пропущены, 2 упали [запуск] |
+| `python -m pytest ours/tests -q` | — | 107 прошли [запуск] |
 
-`ruff check src tests` — без замечаний; `symphony-pyright` — PYRIGHT_RESULT (запускался отдельно от pytest). Новых тестов 18: 3 в `test_long_after_run_reconcile.py`, 15 в `test_preserve_workspace_states.py` [запуск].
+`ruff check src tests` — без замечаний; `symphony-pyright` — 0 ошибок (запускался отдельно от pytest). Два падения — известные, из окружения (`test_pm_planning::test_stop_kills_term_resistant_group_after_leader_exits`, `test_pm_ui_node::test_pm_ui_node_regressions`). В базовом прогоне третьим упал `test_pm_routes::test_xlsx_export_and_import_preview_keep_state_route_responsive` — проверка отзывчивости под нагрузкой (я параллельно гоняла свои тесты); в одиночку прошёл 3 раза из 3, в прогоне после правок прошёл. Сумма сходится: 3859 + 1 = 3860, как ожидалось; 3860 + 18 новых = 3878. Новых тестов 18: 3 в `test_long_after_run_reconcile.py`, 15 в `test_preserve_workspace_states.py` [запуск].
 
 ## Риски и что не сделано
 
