@@ -150,6 +150,14 @@ class ClaudeCodeBackend(JsonlStreamBackend):
             if isinstance(sid, str) and sid:
                 await self._observe_session_id(sid)
             return msg
+        elif kind == "rate_limit_event":
+            # Kept verbatim (no parsing); a malformed frame must not erase
+            # the last good value. Stored before the emit so the event
+            # envelope already carries it to the orchestrator.
+            info = msg.get("rate_limit_info")
+            if isinstance(info, dict):
+                self._latest_rate_limits = info
+            await self._emit(EVENT_OTHER_MESSAGE, msg)
         else:
             await self._emit(EVENT_OTHER_MESSAGE, msg)
         return None
