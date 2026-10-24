@@ -1,24 +1,28 @@
 #!/usr/bin/env python3
-"""Mechanical checks for the night pipeline (TASK-K05).
+"""Mechanical checks for the night pipeline (TASK-K05, TASK-K08a).
 
 Two modes share one set of checks:
 
-    check.py gate [--config PATH]   agent.done_gate_command; exit 0 = pass,
-                                    any other outcome refuses Done.
-    check.py hook [--config PATH]   first line of hooks.after_run; acts only
-                                    when the card is in Done / Human Review,
-                                    rolls the card back on failure, always
-                                    exits 0.
+    check.py gate   agent.done_gate_command; exit 0 = pass, any other
+                    outcome refuses Done.
+    check.py hook   first line of hooks.after_run; acts only when the card
+                    is in Done / Human Review, rolls the card back on
+                    failure, always exits 0.
 
-Checks, fast ones first (all fast violations are collected), the project
-test command last and only when the fast checks passed:
+$SYMPHONY_WORKFLOW_DIR is the project board folder (ours/hooks/
+project_config.py). Checks, fast ones first (all fast violations are
+collected), the project tests last and only when the fast checks passed:
 
-    1. config   $SYMPHONY_WORKFLOW_DIR/gate.toml (never from the workspace)
-    2. base     git merge-base HEAD <base_ref>
+    1. config   <board>/project.toml: [project], [tools], [checks]
+    2. base     <board>/.ours-state/<ID>.base.json, written by worktree.py
+                when the worktree was created; must be an ancestor of HEAD
     3. forbidden paths changed relative to the base
     4. existing tests changed relative to the base
     5. card shape: required sections present and non-empty
-    6. project tests: test_command via `bash -lc`, own process group
+    6. project tests: `/bin/bash <board>/test.sh`, own process group
+
+One check per card at a time (<board>/.ours-state/<ID>.lock): a second hook
+skips, the gate waits within its timeout.
 
 Standard library only, Python >= 3.11, POSIX. See ours/hooks/README.md.
 """
@@ -35,20 +39,17 @@ import subprocess
 import sys
 import tempfile
 import time
-import tomllib
 import traceback
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - non-POSIX
-    fcntl = None  # type: ignore[assignment]
+import fcntl
+
+import project_config as pc
 
 DEFAULT_FORBIDDEN_PATHS = (
     "WORKFLOW.md",
-    "gate.toml",
     "ours/**",
     ".github/**",
     ".git/**",
@@ -67,12 +68,11 @@ DEFAULT_TEST_GLOBS = (
     "**/*.spec.*",
 )
 DEFAULT_REQUIRED_SECTIONS = ("## Wiki Updates", "## As-Is -> To-Be Report")
-DEFAULT_TEST_TIMEOUT_S = 900
 DEFAULT_MAX_CHECK_FAILURES = 3
 
-CONFIG_NAME = "gate.toml"
-BOARD_DIR = "kanban"
-STATE_DIR = ".ours-state"
+BOARD_DIR = pc.BOARD_DIR
+STATE_DIR = pc.STATE_DIR
+TEST_SCRIPT = "test.sh"
 LOG_NAME = "check.log"
 NOTE_HEADING = "Check Failure"
 
@@ -86,26 +86,13 @@ TAIL_BYTES = 4000
 GIT_TIMEOUT_S = 120
 SYMPHONY_TIMEOUT_S = 60
 POLL_S = 0.2
+# The gate needs this much of done_gate_timeout_ms beyond the test run.
+GATE_MARGIN_S = 30
 
 # Repository-controlled git settings must not change what the checks see:
 # an fsmonitor hook could report a dirty tree as clean.
 GIT_SAFE_ARGS = ("-c", "core.fsmonitor=false", "-c", "core.quotePath=false")
 GIT_ENV_DROP = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY")
-
-_CONFIG_KEYS = frozenset(
-    {
-        "base_ref",
-        "test_command",
-        "test_timeout_s",
-        "forbidden_paths",
-        "test_globs",
-        "allow_modified_tests",
-        "required_sections",
-        "max_check_failures",
-        "symphony_bin",
-    }
-)
-
 
 class CheckError(Exception):
     """A refusal with an operator-readable reason."""
@@ -122,86 +109,38 @@ class Orphaned(Exception):
 
 @dataclass(frozen=True)
 class Config:
-    base_ref: str
-    test_command: str
-    test_timeout_s: int = DEFAULT_TEST_TIMEOUT_S
+    base_branch: str
+    symphony_bin: str
+    test_timeout_s: int = pc.DEFAULT_TIMEOUTS["tests_s"]
+    gate_timeout_s: int = pc.DEFAULT_TIMEOUTS["gate_ms"] // 1000
     forbidden_paths: tuple[str, ...] = DEFAULT_FORBIDDEN_PATHS
     test_globs: tuple[str, ...] = DEFAULT_TEST_GLOBS
     allow_modified_tests: tuple[str, ...] = ()
     required_sections: tuple[str, ...] = DEFAULT_REQUIRED_SECTIONS
     max_check_failures: int = DEFAULT_MAX_CHECK_FAILURES
-    symphony_bin: str | None = None
 
 
-def _cfg_str(data: dict, key: str, *, required: bool) -> str | None:
-    if key not in data:
-        if required:
-            raise CheckError(f"config: missing required key {key!r}")
-        return None
-    value = data[key]
-    if not isinstance(value, str) or not value.strip():
-        raise CheckError(f"config: {key!r} must be a non-empty string")
-    return value
-
-
-def _cfg_int(data: dict, key: str, default: int) -> int:
-    if key not in data:
-        return default
-    value = data[key]
-    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
-        raise CheckError(f"config: {key!r} must be a positive integer")
-    return value
-
-
-def _cfg_list(data: dict, key: str, default: tuple[str, ...]) -> tuple[str, ...]:
-    if key not in data:
-        return default
-    value = data[key]
-    if not isinstance(value, list) or not all(
-        isinstance(item, str) and item.strip() for item in value
-    ):
-        raise CheckError(f"config: {key!r} must be a list of non-empty strings")
-    return tuple(value)
-
-
-def load_config(path: Path) -> Config:
+def load_config(board: Path) -> Config:
+    """Rules from <board>/project.toml (schema: project_config.py)."""
     try:
-        raw = path.read_bytes()
-    except FileNotFoundError:
-        raise CheckError(f"config: {path} not found") from None
-    except OSError as exc:
-        raise CheckError(f"config: cannot read {path}: {exc}") from None
-    try:
-        data = tomllib.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-        raise CheckError(f"config: {path} is not valid TOML: {exc}") from None
-    unknown = sorted(set(data) - _CONFIG_KEYS)
-    if unknown:
-        # A typo such as `forbiden_paths` must not silently drop a check.
-        raise CheckError(f"config: unknown key(s) {', '.join(unknown)}")
-    base_ref = _cfg_str(data, "base_ref", required=True)
-    assert base_ref is not None
-    if base_ref.startswith("-"):
-        raise CheckError("config: 'base_ref' must not start with '-'")
-    test_command = _cfg_str(data, "test_command", required=True)
-    assert test_command is not None
-    sections = _cfg_list(data, "required_sections", DEFAULT_REQUIRED_SECTIONS)
+        project = pc.load_project(board)
+    except pc.ProjectError as exc:
+        raise CheckError(f"config: {exc}") from None
+    checks = project["checks"]
+    sections = tuple(checks.get("required_sections", DEFAULT_REQUIRED_SECTIONS))
     for heading in sections:
         if not re.match(r"^##\s+\S", heading):
             raise CheckError(f"config: required section {heading!r} must start with '## '")
     cfg = Config(
-        base_ref=base_ref,
-        test_command=test_command,
-        test_timeout_s=_cfg_int(data, "test_timeout_s", DEFAULT_TEST_TIMEOUT_S),
-        forbidden_paths=DEFAULT_FORBIDDEN_PATHS
-        + _cfg_list(data, "forbidden_paths", ()),
-        test_globs=_cfg_list(data, "test_globs", DEFAULT_TEST_GLOBS),
-        allow_modified_tests=_cfg_list(data, "allow_modified_tests", ()),
+        base_branch=project["project"]["base_branch"],
+        symphony_bin=project["tools"]["symphony"],
+        test_timeout_s=pc.test_timeout_s(project),
+        gate_timeout_s=project["timeouts"]["gate_ms"] // 1000,
+        forbidden_paths=DEFAULT_FORBIDDEN_PATHS + tuple(checks.get("forbidden_paths", ())),
+        test_globs=tuple(checks.get("test_globs", DEFAULT_TEST_GLOBS)),
+        allow_modified_tests=tuple(checks.get("allow_modified_tests", ())),
         required_sections=sections,
-        max_check_failures=_cfg_int(
-            data, "max_check_failures", DEFAULT_MAX_CHECK_FAILURES
-        ),
-        symphony_bin=_cfg_str(data, "symphony_bin", required=False),
+        max_check_failures=checks.get("max_check_failures", DEFAULT_MAX_CHECK_FAILURES),
     )
     for pattern in (*cfg.forbidden_paths, *cfg.test_globs, *cfg.allow_modified_tests):
         compile_glob(pattern)
@@ -315,8 +254,13 @@ def _z(output: bytes) -> list[str]:
     return [item.decode("utf-8", errors="surrogateescape") for item in output.split(b"\0") if item]
 
 
-def resolve_base(workspace: Path, base_ref: str) -> tuple[Path, str]:
-    """Return (repository top level, merge-base sha) or raise CheckError."""
+def resolve_base(workspace: Path, board: Path, issue_id: str) -> tuple[Path, str]:
+    """Return (repository top level, recorded base sha) or raise CheckError.
+
+    The base is the commit the worktree was created from (worktree.py),
+    never a merge-base with a moving branch: a merge into the ticket branch
+    would otherwise make every change invisible.
+    """
     if shutil.which("git") is None:
         raise CheckError("base: git not found on PATH")
     try:
@@ -329,16 +273,20 @@ def resolve_base(workspace: Path, base_ref: str) -> tuple[Path, str]:
     except CheckError:
         raise CheckError("base: repository has no HEAD commit") from None
     try:
-        ref_sha = git(repo, "rev-parse", "--verify", "--quiet", f"{base_ref}^{{commit}}")
-    except CheckError:
-        raise CheckError(f"base: ref {base_ref!r} not found") from None
+        sha = pc.read_base_record(board, issue_id)["base_sha"]
+    except pc.ProjectError as exc:
+        raise CheckError(f"base: {exc}") from None
     try:
-        merge_base = git(repo, "merge-base", "HEAD", ref_sha.decode().strip())
+        git(repo, "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}")
     except CheckError:
-        raise CheckError(f"base: no merge-base between HEAD and {base_ref!r}") from None
-    sha = merge_base.decode().strip()
-    if not sha:
-        raise CheckError(f"base: no merge-base between HEAD and {base_ref!r}")
+        raise CheckError(f"base: recorded base {sha[:12]} is not a commit here") from None
+    try:
+        git(repo, "merge-base", "--is-ancestor", sha, "HEAD")
+    except CheckError:
+        raise CheckError(
+            f"base: recorded base {sha[:12]} is not an ancestor of HEAD "
+            "(branch rewritten relative to the base)"
+        ) from None
     return repo, sha
 
 
@@ -541,14 +489,16 @@ def _kill_group(proc: subprocess.Popen) -> None:
         proc.wait()
 
 
-def run_tests(workspace: Path, cfg: Config, parent_pid: int) -> tuple[str | None, str]:
-    """Run test_command; return (failure reason or None, output tail)."""
-    bash = shutil.which("bash") or "/bin/bash"
+def run_tests(
+    workspace: Path, script: Path, cfg: Config, parent_pid: int
+) -> tuple[str | None, str]:
+    """Run test.sh; return (failure reason or None, output tail)."""
     with tempfile.TemporaryFile() as out:
         # Output goes to a file, not a pipe: a straggler holding the pipe
-        # could otherwise turn a passing run into a timeout.
+        # could otherwise turn a passing run into a timeout. No login shell:
+        # test.sh sets its own PATH (DECISIONS, item к).
         proc = subprocess.Popen(
-            [bash, "-lc", cfg.test_command],
+            ["/bin/bash", str(script)],
             cwd=str(workspace),
             stdin=subprocess.DEVNULL,
             stdout=out,
@@ -576,12 +526,12 @@ def run_tests(workspace: Path, cfg: Config, parent_pid: int) -> tuple[str | None
     if orphaned:
         raise Orphaned("parent hook shell died while tests were running")
     if timed_out:
-        return f"test_command timed out after {cfg.test_timeout_s}s", tail
+        return f"test.sh timed out after {cfg.test_timeout_s}s", tail
     if proc.returncode == 0:
         return None, tail
     if proc.returncode == 127:
-        return "test_command: command not found (exit 127)", tail
-    return f"test_command failed (exit {proc.returncode})", tail
+        return "test.sh: command not found (exit 127)", tail
+    return f"test.sh failed (exit {proc.returncode})", tail
 
 
 # ---------------------------------------------------------------------------
@@ -595,7 +545,6 @@ class Context:
     workflow_dir: Path
     workspace: Path
     issue_id: str
-    config_path: Path
     parent_pid: int = field(default_factory=os.getppid)
 
     @property
@@ -635,22 +584,38 @@ def workflow_dir_from_env() -> Path:
     return path
 
 
-def build_context(mode: str, config_arg: str | None) -> Context:
+def build_context(mode: str) -> Context:
     workflow_dir = workflow_dir_from_env()
     workspace = Path.cwd().resolve()
-    config_path = (Path(config_arg) if config_arg else workflow_dir / CONFIG_NAME).resolve()
-    if _inside(config_path, workspace):
-        raise CheckError(f"config {config_path} is inside the agent workspace; refusing")
+    if _inside(workflow_dir, workspace):
+        raise CheckError(f"board folder {workflow_dir} is inside the agent workspace; refusing")
     # SYMPHONY_ISSUE_TITLE is agent-controlled and deliberately never read.
     issue_id = validate_issue_id(os.environ.get("SYMPHONY_ISSUE_ID") or workspace.name)
-    return Context(mode, workflow_dir, workspace, issue_id, config_path)
+    return Context(mode, workflow_dir, workspace, issue_id)
 
 
-def run_checks(ctx: Context) -> Result:
-    cfg = load_config(ctx.config_path)
+def try_lock(ctx: Context, wait_s: float):
+    """Exclusive per-card lock file handle, or None when still busy."""
+    pc.ensure_state_dir(ctx.state_dir.parent)
+    # Opened non-inheritable: the test processes never hold the lock.
+    handle = open(ctx.state_dir / f"{ctx.issue_id}.lock", "a")
+    deadline = time.monotonic() + max(0.0, wait_s)
+    while True:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return handle
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                handle.close()
+                return None
+            time.sleep(POLL_S)
+
+
+def run_checks(ctx: Context, cfg: Config | None = None) -> Result:
+    cfg = cfg or load_config(ctx.workflow_dir)
     reasons: list[str] = []
     try:
-        repo, base = resolve_base(ctx.workspace, cfg.base_ref)
+        repo, base = resolve_base(ctx.workspace, ctx.workflow_dir, ctx.issue_id)
     except CheckError as exc:
         reasons.append(str(exc))
     else:
@@ -660,7 +625,7 @@ def run_checks(ctx: Context) -> Result:
     reasons += card_violations(ctx.card, cfg)
     if reasons:
         return Result(False, reasons, "", cfg)
-    failure, tail = run_tests(ctx.workspace, cfg, ctx.parent_pid)
+    failure, tail = run_tests(ctx.workspace, ctx.workflow_dir / TEST_SCRIPT, cfg, ctx.parent_pid)
     if failure is not None:
         return Result(False, [failure], tail, cfg)
     return Result(True, [], tail, cfg)
@@ -681,10 +646,7 @@ def _clean(text: str) -> str:
 
 
 def ensure_state_dir(state_dir: Path) -> None:
-    state_dir.mkdir(exist_ok=True)  # inside an existing workflow dir only
-    ignore = state_dir / ".gitignore"
-    if not ignore.exists():
-        ignore.write_text("*\n", encoding="utf-8")
+    pc.ensure_state_dir(state_dir.parent)  # inside an existing board folder only
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
@@ -740,7 +702,7 @@ def bump_counter(ctx: Context, reason: str) -> int:
 
 
 def resolve_symphony_bin(cfg: Config | None) -> str | None:
-    if cfg is not None and cfg.symphony_bin:
+    if cfg is not None:
         candidate = Path(cfg.symphony_bin).expanduser()
     else:
         python = os.environ.get("SYMPHONY_PYTHON", "").strip()
@@ -821,8 +783,7 @@ def _append_note_file(card: Path, board: Path, issue_id: str, body: str) -> None
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with open(lock_path, "a+", encoding="utf-8") as lock:
         # Same per-ticket lock file as the file tracker's mutations.
-        if fcntl is not None:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         text = card.read_text(encoding="utf-8")
         new = f"{text.rstrip()}\n\n## {NOTE_HEADING}\n\n{body.strip()}\n"
         _write_atomic(card, new.encode("utf-8"))
@@ -838,7 +799,7 @@ def rollback(ctx: Context, result: Result) -> None:
     errors: list[str] = []
     binary = resolve_symphony_bin(result.cfg)
     if binary is None:
-        errors.append("symphony binary not found (symphony_bin / SYMPHONY_PYTHON); rollback impossible")
+        errors.append("symphony binary not found ([tools] symphony / SYMPHONY_PYTHON); rollback impossible")
     else:
         board = ctx.workflow_dir / BOARD_DIR
         try:
@@ -897,16 +858,30 @@ def _format_report(mode: str, issue_id: str, result: Result) -> str:
     return "\n".join(lines)
 
 
-def gate_main(config_arg: str | None) -> int:
+def gate_main() -> int:
     ctx: Context | None = None
+    lock = None
     try:
-        ctx = build_context("gate", config_arg)
-        result = run_checks(ctx)
+        ctx = build_context("gate")
+        cfg = load_config(ctx.workflow_dir)
+        # A hook may still be checking this card: wait for it, but leave
+        # enough of done_gate_timeout_ms for our own test run.
+        wait_s = cfg.gate_timeout_s - cfg.test_timeout_s - GATE_MARGIN_S
+        lock = try_lock(ctx, wait_s)
+        if lock is None:
+            raise CheckError(
+                f"another check of {ctx.issue_id} still runs after {max(0, wait_s)}s "
+                "(.ours-state lock busy); try again later"
+            )
+        result = run_checks(ctx, cfg)
     except CheckError as exc:
         result = Result(False, [str(exc)])
     except Exception as exc:  # noqa: BLE001 - fail closed
         result = Result(False, [f"internal error: {type(exc).__name__}: {exc}"],
                         traceback.format_exc()[-TAIL_BYTES:])
+    finally:
+        if lock is not None:
+            lock.close()
     issue_id = ctx.issue_id if ctx else "?"
     _emit(_format_report("gate", issue_id, result))
     if ctx is not None:
@@ -914,9 +889,9 @@ def gate_main(config_arg: str | None) -> int:
     return 0 if result.ok else 1
 
 
-def hook_main(config_arg: str | None) -> int:
+def hook_main() -> int:
     try:
-        ctx = build_context("hook", config_arg)
+        ctx = build_context("hook")
     except CheckError as exc:
         _emit(f"check.py hook: {exc}", stream=sys.stderr)
         try:
@@ -931,6 +906,17 @@ def hook_main(config_arg: str | None) -> int:
         return 0
     if state.lower() not in CHECKED_STATES:
         return 0
+    lock = try_lock(ctx, 0)
+    if lock is None:
+        # A second after_run of the same card (REPORT-10, risks, item 1).
+        log_event(ctx, ctx.issue_id, "hook", "skipped",
+                  "another check of this card is running; card left as is")
+        return 0
+    with lock:
+        return _hook_checked(ctx)
+
+
+def _hook_checked(ctx: Context) -> int:
     try:
         result = run_checks(ctx)
     except Orphaned as exc:
@@ -944,8 +930,8 @@ def hook_main(config_arg: str | None) -> int:
                         traceback.format_exc()[-TAIL_BYTES:])
         log_event(ctx, ctx.issue_id, "hook", "error", traceback.format_exc())
         try:
-            # Keep symphony_bin / max_check_failures for the rollback.
-            result.cfg = load_config(ctx.config_path)
+            # Keep [tools] symphony / max_check_failures for the rollback.
+            result.cfg = load_config(ctx.workflow_dir)
         except Exception:  # noqa: BLE001
             pass
     if result.ok:
@@ -971,15 +957,14 @@ def hook_main(config_arg: str | None) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="check.py", description=__doc__.splitlines()[0])
     parser.add_argument("mode", choices=("gate", "hook"))
-    parser.add_argument("--config", default=None, help="path to gate.toml (outside the workspace)")
     try:
         args = parser.parse_args(argv)
     except SystemExit as exc:
         return int(exc.code or 0) if argv and "-h" in argv else 2
     if args.mode == "gate":
-        return gate_main(args.config)
+        return gate_main()
     try:
-        return hook_main(args.config)
+        return hook_main()
     except BaseException as exc:  # noqa: BLE001 - the hook never fails the turn
         _emit(f"check.py hook: unexpected {type(exc).__name__}: {exc}", stream=sys.stderr)
         return 0

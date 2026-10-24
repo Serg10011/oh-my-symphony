@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""Create a project board folder outside the code repository (TASK-K08a).
+
+    project-new <name> --repo <path> --base <branch> --prefix <PREFIX> \
+                --port <port> [--root <dir>]
+
+Run it with the orchestrator's Python (the one that has `symphony`
+installed): that interpreter and the `symphony` next to it go into
+[tools]. Nothing is overwritten; on any refusal nothing is left behind.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import subprocess
+import sys
+import tomllib
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+
+import project_config as pc  # noqa: E402
+
+SETUP_SH = """\
+#!/bin/bash
+# Подготовка свежей рабочей копии карточки (запускает ours/hooks/worktree.py
+# через /bin/bash в папке рабочей копии, после `git worktree add`).
+# Пример для Node: export PATH=/полный/путь/к/node/bin:$PATH; npm ci
+# Пример для Python: /полный/путь/python3 -m venv .venv && .venv/bin/pip install -e .
+# Пути — полные: login-оболочка не используется, PATH может быть коротким.
+# Код 0 = готово; любой другой код — рабочая копия и новая ветка убираются.
+echo "setup.sh не настроен: заполни {board}/setup.sh" >&2
+exit 1
+"""
+
+TEST_SH = """\
+#!/bin/bash
+# Полный прогон тестов проекта (запускает ours/hooks/check.py через /bin/bash
+# в папке рабочей копии, в своей группе процессов, с таймаутом).
+# Код 0 = зелено. Раннер вызывать напрямую, полными путями.
+# В конце вывести строку итогов единого формата:
+#   PIPELINE_TESTS passed=<n> skipped=<n> failed=<n>
+echo "test.sh не настроен: заполни {board}/test.sh" >&2
+exit 1
+"""
+
+PROJECT_TOML = """\
+# Настройки проекта для конвейера (TASK-K08a). Единственный файл настроек:
+# WORKFLOW.md строится из него командой ours/bin/project-render.
+# Неизвестный ключ — ошибка, чтобы опечатка не отключила проверку.
+
+[project]
+name = {name}
+repo = {repo}            # репозиторий кода, абсолютный путь
+base_branch = {base}     # от неё создаются ветки symphony/<ID>
+id_prefix = {prefix}     # ID карточек: {prefix_raw}-1, {prefix_raw}-2, ...
+port = {port}
+
+[tools]                  # абсолютные пути; заполняет project-new
+python = {python}
+symphony = {symphony}
+claude = {claude}
+
+[checks]                 # правила ours/hooks/check.py
+# forbidden_paths = []         # ДОБАВЛЯЮТСЯ к встроенному списку; сюда же
+#                              # файлы запуска тестов (package.json, конфиг раннера)
+# test_globs = ["tests/**"]    # ЗАМЕНЯЮТ встроенный список
+# allow_modified_tests = []
+# required_sections = ["## Wiki Updates", "## As-Is -> To-Be Report"]
+# max_check_failures = 3
+# test_timeout_s = 900         # если задан, важнее [timeouts] tests_s
+
+[timeouts]               # заполнит project-doctor (K08b); пока — умолчания
+# tests_s = 900
+# gate_ms = 960000
+# hooks_ms = 1200000
+"""
+
+
+def fail(message: str) -> int:
+    print(f"project-new: отказ: {message}", file=sys.stderr)
+    return 1
+
+
+def git_ok(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["git", *args], capture_output=True, text=True, check=False)
+
+
+def nearest_existing(path: Path) -> Path:
+    while not path.exists():
+        path = path.parent
+    return path
+
+
+def other_projects(root: Path) -> list[tuple[Path, dict]]:
+    found = []
+    for toml in sorted(root.glob(f"*/{pc.PROJECT_FILE}")):
+        try:
+            data = tomllib.loads(toml.read_text(encoding="utf-8")).get("project", {})
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            print(f"project-new: предупреждение: не читается {toml}: {exc}", file=sys.stderr)
+            continue
+        found.append((toml.parent, data))
+    return found
+
+
+def toml_str(value: str) -> str:
+    return json.dumps(value, ensure_ascii=False)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="project-new", description=__doc__.splitlines()[0])
+    parser.add_argument("name")
+    parser.add_argument("--repo", required=True)
+    parser.add_argument("--base", required=True)
+    parser.add_argument("--prefix", required=True)
+    parser.add_argument("--port", required=True, type=int)
+    parser.add_argument("--root", default=str(pc.DEFAULT_ROOT))
+    args = parser.parse_args(argv)
+
+    if not pc.NAME_RE.match(args.name):
+        return fail(f"имя {args.name!r} не подходит под ^[a-z0-9][a-z0-9-]*$")
+    if not pc.PREFIX_RE.match(args.prefix):
+        return fail(f"префикс {args.prefix!r} не подходит под ^[A-Z][A-Z0-9]{{1,9}}$")
+    if not 1 <= args.port <= 65535:
+        return fail(f"порт {args.port} вне 1..65535")
+    root = Path(args.root).expanduser().absolute()
+    board = root / args.name
+    if board.exists() or board.is_symlink():
+        return fail(f"папка {board} уже есть; перезаписывать не буду")
+
+    repo = Path(args.repo).expanduser().absolute()
+    top = git_ok("-C", str(repo), "rev-parse", "--show-toplevel")
+    if top.returncode != 0 or Path(top.stdout.strip()).resolve() != repo.resolve():
+        return fail(f"{repo} — не корень git-репозитория")
+    repo = repo.resolve()
+    if git_ok("-C", str(repo), "check-ref-format", "--branch", args.base).returncode != 0 \
+            or args.base.startswith("-"):
+        return fail(f"имя ветки {args.base!r} некорректно")
+    if git_ok("-C", str(repo), "show-ref", "--verify", "--quiet",
+              f"refs/heads/{args.base}").returncode != 0:
+        return fail(f"в {repo} нет ветки refs/heads/{args.base}")
+    # REPORT-09, item 17: inside another repository git silently uses it.
+    outer = nearest_existing(board.parent)
+    probe = git_ok("-C", str(outer), "rev-parse", "--show-toplevel")
+    if probe.returncode == 0:
+        return fail(f"папка доски оказалась бы внутри git-репозитория {probe.stdout.strip()}; "
+                    "выбери другой --root")
+
+    for other, data in other_projects(root):
+        if data.get("port") == args.port:
+            return fail(f"порт {args.port} уже занят проектом {other.name}")
+        if data.get("id_prefix") == args.prefix:
+            return fail(f"префикс {args.prefix} уже занят проектом {other.name}")
+
+    claude = shutil.which("claude")
+    if not claude:
+        return fail("команда claude не найдена (which claude)")
+    python = Path(sys.executable).absolute()
+    if subprocess.run([str(python), "-c", "import symphony"], capture_output=True,
+                      check=False).returncode != 0:
+        return fail(f"{python} не видит пакет symphony: запусти project-new тем Python, "
+                    "в который установлен оркестратор")
+    symphony = python.parent / "symphony"
+    if not symphony.is_file():
+        found = shutil.which("symphony")
+        if not found:
+            return fail(f"не найден symphony рядом с {python} и в PATH")
+        symphony = Path(found).absolute()
+
+    try:
+        board.mkdir(parents=True)
+    except OSError as exc:
+        return fail(f"не создать {board}: {exc}")
+    try:
+        create(board, args, repo, python, symphony, Path(claude).absolute())
+    except BaseException as exc:
+        shutil.rmtree(board, ignore_errors=True)
+        if isinstance(exc, (pc.ProjectError, OSError, subprocess.CalledProcessError)):
+            return fail(str(exc))
+        raise
+    print(f"Создана папка доски {board}\n"
+          f"Дальше: заполни {board}/setup.sh, {board}/test.sh и [checks] в project.toml, "
+          f"затем project-doctor (K08b) и запуск службы:\n"
+          f"  {symphony} service start {board}/WORKFLOW.md")
+    return 0
+
+
+def create(board: Path, args, repo: Path, python: Path, symphony: Path, claude: Path) -> None:
+    subprocess.run([str(symphony), "board", "init", str(board / pc.BOARD_DIR)],
+                   check=True, capture_output=True)
+    # `board init` always adds a sample Todo card; a running service would
+    # dispatch it to a real agent.
+    (board / pc.BOARD_DIR / "DEMO-001.md").unlink(missing_ok=True)
+    for name in (pc.ARTIFACTS_DIR, pc.WIKI_DIR):
+        (board / name).mkdir()
+    pc.ensure_state_dir(board)
+    (board / pc.EXCLUDE_FILE).write_text(pc.exclude_text(args.prefix), encoding="utf-8")
+    for name, text in (("setup.sh", SETUP_SH), ("test.sh", TEST_SH)):
+        script = board / name
+        script.write_text(text.format(board=board), encoding="utf-8")
+        script.chmod(0o755)
+    (board / pc.PROJECT_FILE).write_text(PROJECT_TOML.format(
+        name=toml_str(args.name), repo=toml_str(str(repo)), base=toml_str(args.base),
+        prefix=toml_str(args.prefix), prefix_raw=args.prefix, port=args.port,
+        python=toml_str(str(python)), symphony=toml_str(str(symphony)),
+        claude=toml_str(str(claude)),
+    ), encoding="utf-8")
+    project = pc.load_project(board)
+    (board / "WORKFLOW.md").write_text(pc.render_workflow(board, project), encoding="utf-8")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
