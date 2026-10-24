@@ -25,6 +25,7 @@ from .constants import (
     DEFAULT_AGY_COMMAND,
     DEFAULT_AUTO_RECOVER_BLOCKED,
     DEFAULT_NORMALIZE_LEGACY_HUMAN_REVIEW,
+    DEFAULT_DONE_GATE_TIMEOUT_MS,
     DEFAULT_AUTO_MERGE_EXCLUDE_PATHS,
     DEFAULT_BACKEND_READ_TIMEOUT_MS,
     DEFAULT_BACKEND_STALL_TIMEOUT_MS,
@@ -252,6 +253,12 @@ class AgentConfig:
     # with a production-critical `after_done` (deploy / apply-to-host)
     # to avoid silent partial completions.
     after_done_failure_policy: str = "warn"
+    # External acceptance gate run on every Done acceptance path (worker
+    # exit, reconcile, confirm_done) before the merge gate. Empty = off.
+    # Fail-closed: non-zero exit, timeout, missing command or any launch
+    # error moves the ticket to Blocked and keeps the workspace.
+    done_gate_command: str = ""
+    done_gate_timeout_ms: int = DEFAULT_DONE_GATE_TIMEOUT_MS
     # Hard cap on state-local `total_tokens` (input + output across turns
     # while the ticket remains in one state). The counter resets on each
     # state transition, while lifetime totals stay visible in the API. 0 =

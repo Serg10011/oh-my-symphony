@@ -372,6 +372,25 @@ or a `Confirm Done` line, and no intervention marker. Set it to `false` to keep
 such cards in `Human Review` until a person moves them. The value must be a
 real YAML boolean; `"false"` or `0` is a config error.
 
+`agent.done_gate_command` (string, default empty = off) is an external
+acceptance gate. When set, Symphony runs it with `bash -lc` on every path that
+accepts a `Done` ticket with a workspace — the worker finished its turn,
+reconcile saw `Done` on a running worker, and `confirm_done` (TUI `c`,
+`POST /api/v1/<ID>/confirm-done`, web Human Review → Done) — before the merge
+gate, and also when `auto_merge_on_done` is `false`. The working directory is
+the ticket workspace; the environment carries the usual hook variables plus
+`SYMPHONY_ISSUE_ID`, `SYMPHONY_WORKSPACE`, `SYMPHONY_BRANCH` and
+`SYMPHONY_ISSUE_STATE`. The command is read only from `WORKFLOW.md`. The gate
+is fail-closed: a non-zero exit, a timeout (`agent.done_gate_timeout_ms`,
+positive integer, default `600000`; the whole process group is killed), a
+missing command or any launch error moves the ticket to `Blocked`, keeps the
+workspace and appends `## Done Gate Failure` with the reason and the last
+~4 KB of output; the full output is under
+`.symphony-workspace-hook-output/<ID>/*-done_gate.*`. A non-string command or
+a non-integer timeout is a config error. Paths that write `Done` without a
+workspace (`symphony board mv`, web edits other than Human Review → Done,
+creating a ticket in `Done`) do not run the gate.
+
 ## Trackers: file, Linear, Jira
 
 - **File** (`tracker: { kind: file, board_root: ./kanban }`): Markdown tickets
