@@ -60,6 +60,7 @@ class Doc:
         self.bin = tmp / "bin"
         self.tmpdir = tmp / "t"  # TMPDIR of project-doctor: the trial worktree
         self.setup_marker = tmp / "setup-ran"
+        self.env_extra: dict[str, str] = {}
         self.port = free_port()
         for path in (self.home, self.tmpdir):
             path.mkdir()
@@ -83,6 +84,7 @@ class Doc:
         env["PATH"] = f"{self.bin}:{env['PATH']}"
         env["HOME"] = str(self.home)
         env["TMPDIR"] = str(self.tmpdir)
+        env.update(self.env_extra)
         return env
 
     def new(self, name: str = "demo", *, port: int | None = None, prefix: str = "DOC"):
@@ -353,3 +355,84 @@ def test_bad_limits_refused(limits: dict, reason: str) -> None:
     }
     with pytest.raises(pc.ProjectError, match=re.escape(reason)):
         pc.validate_project(data)
+
+
+# ---------------------------------------------------------------------------
+# reduced environment of the trial (TASK-K11)
+# ---------------------------------------------------------------------------
+
+PATH_HINT = "скрипты должны сами задавать инструменты полными путями"
+
+
+def fake_tool(doc: Doc) -> Path:
+    """A program that exists only on the test's PATH, like node from nvm."""
+    tool = write(doc.bin / "fake-node", "#!/bin/sh\necho v0.0.0\n")
+    tool.chmod(0o755)
+    return tool
+
+
+@pytest.mark.parametrize("script", ["setup.sh", "test.sh"])
+def test_doctor_fails_a_script_that_relies_on_the_terminal_path(doc: Doc, script: str) -> None:
+    doc.ready()
+    tool = fake_tool(doc)
+    call = "fake-node --version || exit $?\n"
+    write(doc.board / script, call if script == "setup.sh" else call + GOOD_TEST)
+    result = doc.doctor()
+    assert result.returncode == 1, result.stdout
+    assert f"FAIL  {script}: код 127" in result.stdout
+    assert "fake-node" in result.stdout and PATH_HINT in result.stdout
+    assert "Итог: проект НЕ готов" in result.stdout
+    assert not doc.baseline.exists()
+    doc.assert_clean_repo()
+    # The same script with a full path passes.
+    full = f"{tool} --version || exit $?\n"
+    write(doc.board / script, full if script == "setup.sh" else full + GOOD_TEST)
+    ok = doc.doctor()
+    assert ok.returncode == 0, ok.stdout
+    assert PATH_HINT not in ok.stdout
+
+
+def test_trial_scripts_get_only_the_reduced_environment(doc: Doc) -> None:
+    doc.ready()
+    dump = doc.tmp / "env-dump"
+    write(doc.board / "setup.sh", f'compgen -e > {dump}\necho "$PATH" >> {dump}\n')
+    doc.env_extra = {"LANG": "C.UTF-8", "SECRET_TERMINAL_VAR": "x", "NODE_PATH": "/x"}
+    result = doc.doctor()
+    assert result.returncode == 0, result.stdout
+    *names, path = dump.read_text().split("\n")[:-1]
+    assert path == "/usr/bin:/bin:/usr/sbin:/sbin"
+    allowed = {"PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR",
+               "SYMPHONY_PYTHON", "SYMPHONY_WORKFLOW_DIR",
+               "PWD", "OLDPWD", "SHLVL", "_"}  # set by bash itself
+    assert set(names) <= allowed, sorted(set(names) - allowed)
+    assert {"PATH", "HOME", "TMPDIR", "SYMPHONY_PYTHON", "SYMPHONY_WORKFLOW_DIR"} <= set(names)
+    assert "LANG" in names
+
+
+def load_doctor():
+    from importlib.machinery import SourceFileLoader
+    from importlib.util import module_from_spec, spec_from_loader
+
+    loader = SourceFileLoader("project_doctor_under_test", str(PROJECT_DOCTOR))
+    module = module_from_spec(spec_from_loader(loader.name, loader))
+    loader.exec_module(module)
+    return module
+
+
+def test_run_script_reports_a_timeout_not_exit_minus_nine(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import time as time_module
+
+    doctor = load_doctor()
+    real_killpg = doctor.os.killpg
+
+    def slow_killpg(pid: int, sig: int) -> None:
+        real_killpg(pid, sig)
+        time_module.sleep(0.5)  # the leader is surely dead when run_script looks again
+
+    monkeypatch.setattr(doctor.os, "killpg", slow_killpg)
+    script = write(tmp_path / "slow.sh", "sleep 60\n")
+    code, elapsed, _tail, _summary = doctor.run_script(
+        script, tmp_path, {"PATH": "/usr/bin:/bin"}, 0.3)
+    assert code is None  # not -9
+    assert elapsed < 30

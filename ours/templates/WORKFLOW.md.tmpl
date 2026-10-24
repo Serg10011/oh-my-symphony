@@ -21,6 +21,9 @@ wiki:
 
 workspace:
   root: {{yaml:workspace_root}}
+  # Web board reads branches, log and diff from the code repository, not
+  # from the board folder (TASK-K10; read-only routes only).
+  code_repo: {{yaml:code_repo}}
 
 hooks:
   # >= max(setup.sh time, test timeout) + 60 s (DECISIONS: timeout rule).

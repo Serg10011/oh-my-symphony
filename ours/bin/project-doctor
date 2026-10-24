@@ -14,6 +14,9 @@ Prints a PASS / FAIL / WARN list; exit 0 only without FAIL. Steps:
    test.sh, each with a 3600 s limit in its own process group. test.sh
    must exit 0 with a summary line and failed = 0. The counts and times go
    to <board>/.ours-state/baseline.json; the worktree is always removed.
+   The scripts run in a reduced environment (see script_env): the service
+   started by launchd has a short PATH, so a script that only works with
+   the terminal's PATH must fail here, not at night.
 3. [timeouts] of project.toml from the measured times (only that section
    is edited; `fixed = true` keeps it and prints the recommendation).
 4. project-render, then `<[tools] symphony> doctor` on WORKFLOW.md.
@@ -46,6 +49,12 @@ TOOL_TIMEOUT_S = 60
 GIT_TIMEOUT_S = 120
 TAIL_BYTES = 3000
 POLL_S = 0.2
+# What a service started by launchd sees (TASK-K11); the rest of the
+# terminal environment is dropped on purpose.
+RESTRICTED_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+PASSED_ENV = ("HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR")
+PATH_HINT = ("скрипты должны сами задавать инструменты полными путями (node, npm, python …), "
+             "а не полагаться на PATH терминала")
 # WARN lines of `symphony doctor` that every board of ours shows (REPORT-11).
 KNOWN_WARNS = {
     "git history writable": "папка доски не git-репозиторий, ветки живут в репозитории кода",
@@ -174,6 +183,14 @@ def check_scripts(report: Report, board: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 
+def script_env(python: str, board: Path) -> dict[str, str]:
+    """Environment of setup.sh / test.sh in the trial: short PATH, no terminal leftovers."""
+    env = {"PATH": RESTRICTED_PATH}
+    env.update({key: os.environ[key] for key in PASSED_ENV if key in os.environ})
+    env.update(SYMPHONY_PYTHON=python, SYMPHONY_WORKFLOW_DIR=str(board))
+    return env
+
+
 def run_script(script: Path, cwd: Path, env: dict[str, str], limit_s: float):
     """(exit code or None on timeout, seconds, tail, summary) of one script."""
     with tempfile.TemporaryFile() as out:
@@ -185,13 +202,15 @@ def run_script(script: Path, cwd: Path, env: dict[str, str], limit_s: float):
             while proc.poll() is None and time.monotonic() - started < limit_s:
                 time.sleep(POLL_S)
         finally:
+            # Decide before the kill: afterwards the leader is dead and a
+            # timeout would look like "exit code -9".
+            timed_out = proc.poll() is None
             # Same as check.py: the whole group dies, on timeout and after a
             # finished run (stragglers).
             try:
                 os.killpg(proc.pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
-            timed_out = proc.poll() is None
             proc.wait()
         elapsed = time.monotonic() - started
         size = out.seek(0, os.SEEK_END)
@@ -219,8 +238,7 @@ def trial(report: Report, board: Path, project: dict) -> dict | None:
             return None
         added = True
         report.add("PASS", f"пробная рабочая копия {base} @ {sha[:12]} в {workdir}")
-        env = dict(os.environ)
-        env.update(SYMPHONY_PYTHON=project["tools"]["python"], SYMPHONY_WORKFLOW_DIR=str(board))
+        env = script_env(project["tools"]["python"], board)
         times = {}
         for name in ("setup.sh", "test.sh"):
             print(f"      запуск {name} (предел {SCRIPT_LIMIT_S} с)...", flush=True)
@@ -239,6 +257,7 @@ def trial(report: Report, board: Path, project: dict) -> dict | None:
                 report.add("PASS", f"{name}: код 0 за {elapsed:.1f} с{extra}")
                 continue
             report.detail(tail)
+            report.detail(f"подсказка: {PATH_HINT}")
             return None
         assert summary is not None
         return {

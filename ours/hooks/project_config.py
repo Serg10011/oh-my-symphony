@@ -362,6 +362,7 @@ def template_values(board: Path, project: dict) -> dict[str, object]:
         "name": p["name"],
         "base": p["base_branch"],
         "port": p["port"],
+        "code_repo": p["repo"],
         "workspace_root": str(Path.home() / "symphony_workspaces" / p["name"]),
         "worktree_py": str(hooks / "worktree.py"),
         "check_py": str(hooks / "check.py"),
