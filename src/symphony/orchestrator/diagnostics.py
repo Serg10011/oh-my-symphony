@@ -8,6 +8,7 @@ path: backend payloads can contain prompts, tool transcripts, and credentials.
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping
 from typing import Any
@@ -107,6 +108,9 @@ _ALLOWED_FIELDS: dict[str, tuple[str, ...]] = {
         "cache_input_tokens",
         "output_tokens",
         "total_tokens",
+        "turn_cost_usd",
+        "cost_usd",
+        "session_cost_usd",
         "commit_sha",
     ),
     "turn_failed": ("turn", "reason", "stderr_lines"),
@@ -124,6 +128,7 @@ _ALLOWED_FIELDS: dict[str, tuple[str, ...]] = {
         "cache_input_tokens",
         "output_tokens",
         "total_tokens",
+        "cost_usd",
         "commit_sha",
     ),
 }
@@ -136,8 +141,17 @@ _INTEGER_FIELDS = {
     "total_tokens",
     "tokens_before",
 }
+_USD_FIELDS = {"turn_cost_usd", "cost_usd", "session_cost_usd"}
 _BOOLEAN_FIELDS = {"continuation", "is_rewind"}
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{4,64}$")
+
+
+def nonnegative_usd(value: Any) -> float | None:
+    """A finite, non-negative USD amount, or None for anything else."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    amount = float(value)
+    return amount if math.isfinite(amount) and amount >= 0 else None
 
 
 def _truncate_utf8(value: str, maximum: int = MAX_DIAGNOSTIC_STRING_BYTES) -> str:
@@ -166,6 +180,8 @@ def _normalize_value(field: str, value: Any) -> Any:
             return min(max(int(value), 0), MAX_DIAGNOSTIC_COUNTER)
         except (TypeError, ValueError):
             return 0
+    if field in _USD_FIELDS:
+        return nonnegative_usd(value)
     if field in _BOOLEAN_FIELDS:
         return bool(value)
     if field == "commit_sha":

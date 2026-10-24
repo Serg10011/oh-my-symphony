@@ -40,6 +40,9 @@ class ContinuationCheckpoint:
     state: str
     turn: int
     checkpointed_at: datetime
+    # Backend session-cumulative cost after the predecessor's newest
+    # completed turn; the resumed run's first cost increment starts from it.
+    session_cost_usd: float | None = None
 
     def __post_init__(self) -> None:
         _validate_checkpoint_fields(
@@ -86,6 +89,7 @@ class RunRecord:
     cache_input_tokens: int | None = None
     output_tokens: int | None = None
     total_tokens: int | None = None
+    cost_usd: float | None = None
     failure_class: str | None = None
     failure_message: str | None = None
     branch_name: str | None = None
@@ -355,6 +359,7 @@ def _run_summary(record: RunRecord) -> dict[str, Any]:
             "output": record.output_tokens,
             "total": record.total_tokens,
         },
+        "cost_usd": record.cost_usd,
         "failure_class": record.failure_class,
         "failure_message": record.failure_message,
     }
@@ -421,6 +426,7 @@ def _record(row: sqlite3.Row) -> RunRecord:
         cache_input_tokens=(int(row["cache_input_tokens"]) if row["cache_input_tokens"] is not None else None),
         output_tokens=(int(row["output_tokens"]) if row["output_tokens"] is not None else None),
         total_tokens=(int(row["total_tokens"]) if row["total_tokens"] is not None else None),
+        cost_usd=(float(row["cost_usd"]) if row["cost_usd"] is not None else None),
         failure_class=str(row["failure_class"]) if row["failure_class"] else None,
         failure_message=str(row["failure_message"]) if row["failure_message"] else None,
         branch_name=str(row["branch_name"]) if row["branch_name"] else None,
