@@ -835,6 +835,16 @@ only):
 | POST   | `/api/v1/issues/{id}/skip-document` | Move idle Document ticket to Human Review (deprecated alias: `/skip-learn`) |
 | POST   | `/api/v1/{id}/confirm-done` | Confirm Human Review through host history/merge/hooks/cleanup; requires retained workspace and refuses run-bound release evidence |
 
+**`rate_limits` in `/api/v1/state`.** One shared field holding the latest
+limits payload reported by whichever backend spoke last, or `null` before any
+report (the value is in memory only). Codex stores the `account/rateLimits/updated`
+notification as received. Claude stores the `rate_limit_info` object of each
+`rate_limit_event` stream-json frame verbatim (`status`, `resetsAt`,
+`rateLimitType`, `overageStatus`, `unifiedWindows.five_hour` /
+`.seven_day` with `utilization` and `resetsAt`, ...); nothing is parsed or
+rescaled, and a frame without a `rate_limit_info` object leaves the previous
+value in place.
+
 **TUI vs web app.** The web app is the full browser editor for file boards; it
 uses the same tracker/workflow modules as the CLI. The TUI is keyboard-first:
 create/edit tickets, archive, confirm Done-gated cards, pause/resume, skip
