@@ -178,6 +178,10 @@ hooks:
 agent:
   kind: claude
   max_concurrent_agents: 1
+  # [limits] of project.toml (meaning: comments there, REPORT-12).
+  max_turns: {{int:max_turns}}
+  max_total_turns: {{int:max_total_turns}}
+  max_attempts: {{int:max_attempts}}
   stage_contracts: auto
   budget_exhausted_state: needs_human
   auto_recover_blocked: false

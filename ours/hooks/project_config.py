@@ -11,18 +11,23 @@ A board folder lives outside the code repository:
         artifacts/<ID>/   agent artifacts, linked as docs/<ID> in a worktree
         wiki/             linked as docs/llm-wiki in a worktree
         worktree-exclude  core.excludesFile of every worktree
-        .ours-state/      state of our scripts (base records, locks, logs)
+        .ours-state/      state of our scripts (base records, baseline.json,
+                          locks, logs)
 
-Used by ours/bin/project-new, ours/bin/project-render, worktree.py and
-check.py. Standard library only, Python >= 3.11.
+Used by ours/bin/project-new, ours/bin/project-render, ours/bin/
+project-doctor, worktree.py and check.py. Standard library only,
+Python >= 3.11.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import re
 import shlex
+import sys
 import tomllib
+from collections.abc import Iterable
 from pathlib import Path
 
 OURS_DIR = Path(__file__).resolve().parents[1]
@@ -35,12 +40,18 @@ ARTIFACTS_DIR = "artifacts"
 WIKI_DIR = "wiki"
 EXCLUDE_FILE = "worktree-exclude"
 STATE_DIR = ".ours-state"
+BASELINE_FILE = "baseline.json"
+# A line of the setup.sh / test.sh stubs; project-doctor refuses while it is there.
+STUB_MARKER = "OURS-STUB"
 DEFAULT_ROOT = Path.home() / "symphony-projects"
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 PREFIX_RE = re.compile(r"^[A-Z][A-Z0-9]{1,9}$")
 
 DEFAULT_TIMEOUTS = {"tests_s": 900, "gate_ms": 960000, "hooks_ms": 1200000}
+DEFAULT_LIMITS = {"max_turns": 30, "max_total_turns": 60, "max_attempts": 3}
+# Active states of the template: the core refuses agent.max_turns below this.
+ACTIVE_STATE_COUNT = 4
 
 # section -> key -> (type, required)
 _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
@@ -58,10 +69,21 @@ _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
         "allow_modified_tests": (list, False),
         "required_sections": (list, False),
         "max_check_failures": (int, False),
-        "test_timeout_s": (int, False),
     },
-    "timeouts": {"tests_s": (int, False), "gate_ms": (int, False), "hooks_ms": (int, False)},
+    "timeouts": {
+        "tests_s": (int, False),
+        "gate_ms": (int, False),
+        "hooks_ms": (int, False),
+        "fixed": (bool, False),
+    },
+    "limits": {
+        "max_turns": (int, False),
+        "max_total_turns": (int, False),
+        "max_attempts": (int, False),
+    },
 }
+# Keys that moved; a stale project.toml gets a hint instead of "unknown key".
+_MOVED_KEYS = {("checks", "test_timeout_s"): "[timeouts] tests_s"}
 _REQUIRED_SECTIONS = ("project", "tools")
 
 
@@ -70,7 +92,10 @@ class ProjectError(Exception):
 
 
 def _check_value(where: str, value: object, kind: type) -> None:
-    if kind is str:
+    if kind is bool:
+        if not isinstance(value, bool):
+            raise ProjectError(f"{where}: нужно true или false")
+    elif kind is str:
         if not isinstance(value, str) or not value.strip() or "\n" in value:
             raise ProjectError(f"{where}: нужна непустая строка в одну строку")
     elif kind is int:
@@ -94,6 +119,13 @@ def validate_project(data: dict) -> dict:
             raise ProjectError(f"{PROJECT_FILE}: нет раздела [{section}]")
         if not isinstance(raw, dict):
             raise ProjectError(f"{PROJECT_FILE}: [{section}] должен быть разделом")
+        for key in raw:
+            if (section, key) in _MOVED_KEYS:
+                raise ProjectError(
+                    f"{PROJECT_FILE}: ключ [{section}] {key} убран (TASK-K08b): "
+                    f"перенеси значение в {_MOVED_KEYS[section, key]} "
+                    "или удали строку и запусти project-doctor"
+                )
         # A typo such as `forbiden_paths` must not silently drop a check.
         extra = sorted(set(raw) - set(keys))
         if extra:
@@ -123,6 +155,14 @@ def validate_project(data: dict) -> dict:
         if not Path(path).is_absolute():
             raise ProjectError(f"{PROJECT_FILE}: {where} должен быть абсолютным путём")
     out["timeouts"] = {**DEFAULT_TIMEOUTS, **out["timeouts"]}
+    limits = out["limits"] = {**DEFAULT_LIMITS, **out["limits"]}
+    if limits["max_turns"] < ACTIVE_STATE_COUNT:
+        raise ProjectError(
+            f"{PROJECT_FILE}: [limits] max_turns не меньше {ACTIVE_STATE_COUNT} "
+            "(число активных состояний; иначе ядро не примет WORKFLOW.md)"
+        )
+    if limits["max_total_turns"] < limits["max_turns"]:
+        raise ProjectError(f"{PROJECT_FILE}: [limits] max_total_turns меньше max_turns")
     return out
 
 
@@ -141,9 +181,17 @@ def load_project(board: Path) -> dict:
     return validate_project(data)
 
 
-def test_timeout_s(project: dict) -> int:
-    """[checks].test_timeout_s overrides [timeouts].tests_s."""
-    return project["checks"].get("test_timeout_s", project["timeouts"]["tests_s"])
+def other_projects(root: Path) -> list[tuple[Path, dict]]:
+    """(board folder, raw [project]) of every project.toml under `root`."""
+    found = []
+    for toml in sorted(root.glob(f"*/{PROJECT_FILE}")):
+        try:
+            data = tomllib.loads(toml.read_text(encoding="utf-8")).get("project", {})
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            print(f"предупреждение: не читается {toml}: {exc}", file=sys.stderr)
+            continue
+        found.append((toml.parent, data))
+    return found
 
 
 def exclude_text(id_prefix: str) -> str:
@@ -177,6 +225,112 @@ def read_base_record(board: Path, issue_id: str) -> dict:
     return data
 
 
+# ---------------------------------------------------------------------------
+# test summary line (test.sh contract) and the baseline of the base branch
+# ---------------------------------------------------------------------------
+
+SUMMARY_PREFIX = "PIPELINE_TESTS"
+SUMMARY_FORMAT = SUMMARY_PREFIX + " passed=<n> skipped=<n> failed=<n>"
+_SUMMARY_RE = re.compile(
+    rb"^" + SUMMARY_PREFIX.encode() + rb" passed=(\d+) skipped=(\d+) failed=(\d+)\s*$"
+)
+SUMMARY_KEYS = ("passed", "skipped", "failed")
+
+
+def find_summary(lines: Iterable[bytes | str]) -> dict[str, int] | None:
+    """Counts from the LAST summary line of test.sh output, or None."""
+    found = None
+    for line in lines:
+        raw = line.encode("utf-8", errors="replace") if isinstance(line, str) else line
+        match = _SUMMARY_RE.match(raw.rstrip(b"\r\n"))
+        if match:
+            found = dict(zip(SUMMARY_KEYS, (int(g) for g in match.groups())))
+    return found
+
+
+def triple(counts: dict) -> str:
+    return " ".join(f"{key}={counts[key]}" for key in SUMMARY_KEYS)
+
+
+def baseline_path(board: Path) -> Path:
+    return board / STATE_DIR / BASELINE_FILE
+
+
+def read_baseline(board: Path) -> dict:
+    path = baseline_path(board)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise ProjectError(f"нет замера базы {path}: запусти project-doctor") from None
+    except (OSError, ValueError) as exc:
+        raise ProjectError(f"замер базы {path} повреждён ({exc}): перезапусти project-doctor") from None
+    ok = isinstance(data, dict) and isinstance(data.get("base_branch"), str) and all(
+        isinstance(data.get(key), int) and not isinstance(data.get(key), bool) and data[key] >= 0
+        for key in SUMMARY_KEYS
+    )
+    if not ok:
+        raise ProjectError(f"замер базы {path} неполный: перезапусти project-doctor")
+    return data
+
+
+def recommend_timeouts(setup_s: float, tests_s: float) -> dict[str, int]:
+    """[timeouts] from measured setup.sh and test.sh times (TASK-K08b)."""
+    tests = max(300, math.ceil(2 * tests_s / 60) * 60)
+    return {
+        "tests_s": tests,
+        "gate_ms": (tests + 60) * 1000,
+        "hooks_ms": (max(math.ceil(1.5 * setup_s), tests) + 60) * 1000,
+    }
+
+
+_HEADER_RE = re.compile(r"^\s*\[")
+_TIMEOUTS_HEADER_RE = re.compile(r"^\s*\[\s*timeouts\s*\]\s*(#.*)?$")
+
+
+def update_timeouts_text(text: str, values: dict[str, int]) -> str:
+    """Set [timeouts] keys in project.toml text; every other byte is kept.
+
+    Inside [timeouts] an active `key = ...` line gets the new value (its
+    inline comment stays), else the first commented `# key = ...` line is
+    uncommented with the new value (its inline comment stays), else the key
+    is added after the last key line touched. No [timeouts] section: one is
+    appended at the end.
+    """
+    lines = text.splitlines(keepends=True)
+    newline = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
+    start = next((i for i, line in enumerate(lines) if _TIMEOUTS_HEADER_RE.match(line)), None)
+    if start is None:
+        tail = "" if not text or text.endswith(("\n", "\r")) else newline
+        body = "".join(f"{key} = {value}{newline}" for key, value in values.items())
+        return f"{text}{tail}{newline}[timeouts]{newline}{body}"
+    end = next((i for i in range(start + 1, len(lines)) if _HEADER_RE.match(lines[i])), len(lines))
+    insert_at = start + 1
+    for key, value in values.items():
+        active = re.compile(rf"^(\s*{key}\s*=\s*)([^#\r\n]*?)(\s*#[^\r\n]*)?(\r?\n)?$")
+        commented = re.compile(rf"^(\s*)#\s*{key}\s*=\s*([^#\r\n]*?)(\s*#[^\r\n]*)?(\r?\n)?$")
+        hit = next((i for i in range(start + 1, end) if active.match(lines[i])), None)
+        if hit is not None:
+            m = active.match(lines[hit])
+            assert m is not None
+            lines[hit] = f"{m.group(1)}{value}{m.group(3) or ''}{m.group(4) or ''}"
+            insert_at = max(insert_at, hit + 1)
+            continue
+        hit = next((i for i in range(start + 1, end) if commented.match(lines[i])), None)
+        if hit is not None:
+            m = commented.match(lines[hit])
+            assert m is not None
+            # `# tests_s = 900   # note` -> `tests_s = 300   # note`
+            lines[hit] = f"{m.group(1)}{key} = {value}{m.group(3) or ''}{m.group(4) or ''}"
+            insert_at = max(insert_at, hit + 1)
+            continue
+        if insert_at > 0 and not lines[insert_at - 1].endswith(("\n", "\r")):
+            lines[insert_at - 1] += newline
+        lines.insert(insert_at, f"{key} = {value}{newline}")
+        insert_at += 1
+        end += 1
+    return "".join(lines)
+
+
 def ensure_state_dir(board: Path) -> Path:
     state = board / STATE_DIR
     state.mkdir(exist_ok=True)
@@ -195,6 +349,7 @@ _PLACEHOLDER = re.compile(r"\{\{(yaml|sh|int):([a-z_]+)\}\}")
 
 def template_values(board: Path, project: dict) -> dict[str, object]:
     p, tools, timeouts = project["project"], project["tools"], project["timeouts"]
+    limits = project["limits"]
     board = board.resolve()
     hooks = OURS_DIR / "hooks"
     q = shlex.quote
@@ -214,6 +369,9 @@ def template_values(board: Path, project: dict) -> dict[str, object]:
         "done_gate_command": f'"$SYMPHONY_PYTHON" {q(str(hooks / "check.py"))} gate',
         "gate_ms": timeouts["gate_ms"],
         "hooks_ms": timeouts["hooks_ms"],
+        "max_turns": limits["max_turns"],
+        "max_total_turns": limits["max_total_turns"],
+        "max_attempts": limits["max_attempts"],
         "prompt_base": str(PROMPTS_DIR / "base.md"),
     }
     for stage in ("todo", "in-progress", "verify", "document", "done"):

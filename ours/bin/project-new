@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import shutil
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
@@ -25,6 +25,8 @@ import project_config as pc  # noqa: E402
 
 SETUP_SH = """\
 #!/bin/bash
+# OURS-STUB: заготовка. Удали эту строку и две последние (echo, exit), когда
+# настроишь файл: project-doctor не пропустит файл с этой меткой.
 # Подготовка свежей рабочей копии карточки (запускает ours/hooks/worktree.py
 # через /bin/bash в папке рабочей копии, после `git worktree add`).
 # Пример для Node: export PATH=/полный/путь/к/node/bin:$PATH; npm ci
@@ -37,17 +39,30 @@ exit 1
 
 TEST_SH = """\
 #!/bin/bash
-# Полный прогон тестов проекта (запускает ours/hooks/check.py через /bin/bash
-# в папке рабочей копии, в своей группе процессов, с таймаутом).
-# Код 0 = зелено. Раннер вызывать напрямую, полными путями.
-# В конце вывести строку итогов единого формата:
+# OURS-STUB: заготовка. Удали эту строку и две последние (echo, exit), когда
+# настроишь файл: project-doctor не пропустит файл с этой меткой.
+# Полный прогон тестов проекта (запускают ours/hooks/check.py и project-doctor
+# через /bin/bash в папке рабочей копии, в своей группе процессов, с таймаутом
+# [timeouts] tests_s). Раннер вызывать напрямую, полными путями.
+# Код 0 = зелено. В конце обязательна строка итогов (считается последняя):
 #   PIPELINE_TESTS passed=<n> skipped=<n> failed=<n>
+# Её печатает summarize.py по отчёту JUnit XML. Отчёт — во временный файл вне
+# рабочей папки, чтобы он не попал в git. Пример:
+#
+# report="$(mktemp -t ours-junit.XXXXXX)"; trap 'rm -f "$report"' EXIT
+# # Vitest:
+# /полный/путь/node_modules/.bin/vitest run --reporter=junit --outputFile="$report"
+# # pytest:
+# .venv/bin/python -m pytest -q --junitxml="$report"
+# rc=$?
+# "$SYMPHONY_PYTHON" {summarize} "$report" || exit $(( rc ? rc : 1 ))
+# exit $rc
 echo "test.sh не настроен: заполни {board}/test.sh" >&2
 exit 1
 """
 
 PROJECT_TOML = """\
-# Настройки проекта для конвейера (TASK-K08a). Единственный файл настроек:
+# Настройки проекта для конвейера (TASK-K08a, K08b). Единственный файл настроек:
 # WORKFLOW.md строится из него командой ours/bin/project-render.
 # Неизвестный ключ — ошибка, чтобы опечатка не отключила проверку.
 
@@ -69,13 +84,30 @@ claude = {claude}
 # test_globs = ["tests/**"]    # ЗАМЕНЯЮТ встроенный список
 # allow_modified_tests = []
 # required_sections = ["## Wiki Updates", "## As-Is -> To-Be Report"]
-# max_check_failures = 3
-# test_timeout_s = 900         # если задан, важнее [timeouts] tests_s
+# max_check_failures = 3       # откатов check.py до needs_human
 
-[timeouts]               # заполнит project-doctor (K08b); пока — умолчания
-# tests_s = 900
-# gate_ms = 960000
-# hooks_ms = 1200000
+[timeouts]               # заполняет project-doctor по замеру; пока — умолчания
+# tests_s = 900                # таймаут test.sh (check.py hook и gate)
+# gate_ms = 960000             # agent.done_gate_timeout_ms = (tests_s + 60) * 1000
+# hooks_ms = 1200000           # hooks.timeout_ms: setup.sh и after_run
+# fixed = true                 # project-doctor не перезаписывает, только советует
+
+[limits]                 # лимиты ядра, раздел agent в WORKFLOW.md
+# Счётчики ядра живут в памяти службы: перезапуск службы их обнуляет.
+# max_turns = 30               # ходов за один запуск агента по карточке (от
+#                              # выдачи карточки до выхода воркера). Исчерпан, а
+#                              # карточка не дошла до конечного состояния — она
+#                              # уходит в needs_human и сама не продолжается.
+#                              # Не меньше 4 (число активных состояний).
+# max_total_turns = 60         # ходов по карточке за всё время работы службы,
+#                              # по всем запускам (откат check.py начинает новый
+#                              # запуск, счёт продолжается). Исчерпан — needs_human.
+# max_attempts = 3             # возвратов назад по активным состояниям (Verify ->
+#                              # In Progress и т.п.), в том числе принудительных:
+#                              # этап не выполнил свой контракт. Возврат номер
+#                              # max_attempts + 1 переводит карточку в Blocked.
+#                              # Откаты check.py сюда не входят: их считает
+#                              # [checks] max_check_failures.
 """
 
 
@@ -92,18 +124,6 @@ def nearest_existing(path: Path) -> Path:
     while not path.exists():
         path = path.parent
     return path
-
-
-def other_projects(root: Path) -> list[tuple[Path, dict]]:
-    found = []
-    for toml in sorted(root.glob(f"*/{pc.PROJECT_FILE}")):
-        try:
-            data = tomllib.loads(toml.read_text(encoding="utf-8")).get("project", {})
-        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-            print(f"project-new: предупреждение: не читается {toml}: {exc}", file=sys.stderr)
-            continue
-        found.append((toml.parent, data))
-    return found
 
 
 def toml_str(value: str) -> str:
@@ -149,7 +169,7 @@ def main(argv: list[str] | None = None) -> int:
         return fail(f"папка доски оказалась бы внутри git-репозитория {probe.stdout.strip()}; "
                     "выбери другой --root")
 
-    for other, data in other_projects(root):
+    for other, data in pc.other_projects(root):
         if data.get("port") == args.port:
             return fail(f"порт {args.port} уже занят проектом {other.name}")
         if data.get("id_prefix") == args.prefix:
@@ -183,7 +203,9 @@ def main(argv: list[str] | None = None) -> int:
         raise
     print(f"Создана папка доски {board}\n"
           f"Дальше: заполни {board}/setup.sh, {board}/test.sh и [checks] в project.toml, "
-          f"затем project-doctor (K08b) и запуск службы:\n"
+          f"затем проверка и замер:\n"
+          f"  {python} {pc.OURS_DIR / 'bin' / 'project-doctor'} {args.name} --root {root}\n"
+          f"и запуск службы:\n"
           f"  {symphony} service start {board}/WORKFLOW.md")
     return 0
 
@@ -200,7 +222,8 @@ def create(board: Path, args, repo: Path, python: Path, symphony: Path, claude: 
     (board / pc.EXCLUDE_FILE).write_text(pc.exclude_text(args.prefix), encoding="utf-8")
     for name, text in (("setup.sh", SETUP_SH), ("test.sh", TEST_SH)):
         script = board / name
-        script.write_text(text.format(board=board), encoding="utf-8")
+        summarize = shlex.quote(str(pc.OURS_DIR / "hooks" / "summarize.py"))
+        script.write_text(text.format(board=board, summarize=summarize), encoding="utf-8")
         script.chmod(0o755)
     (board / pc.PROJECT_FILE).write_text(PROJECT_TOML.format(
         name=toml_str(args.name), repo=toml_str(str(repo)), base=toml_str(args.base),

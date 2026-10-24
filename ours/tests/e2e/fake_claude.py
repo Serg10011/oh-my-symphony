@@ -5,7 +5,9 @@ Plays one stage of the standard pipeline per turn: reads the card through
 the workspace `kanban` link, writes code, artifacts (docs/<ID>, a link into
 the board folder) and wiki, moves the state, prints stream-json frames.
 E2E_BREAK_TEST=1 also weakens an existing test; E2E_SKIP_WORK=1 skips the
-work notes the In Progress contract requires.
+work notes the In Progress contract requires; E2E_DROP_TEST=1 drops the
+existing tests from the run through a runner config (pytest.ini), without
+touching any test file. `--version` (project-doctor) prints a version.
 """
 
 import json
@@ -15,6 +17,9 @@ import sys
 from pathlib import Path
 
 args = sys.argv[1:]
+if args == ["--version"]:
+    print("fake-claude 0.0 (e2e)")
+    sys.exit(0)
 log = Path(os.environ["E2E_DIR"]) / "claude-calls.jsonl"
 prompt = sys.stdin.read()
 ws = Path.cwd()
@@ -46,6 +51,8 @@ elif s == "in progress":
         "from feature import double\n\ndef test_double():\n    assert double(2) == 4\n")
     if not os.environ.get("E2E_SKIP_WORK"):
         (docs / "work" / "notes.md").write_text("work notes\n")
+    if os.environ.get("E2E_DROP_TEST"):
+        (ws / "pytest.ini").write_text("[pytest]\naddopts = --ignore=tests/test_base.py\n")
     if os.environ.get("E2E_BREAK_TEST"):
         (ws / "tests" / "test_base.py").write_text("def test_base():\n    pass  # weakened\n")
     move("Verify", """## Plan

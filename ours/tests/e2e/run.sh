@@ -1,7 +1,9 @@
 #!/bin/bash
-# End-to-end run of the project kit (TASK-K08a, REPORT-11): project-new for a
-# temporary code repo, the real symphony service, fake_claude.py as the agent.
+# End-to-end run of the project kit (TASK-K08a/K08b, REPORT-11/12): project-new
+# for a temporary code repo, project-doctor (baseline + [timeouts]), the real
+# symphony service, fake_claude.py as the agent.
 # Usage: E2E_OUT=/tmp/kit-e2e ours/tests/e2e/run.sh
+# Scenarios (fake_claude.py): E2E_BREAK_TEST=1, E2E_SKIP_WORK=1, E2E_DROP_TEST=1.
 set -euo pipefail
 E="$(cd "$(dirname "$0")" && pwd)"
 FORK="$(cd "$E/../../.." && pwd)"
@@ -14,7 +16,7 @@ PY="$(command -v "${PYTHON:-python3}")"
 # code repo
 git init -q -b main "$R/code"; cd "$R/code"
 git config user.email e2e@example.invalid; git config user.name e2e
-mkdir tests; printf 'def test_base():\n    assert True\n' > tests/test_base.py
+mkdir tests; printf 'def test_base():\n    assert True\n\ndef test_base_two():\n    assert True\n' > tests/test_base.py
 echo readme > README.md; git add -A; git commit -qm base; git branch dev
 echo "main only" >> README.md; git commit -qam "main moves"
 cd "$R"
@@ -24,11 +26,19 @@ cat > "$B/setup.sh" <<'S'
 #!/bin/bash
 echo "setup.sh: prepared $PWD"
 S
+# test.sh contract: JUnit report outside the worktree, summary line last.
 cat > "$B/test.sh" <<T
 #!/bin/bash
 export PYTHONDONTWRITEBYTECODE=1
-"$PY" -m pytest -q -p no:cacheprovider tests
+report="\$(mktemp -t kit-junit.XXXXXX)"; trap 'rm -f "\$report"' EXIT
+"$PY" -m pytest -q -p no:cacheprovider --junitxml="\$report" tests
+rc=\$?
+"\$SYMPHONY_PYTHON" "$FORK/ours/hooks/summarize.py" "\$report" || exit \$(( rc ? rc : 1 ))
+exit \$rc
 T
+"$PY" "$FORK/ours/bin/project-doctor" demo --root "$R/projects" > "$R/doctor.log" 2>&1 \
+  || { cat "$R/doctor.log"; exit 1; }
+grep -E '^(Итог|PASS  test.sh)' "$R/doctor.log"
 symphony board new KIT-1 "Double a number" --root "$B/kanban" --state Todo \
   --description "Add double(x). Acceptance: AC1 tests/test_feature.py passes." >/dev/null
 cd "$B"
@@ -36,10 +46,17 @@ symphony "$B/WORKFLOW.md" --no-progress-md --no-keep-awake > "$R/service.log" 2>
 PID=$!
 for i in $(seq 1 240); do
   st="$(sed -n 's/^state: *//p' "$B/kanban/KIT-1.md" | head -1)"
-  if [ "$st" = "Human Review" ] && [ -s "$B/.ours-state/check.log" ]; then break; fi
+  # Human Review counts once check.py passed it (a rollback logs a failure).
+  if [ "$st" = "Human Review" ] && grep -q '"outcome": "pass"' "$B/.ours-state/check.log" 2>/dev/null; then break; fi
   if [ "$st" = "needs_human" ] || [ "$st" = "Blocked" ]; then break; fi
   sleep 1
 done
 sleep 5
 kill $PID; wait $PID 2>/dev/null || true
 echo "final state: $(sed -n 's/^state: *//p' "$B/kanban/KIT-1.md" | head -1) (waited ${i}s); results in $R"
+"$PY" - "$B/.ours-state/check.log" <<'P'
+import json, sys
+for line in open(sys.argv[1], encoding="utf-8"):
+    r = json.loads(line)
+    print(f"check.log: {r['mode']} {r['outcome']} {r['reason'][:300]}")
+P
