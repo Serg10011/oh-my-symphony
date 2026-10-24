@@ -95,6 +95,11 @@ class RunningEntry:
     last_reported_cache_input_tokens: int = 0
     last_reported_output_tokens: int = 0
     last_reported_total_tokens: int = 0
+    # Run cost in USD: sum of per-turn increments of the backend's
+    # session-cumulative `total_cost_usd`. None until one valid value arrives.
+    cost_usd: float | None = None
+    cost_session_id: str | None = None
+    cost_session_last: float | None = None
     # Cumulative state-local total tokens at the close of the previous
     # turn — used by the EMA updater to derive per-turn deltas. Reset to
     # 0 alongside `codex_state_total_tokens` on phase transitions so the

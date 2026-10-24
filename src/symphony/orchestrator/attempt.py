@@ -555,6 +555,8 @@ async def _open_session(orch: Orchestrator, st: _AttemptState) -> None:
         st.running.recovery_session_resumed = resumed_checkpoint
         if resumed_checkpoint:
             st.running.resume_session_id = checkpoint.resume_session_id
+            st.running.cost_session_id = checkpoint.resume_session_id
+            st.running.cost_session_last = checkpoint.session_cost_usd
             orch._append_run_event(st.running, "session_started", {})
             log.info(
                 "session_continuation_resumed",

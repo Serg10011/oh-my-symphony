@@ -216,6 +216,7 @@ def _run_record_payload(record: RunRecord) -> dict[str, Any]:
             "output": record.output_tokens,
             "total": record.total_tokens,
         },
+        "cost_usd": record.cost_usd,
         "failure_class": record.failure_class,
         "failure_message": record.failure_message,
     }
@@ -942,6 +943,7 @@ def _finish_run_lease(
             cache_input_tokens=entry.codex_cache_input_tokens,
             output_tokens=entry.codex_output_tokens,
             total_tokens=entry.codex_total_tokens,
+            cost_usd=entry.cost_usd,
             failure_class=(None if status == "normal" else status),
             failure_message=error,
             pm_dispatch_permit_id=(permit.permit_id if permit else None),

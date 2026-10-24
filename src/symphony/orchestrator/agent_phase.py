@@ -54,6 +54,7 @@ from .helpers import (
 from .parsing import _parse_findings_rows
 from . import attempt as agent_attempt
 from .core_support import _has_app_release_label, _normalize_agent_pid
+from .diagnostics import nonnegative_usd
 from ..logging import get_logger
 
 if TYPE_CHECKING:
@@ -964,6 +965,11 @@ async def _on_codex_event(self: Orchestrator, issue_id: str, event: dict[str, An
     delta_out = 0
     if isinstance(usage, dict):
         _, delta_out = self._apply_token_totals(entry, usage)
+    turn_cost_usd = (
+        _apply_cost_usd(issue_id, entry, payload)
+        if ev_name in (EVENT_TURN_COMPLETED, EVENT_TURN_FAILED) and isinstance(payload, dict)
+        else None
+    )
     # Hard token-budget cap. Catches the runaway-reasoning case the
     # stall predicate can't see: codex completes each turn but
     # accumulates 1.6M tokens per turn (history re-send) and burns
@@ -1090,6 +1096,7 @@ async def _on_codex_event(self: Orchestrator, issue_id: str, event: dict[str, An
             cache_input_tokens=entry.codex_cache_input_tokens,
             output_tokens=entry.codex_output_tokens,
             total_tokens=entry.codex_total_tokens,
+            cost_usd=entry.cost_usd,
             last_message=(entry.last_codex_message or "")[:160],
         )
         self._append_run_event(
@@ -1101,6 +1108,9 @@ async def _on_codex_event(self: Orchestrator, issue_id: str, event: dict[str, An
                 "cache_input_tokens": entry.codex_cache_input_tokens,
                 "output_tokens": entry.codex_output_tokens,
                 "total_tokens": entry.codex_total_tokens,
+                "turn_cost_usd": turn_cost_usd,
+                "cost_usd": entry.cost_usd,
+                "session_cost_usd": entry.cost_session_last,
             },
         )
         self._record_token_attention_for_turn(entry, cfg)
@@ -1237,6 +1247,40 @@ async def _on_codex_event(self: Orchestrator, issue_id: str, event: dict[str, An
     )
     if len(debug.recent_events) > 50:
         debug.recent_events = debug.recent_events[-50:]
+
+
+def _apply_cost_usd(
+    issue_id: str, entry: RunningEntry, payload: dict[str, Any]
+) -> float | None:
+    """Fold one turn's session-cumulative `total_cost_usd` into the run cost.
+
+    Claude reports the cost of the whole session so far, so a turn costs the
+    difference to the previous value of the same session. A new session, or a
+    value below the previous one, means the session started over and the whole
+    value counts. Returns the increment, or None when the frame has no usable
+    value (the run cost is then left unchanged).
+    """
+    value = nonnegative_usd(payload.get("total_cost_usd"))
+    if value is None:
+        return None
+    sid = entry.resume_session_id
+    last = entry.cost_session_last
+    if last is not None and sid == entry.cost_session_id and value >= last:
+        delta = value - last
+    else:
+        if last is not None and sid != entry.cost_session_id:
+            log.info("cost_session_changed", issue_id=issue_id, value=value)
+        elif last is not None:
+            log.warning("cost_session_reset", issue_id=issue_id, value=value, last=last)
+        elif sid is not None and sid == entry.cost_session_id:
+            # Resumed session without a persisted baseline: the value includes
+            # spend already counted by the previous run.
+            log.warning("cost_baseline_missing", issue_id=issue_id, value=value)
+        delta = value
+    entry.cost_session_id = sid
+    entry.cost_session_last = value
+    entry.cost_usd = (entry.cost_usd or 0.0) + delta
+    return delta
 
 
 def _apply_token_totals(

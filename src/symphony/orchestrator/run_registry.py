@@ -16,6 +16,7 @@ from .diagnostics import (
     MAX_EVENTS_PER_RUN,
     MAX_RUNS_WITH_DIAGNOSTIC_EVENTS,
     event_payload_json,
+    nonnegative_usd,
     redact_text,
 )
 from .run_registry_base import _RunRegistryBase
@@ -281,6 +282,7 @@ class RunRegistry(_ReleaseRegistry, _PmRegistry, _RunRegistryBase):
                     state=str(source["checkpoint_state"]),
                     turn=int(source["checkpoint_turn"]),
                     checkpointed_at=checkpointed_at,
+                    session_cost_usd=self._last_session_cost_locked(continued_from_run_id),
                 )
                 if issue.updated_at is not None and _utc(issue.updated_at) > checkpointed_at:
                     conn.execute("ROLLBACK")
@@ -360,6 +362,21 @@ class RunRegistry(_ReleaseRegistry, _PmRegistry, _RunRegistryBase):
             if conn.in_transaction:
                 conn.execute("ROLLBACK")
             raise
+
+    def _last_session_cost_locked(self, run_id: str) -> float | None:
+        row = self._connect().execute(
+            """
+            SELECT payload_json FROM attempt_events
+            WHERE run_id = ? AND event_type = 'turn_completed'
+            ORDER BY event_id DESC LIMIT 1
+            """,
+            (run_id,),
+        ).fetchone()
+        try:
+            payload = json.loads(str(row["payload_json"])) if row is not None else {}
+            return nonnegative_usd(payload.get("session_cost_usd"))
+        except (ValueError, AttributeError):
+            return None
 
     def checkpoint_completed_turn(
         self,
@@ -538,6 +555,7 @@ class RunRegistry(_ReleaseRegistry, _PmRegistry, _RunRegistryBase):
         cache_input_tokens: int | None = None,
         output_tokens: int | None = None,
         total_tokens: int | None = None,
+        cost_usd: float | None = None,
         failure_class: str | None = None,
         failure_message: str | None = None,
         commit_sha: str | None = None,
@@ -600,6 +618,11 @@ class RunRegistry(_ReleaseRegistry, _PmRegistry, _RunRegistryBase):
                     "total_tokens": _optional_nonnegative(
                         total_tokens, current["total_tokens"]
                     ),
+                    "cost_usd": (
+                        nonnegative_usd(cost_usd)
+                        if cost_usd is not None
+                        else current["cost_usd"]
+                    ),
                     "failure_class": (
                         redact_text(failure_class, 256) if failure_class else None
                     ),
@@ -612,8 +635,8 @@ class RunRegistry(_ReleaseRegistry, _PmRegistry, _RunRegistryBase):
                     """
                     UPDATE runs
                     SET state = ?, input_tokens = ?, cache_input_tokens = ?,
-                        output_tokens = ?, total_tokens = ?, failure_class = ?,
-                        failure_message = ?, commit_sha = ?
+                        output_tokens = ?, total_tokens = ?, cost_usd = ?,
+                        failure_class = ?, failure_message = ?, commit_sha = ?
                     WHERE issue_id = ? AND run_id = ?
                     """,
                     (
@@ -622,6 +645,7 @@ class RunRegistry(_ReleaseRegistry, _PmRegistry, _RunRegistryBase):
                         values["cache_input_tokens"],
                         values["output_tokens"],
                         values["total_tokens"],
+                        values["cost_usd"],
                         values["failure_class"],
                         values["failure_message"],
                         values["commit_sha"],
@@ -699,8 +723,9 @@ class RunRegistry(_ReleaseRegistry, _PmRegistry, _RunRegistryBase):
                     "cache_input_tokens",
                     "output_tokens",
                     "total_tokens",
+                    "cost_usd",
                 ):
-                    if field in normalized:
+                    if normalized.get(field) is not None:
                         assignments.append(f"{field} = ?")
                         values.append(normalized[field])
                 if normalized.get("commit_sha"):
