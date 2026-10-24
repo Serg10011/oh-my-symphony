@@ -22,7 +22,7 @@
 ## Этап 3 — основные доработки
 
 - [ ] Модель и усилие на уровне задачи (по итогам отчёта).
-- [ ] Хук механических проверок `ours/hooks/` (тесты, запрещённые пути, неизменённые тесты). — скрипт и тесты в облаке (K05)
+- [x] Хук механических проверок `ours/hooks/` (тесты, запрещённые пути, неизменённые тесты). — скрипт и тесты готовы (K05); подключение и проба на Mac
 - [x] Правка ядра: `agent.done_gate_command` — внешняя команда-шлюз при приёмке Done, закрытый по умолчанию (в `_auto_merge_done_gate_or_block`, ≈100 строк + тесты `tests/test_done_gate.py`).
 - [x] Правка ядра: выключатель автопереноса Human Review → Done (`agent.normalize_legacy_human_review: false`, ≈6 строк + тесты).
 - [ ] Рабочая конфигурация `WORKFLOW.md`: `needs_human` в `terminal_states` (порядок `[Human Review, needs_human, Done, Blocked, Archive]`), `budget_exhausted_state: needs_human`, `auto_recover_blocked: false`, `auto_merge_on_done: false` и `auto_merge_push_target: false`, явная `feature_base_branch`, полные пути к `python`, `symphony`, `claude`; видимость `needs_human` и `Blocked` для утреннего разбора.
