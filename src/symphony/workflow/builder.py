@@ -439,6 +439,9 @@ def build_service_config(
             name="agent.done_gate_timeout_ms",
             minimum=1,
         ),
+        preserve_workspace_states=_validated_preserve_workspace_states(
+            agent_raw.get("preserve_workspace_states")
+        ),
         max_total_tokens=_validated_nonnegative_or_default(
             agent_raw.get("max_total_tokens"),
             0,
@@ -1475,6 +1478,25 @@ def _validated_done_gate_command(value: Any) -> str:
             "agent.done_gate_command must be a string", value=value
         )
     return value.strip()
+
+
+def _validated_preserve_workspace_states(value: Any) -> tuple[str, ...]:
+    """List of non-empty state names, lowercased; Done keeps its own cleanup."""
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item.strip() for item in value
+    ):
+        raise ConfigValidationError(
+            "agent.preserve_workspace_states must be a list of non-empty strings",
+            value=value,
+        )
+    states = tuple(item.strip().lower() for item in value)
+    if "done" in states:
+        raise ConfigValidationError(
+            "agent.preserve_workspace_states cannot include Done", value=value
+        )
+    return states
 
 
 def _validated_strict_int(

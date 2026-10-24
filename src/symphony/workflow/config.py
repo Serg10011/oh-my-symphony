@@ -259,6 +259,9 @@ class AgentConfig:
     # error moves the ticket to Blocked and keeps the workspace.
     done_gate_command: str = ""
     done_gate_timeout_ms: int = DEFAULT_DONE_GATE_TIMEOUT_MS
+    # Non-Done terminal states (lowercased) whose workspaces neither reconcile
+    # nor startup cleanup removes; the snapshot commit still runs. Empty = off.
+    preserve_workspace_states: tuple[str, ...] = ()
     # Hard cap on state-local `total_tokens` (input + output across turns
     # while the ticket remains in one state). The counter resets on each
     # state transition, while lifetime totals stay visible in the API. 0 =

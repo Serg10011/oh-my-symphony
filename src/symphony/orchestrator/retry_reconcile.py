@@ -1056,6 +1056,15 @@ async def _reconcile_one(
                         await self._maybe_run_wiki_sweep(
                             cfg, identifier=entry.issue.identifier
                         )
+                elif (
+                    issue.state or ""
+                ).strip().lower() in cfg.agent.preserve_workspace_states:
+                    log.info(
+                        "reconcile_preserved_workspace",
+                        identifier=issue.identifier,
+                        state=issue.state,
+                        path=str(entry.workspace_path),
+                    )
                 else:
                     # Non-Done terminal state (e.g. Cancelled, Blocked):
                     # no after_done hook, just reap the workspace.
@@ -1211,7 +1220,7 @@ async def _startup_terminal_cleanup(self: Orchestrator, cfg: ServiceConfig) -> N
                         )
                 continue
             state = (issue.state or "").strip().lower()
-            if state in {"blocked", "human review"}:
+            if state in {"blocked", "human review", *cfg.agent.preserve_workspace_states}:
                 log.warning(
                     f"startup_terminal_cleanup_preserved_{state.replace(' ', '_')}_workspace",
                     identifier=issue.identifier,
