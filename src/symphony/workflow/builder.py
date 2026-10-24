@@ -65,6 +65,7 @@ from .constants import (
     DEFAULT_AGENT_KIND,
     DEFAULT_AUTO_MERGE_EXCLUDE_PATHS,
     DEFAULT_AUTO_RECOVER_BLOCKED,
+    DEFAULT_NORMALIZE_LEGACY_HUMAN_REVIEW,
     DEFAULT_BACKEND_READ_TIMEOUT_MS,
     DEFAULT_BACKEND_STALL_TIMEOUT_MS,
     DEFAULT_BACKEND_TURN_TIMEOUT_MS,
@@ -385,6 +386,11 @@ def build_service_config(
         ),
         auto_recover_blocked=bool(
             agent_raw.get("auto_recover_blocked", DEFAULT_AUTO_RECOVER_BLOCKED)
+        ),
+        normalize_legacy_human_review=_validated_bool(
+            agent_raw.get("normalize_legacy_human_review"),
+            DEFAULT_NORMALIZE_LEGACY_HUMAN_REVIEW,
+            name="agent.normalize_legacy_human_review",
         ),
         compact_issue_context=bool(
             agent_raw.get("compact_issue_context", True)

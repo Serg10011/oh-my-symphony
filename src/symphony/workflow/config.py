@@ -24,6 +24,7 @@ from .coercion import _normalize_state_key
 from .constants import (
     DEFAULT_AGY_COMMAND,
     DEFAULT_AUTO_RECOVER_BLOCKED,
+    DEFAULT_NORMALIZE_LEGACY_HUMAN_REVIEW,
     DEFAULT_AUTO_MERGE_EXCLUDE_PATHS,
     DEFAULT_BACKEND_READ_TIMEOUT_MS,
     DEFAULT_BACKEND_STALL_TIMEOUT_MS,
@@ -188,6 +189,10 @@ class AgentConfig:
     # Blocked, the orchestrator opens one FIX ticket that can clarify/fix/prove the
     # root cause before the source returns to the active workflow.
     auto_recover_blocked: bool = DEFAULT_AUTO_RECOVER_BLOCKED
+    # File-board sweep that moves legacy `Human Review` cards carrying completion
+    # evidence to `Done` on every tick. False keeps them in `Human Review` until
+    # a person moves them.
+    normalize_legacy_human_review: bool = DEFAULT_NORMALIZE_LEGACY_HUMAN_REVIEW
     # Render first-turn prompts with state-relevant ticket context instead
     # of the whole accumulating Markdown body. Workflows can opt out when a
     # custom ticket format needs full raw history in every worker prompt.
