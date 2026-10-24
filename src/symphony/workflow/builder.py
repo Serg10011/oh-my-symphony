@@ -66,6 +66,7 @@ from .constants import (
     DEFAULT_AUTO_MERGE_EXCLUDE_PATHS,
     DEFAULT_AUTO_RECOVER_BLOCKED,
     DEFAULT_NORMALIZE_LEGACY_HUMAN_REVIEW,
+    DEFAULT_DONE_GATE_TIMEOUT_MS,
     DEFAULT_BACKEND_READ_TIMEOUT_MS,
     DEFAULT_BACKEND_STALL_TIMEOUT_MS,
     DEFAULT_BACKEND_TURN_TIMEOUT_MS,
@@ -428,6 +429,15 @@ def build_service_config(
         ),
         after_done_failure_policy=_validated_after_done_failure_policy(
             agent_raw.get("after_done_failure_policy"),
+        ),
+        done_gate_command=_validated_done_gate_command(
+            agent_raw.get("done_gate_command")
+        ),
+        done_gate_timeout_ms=_validated_strict_int(
+            agent_raw.get("done_gate_timeout_ms"),
+            DEFAULT_DONE_GATE_TIMEOUT_MS,
+            name="agent.done_gate_timeout_ms",
+            minimum=1,
         ),
         max_total_tokens=_validated_nonnegative_or_default(
             agent_raw.get("max_total_tokens"),
@@ -1454,6 +1464,17 @@ def _parse_pm_manual_verification_procedures(
             label.strip() if isinstance(label, str) and label.strip() else None,
         )
     return result
+
+
+def _validated_done_gate_command(value: Any) -> str:
+    """String or absent; blank means the gate is off. Never coerced."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ConfigValidationError(
+            "agent.done_gate_command must be a string", value=value
+        )
+    return value.strip()
 
 
 def _validated_strict_int(
