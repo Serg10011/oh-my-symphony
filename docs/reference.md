@@ -845,6 +845,22 @@ notification as received. Claude stores the `rate_limit_info` object of each
 rescaled, and a frame without a `rate_limit_info` object leaves the previous
 value in place.
 
+**`cost_usd` in `/api/v1/runs`.** The cost of one run in USD, or `null` when
+the backend never reported a usable value (codex today, and every run recorded
+before this field existed). Claude's `result` frame carries `total_cost_usd`
+*cumulatively* for the whole claude session (with `--resume`, turn 3 reports
+turns 1–3), while its `usage` block covers that turn only. A turn therefore
+costs the difference to the previous value of the same session; a new session
+(e.g. after a phase transition) or a value below the previous one counts in
+full. Missing, non-numeric, boolean, NaN, infinite, or negative values are
+skipped. The per-turn increment (`turn_cost_usd`), the run total so far
+(`cost_usd`), and the raw session value (`session_cost_usd`) appear in the
+`turn_completed` event of `/api/v1/runs/{run_id}`; `run_completed` carries
+the final `cost_usd`. A crash-continuation run counts from the predecessor's
+last recorded session value, so each run row holds only its own spend. The
+amount is claude's list-price figure (`costBasis: "list"`); on a subscription
+it is notional, not billed money. Per-model `modelUsage` is not stored.
+
 **TUI vs web app.** The web app is the full browser editor for file boards; it
 uses the same tracker/workflow modules as the CLI. The TUI is keyboard-first:
 create/edit tickets, archive, confirm Done-gated cards, pause/resume, skip
