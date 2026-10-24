@@ -1,0 +1,54 @@
+# Example config for ours/hooks/check.py (TASK-K05).
+#
+# Copy to $SYMPHONY_WORKFLOW_DIR/gate.toml (next to WORKFLOW.md of the board).
+# check.py never reads a gate.toml from the agent workspace or its branch.
+# Keep the real file out of git (for example in .git/info/exclude).
+# Unknown keys are an error, so a typo cannot silently drop a check.
+
+# Required. Branch the ticket branch is compared against:
+# base = `git merge-base HEAD <base_ref>` in the workspace.
+# Use the same branch as `feature_base_branch` in WORKFLOW.md.
+base_ref = "main"
+
+# Required. Project test command. Runs as `bash -lc "<command>"` in the
+# workspace, in its own process group; exit code 0 = passed. Use full paths:
+# in a login shell `python` may be the system Python 2.7 (DECISIONS, item к).
+test_command = ".venv/bin/python -m pytest -q -x"
+
+# Seconds before the test run is killed (whole process group) and counted
+# as a failure. Default 900. Keep it below both
+#   hooks.timeout_ms and agent.done_gate_timeout_ms (WORKFLOW.md),
+# with a margin for git and the fast checks (see ours/hooks/README.md).
+test_timeout_s = 900
+
+# Extra forbidden globs, ADDED to the built-in list:
+#   WORKFLOW.md, gate.toml, ours/**, .github/**, .git/**, .env, .env.*,
+#   **/*.pem, **/*.key
+# Any changed path (committed, staged, unstaged, untracked, deleted, both
+# names of a rename) that matches fails the check. Globs are anchored at the
+# repository root, case-insensitive; `*` stays inside one path segment,
+# `**` spans any number of segments.
+forbidden_paths = ["migrations/**", "**/secrets/**"]
+
+# Globs of test files. REPLACES the default list when set:
+#   tests/**, **/test_*.py, **/*_test.py, **/*.test.ts, **/*.test.tsx,
+#   **/*_test.go, **/*.spec.*
+# A matching file that exists at the base must be byte-identical to the base
+# in HEAD, in the index and on disk. New test files are allowed.
+# test_globs = ["tests/**", "**/test_*.py"]
+
+# Existing test files the agent may change (globs or exact paths).
+allow_modified_tests = []
+
+# Card sections that must be present and non-empty (same rule as the core
+# stage contracts). Default: the Document stage output.
+required_sections = ["## Wiki Updates", "## As-Is -> To-Be Report"]
+
+# Hook mode: on this failure number the card goes to `needs_human` instead
+# of `In Progress`. The counter lives in $SYMPHONY_WORKFLOW_DIR/.ours-state/
+# and is never reset automatically. Default 3.
+max_check_failures = 3
+
+# Hook mode: full path to the `symphony` CLI used for `board mv`.
+# Default: <directory of $SYMPHONY_PYTHON>/symphony.
+# symphony_bin = "/Users/me/oh-my-symphony/.venv/bin/symphony"
