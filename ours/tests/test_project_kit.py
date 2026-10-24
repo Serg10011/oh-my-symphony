@@ -157,6 +157,8 @@ def test_rendered_workflow_is_accepted_by_the_core(kit: Kit) -> None:
     assert a.done_gate_command == f'"$SYMPHONY_PYTHON" {OURS / "hooks" / "check.py"} gate'
     assert a.done_gate_timeout_ms == 960000 and cfg.hooks.timeout_ms == 1200000
     assert cfg.wiki.sweep_every_n == 0 and cfg.server.port == 9971
+    # The web board reads the code repository (TASK-K10), the same path as [project].repo.
+    assert cfg.code_repo == Path(pc.load_project(kit.board)["project"]["repo"]) == kit.code.resolve()
     # check.py is the first command, before the early "no changes" exit.
     commands = [line for line in cfg.hooks.after_run.splitlines() if not line.lstrip().startswith("#")]
     assert commands[0] == f'"$SYMPHONY_PYTHON" {OURS / "hooks" / "check.py"} hook || true'

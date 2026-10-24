@@ -1,7 +1,7 @@
 #!/bin/bash
 # End-to-end run of the project kit (TASK-K08a/K08b, REPORT-11/12): project-new
 # for a temporary code repo, project-doctor (baseline + [timeouts]), the real
-# symphony service, fake_claude.py as the agent.
+# symphony service, fake_claude.py as the agent, the web board read route.
 # Usage: E2E_OUT=/tmp/kit-e2e ours/tests/e2e/run.sh
 # Scenarios (fake_claude.py): E2E_BREAK_TEST=1, E2E_SKIP_WORK=1, E2E_DROP_TEST=1.
 set -euo pipefail
@@ -52,6 +52,16 @@ for i in $(seq 1 240); do
   sleep 1
 done
 sleep 5
+# Web board read route (TASK-K10/K11): workspace.code_repo makes it list the
+# symphony/<ID> branch of the code repository, not of the board folder.
+curl -fsS "http://127.0.0.1:9981/api/v1/git/task-branches" > "$R/task-branches.json" \
+  || { echo "FAIL: GET /api/v1/git/task-branches"; kill $PID; exit 1; }
+"$PY" - "$R/task-branches.json" <<'P'
+import json, sys
+branches = {b["branch"] for b in json.load(open(sys.argv[1], encoding="utf-8"))["branches"]}
+assert "symphony/KIT-1" in branches, f"symphony/KIT-1 not in {sorted(branches)}"
+print("web board: /git/task-branches lists symphony/KIT-1 from the code repo")
+P
 kill $PID; wait $PID 2>/dev/null || true
 echo "final state: $(sed -n 's/^state: *//p' "$B/kanban/KIT-1.md" | head -1) (waited ${i}s); results in $R"
 "$PY" - "$B/.ours-state/check.log" <<'P'
