@@ -148,6 +148,9 @@ class RunningEntry:
     # Set when the worker's own `finally` starts exit cleanup. The task done
     # callback is only a fallback for workers that never reached this point.
     exit_started_at: datetime | None = None
+    # Set when the worker starts a post-turn `after_run` hook, cleared when
+    # the next turn starts. Reconcile spares such a worker for a bounded time.
+    after_run_started_at: datetime | None = None
     # First reconcile tick that observed this running ticket in a terminal
     # tracker state. Genuine model progress may extend the cleanup grace;
     # backend keepalives cannot, so chatty CLIs do not hold a slot forever

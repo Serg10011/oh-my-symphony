@@ -21,6 +21,7 @@ from ..workflow import ServiceConfig, SYMPHONY_BRANCH_PREFIX
 from ..utils.auto_merge import AutoMergeResult
 from ..workspace import COMMIT_FAILED, CommitOutcome
 from .constants import (
+    AFTER_RUN_RECONCILE_GRACE_S,
     ESCALATION_MAX_ATTEMPTS,
     ESCALATION_RETRY_DELAY_MS,
     PAUSED_RETRY_HOLD_MS,
@@ -606,7 +607,7 @@ async def _reconcile_stall_state(
                 issue_id, entry, cfg, skip_kill=True
             )
         return
-    if self.is_paused(issue_id):
+    if self.is_paused(issue_id) or _after_run_age_s(entry, cfg, now) is not None:
         return
     seen = max(
         timestamp
@@ -629,6 +630,17 @@ async def _reconcile_stall_state(
     if entry.worker_task is not None:
         entry.worker_task.cancel()
     entry.cancelled_at = now
+
+
+def _after_run_age_s(
+    entry: RunningEntry, cfg: ServiceConfig, now: datetime
+) -> float | None:
+    """Age of the worker's in-flight `after_run`, or None once past its budget."""
+    if entry.after_run_started_at is None:
+        return None
+    age = (now - entry.after_run_started_at).total_seconds()
+    limit = cfg.hooks.timeout_ms / 1000 + AFTER_RUN_RECONCILE_GRACE_S
+    return age if age < limit else None
 
 
 def _stall_timeout_ms_for_entry(
@@ -896,6 +908,16 @@ async def _reconcile_one(
                 exit_started_at=entry.exit_started_at.isoformat(),
             )
             return
+        after_run_age_s = _after_run_age_s(entry, cfg, now)
+        if after_run_age_s is not None:
+            log.info(
+                "reconcile_skip_after_run",
+                issue_id=issue.id,
+                identifier=issue.identifier,
+                state=issue.state,
+                after_run_age_s=round(after_run_age_s, 1),
+            )
+            return
         last_seen = entry.last_codex_timestamp
         last_event_age = (now - last_seen).total_seconds() if last_seen else None
         last_progress = entry.last_progress_timestamp
@@ -1034,6 +1056,15 @@ async def _reconcile_one(
                         await self._maybe_run_wiki_sweep(
                             cfg, identifier=entry.issue.identifier
                         )
+                elif (
+                    issue.state or ""
+                ).strip().lower() in cfg.agent.preserve_workspace_states:
+                    log.info(
+                        "reconcile_preserved_workspace",
+                        identifier=issue.identifier,
+                        state=issue.state,
+                        path=str(entry.workspace_path),
+                    )
                 else:
                     # Non-Done terminal state (e.g. Cancelled, Blocked):
                     # no after_done hook, just reap the workspace.
@@ -1189,7 +1220,7 @@ async def _startup_terminal_cleanup(self: Orchestrator, cfg: ServiceConfig) -> N
                         )
                 continue
             state = (issue.state or "").strip().lower()
-            if state in {"blocked", "human review"}:
+            if state in {"blocked", "human review", *cfg.agent.preserve_workspace_states}:
                 log.warning(
                     f"startup_terminal_cleanup_preserved_{state.replace(' ', '_')}_workspace",
                     identifier=issue.identifier,

@@ -391,6 +391,23 @@ a non-integer timeout is a config error. Paths that write `Done` without a
 workspace (`symphony board mv`, web edits other than Human Review → Done,
 creating a ticket in `Done`) do not run the gate.
 
+While a worker runs its post-turn `after_run` hook, reconcile neither cancels
+it (terminal-state cleanup or stall detection) nor removes its workspace, even
+if the ticket already sits in `Done` or `Human Review` past the 60 s grace: a
+long hook (for example, a full test run) can still move the ticket back, and
+the worker acts on that. The hold lasts at most `hooks.timeout_ms` + 60 s from
+the hook start; past that the worker is treated as stuck and reconcile cleans
+up as before.
+
+`agent.preserve_workspace_states` (list of state names, default empty) keeps
+the workspaces of tickets in those terminal states: neither reconcile nor
+startup cleanup removes them (the snapshot commit under
+`auto_commit_on_done` still runs). Names compare case-insensitively; startup
+cleanup always keeps `Blocked` and `Human Review` as well. `Done` cannot be
+listed, and anything other than a list of non-empty strings is a config error.
+Once the ticket leaves such a state (`confirm_done` to `Done`, `Archive`, …),
+its workspace is cleaned up by the usual rules.
+
 ## Trackers: file, Linear, Jira
 
 - **File** (`tracker: { kind: file, board_root: ./kanban }`): Markdown tickets
