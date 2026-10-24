@@ -365,6 +365,49 @@ In Progress with a one-line `## Triage` note without spending a model turn.
 Bug tickets, blocked tickets, ambiguous tickets, and Linear trackers still use
 the Todo prompt.
 
+For file-board workflows, `agent.normalize_legacy_human_review` defaults to
+`true`: on every tick Symphony moves a `Human Review` card to `Done` by itself
+when the card has a `## As-Is -> To-Be Report` (or `## Unblock Note`) section,
+or a `Confirm Done` line, and no intervention marker. Set it to `false` to keep
+such cards in `Human Review` until a person moves them. The value must be a
+real YAML boolean; `"false"` or `0` is a config error.
+
+`agent.done_gate_command` (string, default empty = off) is an external
+acceptance gate. When set, Symphony runs it with `bash -lc` on every path that
+accepts a `Done` ticket with a workspace — the worker finished its turn,
+reconcile saw `Done` on a running worker, and `confirm_done` (TUI `c`,
+`POST /api/v1/<ID>/confirm-done`, web Human Review → Done) — before the merge
+gate, and also when `auto_merge_on_done` is `false`. The working directory is
+the ticket workspace; the environment carries the usual hook variables plus
+`SYMPHONY_ISSUE_ID`, `SYMPHONY_WORKSPACE`, `SYMPHONY_BRANCH` and
+`SYMPHONY_ISSUE_STATE`. The command is read only from `WORKFLOW.md`. The gate
+is fail-closed: a non-zero exit, a timeout (`agent.done_gate_timeout_ms`,
+positive integer, default `600000`; the whole process group is killed), a
+missing command or any launch error moves the ticket to `Blocked`, keeps the
+workspace and appends `## Done Gate Failure` with the reason and the last
+~4 KB of output; the full output is under
+`.symphony-workspace-hook-output/<ID>/*-done_gate.*`. A non-string command or
+a non-integer timeout is a config error. Paths that write `Done` without a
+workspace (`symphony board mv`, web edits other than Human Review → Done,
+creating a ticket in `Done`) do not run the gate.
+
+While a worker runs its post-turn `after_run` hook, reconcile neither cancels
+it (terminal-state cleanup or stall detection) nor removes its workspace, even
+if the ticket already sits in `Done` or `Human Review` past the 60 s grace: a
+long hook (for example, a full test run) can still move the ticket back, and
+the worker acts on that. The hold lasts at most `hooks.timeout_ms` + 60 s from
+the hook start; past that the worker is treated as stuck and reconcile cleans
+up as before.
+
+`agent.preserve_workspace_states` (list of state names, default empty) keeps
+the workspaces of tickets in those terminal states: neither reconcile nor
+startup cleanup removes them (the snapshot commit under
+`auto_commit_on_done` still runs). Names compare case-insensitively; startup
+cleanup always keeps `Blocked` and `Human Review` as well. `Done` cannot be
+listed, and anything other than a list of non-empty strings is a config error.
+Once the ticket leaves such a state (`confirm_done` to `Done`, `Archive`, …),
+its workspace is cleaned up by the usual rules.
+
 ## Trackers: file, Linear, Jira
 
 - **File** (`tracker: { kind: file, board_root: ./kanban }`): Markdown tickets
@@ -808,6 +851,32 @@ only):
 | POST   | `/api/v1/{id}/pause` `/resume`    | Hold / release a running worker              |
 | POST   | `/api/v1/issues/{id}/skip-document` | Move idle Document ticket to Human Review (deprecated alias: `/skip-learn`) |
 | POST   | `/api/v1/{id}/confirm-done` | Confirm Human Review through host history/merge/hooks/cleanup; requires retained workspace and refuses run-bound release evidence |
+
+**`rate_limits` in `/api/v1/state`.** One shared field holding the latest
+limits payload reported by whichever backend spoke last, or `null` before any
+report (the value is in memory only). Codex stores the `account/rateLimits/updated`
+notification as received. Claude stores the `rate_limit_info` object of each
+`rate_limit_event` stream-json frame verbatim (`status`, `resetsAt`,
+`rateLimitType`, `overageStatus`, `unifiedWindows.five_hour` /
+`.seven_day` with `utilization` and `resetsAt`, ...); nothing is parsed or
+rescaled, and a frame without a `rate_limit_info` object leaves the previous
+value in place.
+
+**`cost_usd` in `/api/v1/runs`.** The cost of one run in USD, or `null` when
+the backend never reported a usable value (codex today, and every run recorded
+before this field existed). Claude's `result` frame carries `total_cost_usd`
+*cumulatively* for the whole claude session (with `--resume`, turn 3 reports
+turns 1–3), while its `usage` block covers that turn only. A turn therefore
+costs the difference to the previous value of the same session; a new session
+(e.g. after a phase transition) or a value below the previous one counts in
+full. Missing, non-numeric, boolean, NaN, infinite, or negative values are
+skipped. The per-turn increment (`turn_cost_usd`), the run total so far
+(`cost_usd`), and the raw session value (`session_cost_usd`) appear in the
+`turn_completed` event of `/api/v1/runs/{run_id}`; `run_completed` carries
+the final `cost_usd`. A crash-continuation run counts from the predecessor's
+last recorded session value, so each run row holds only its own spend. The
+amount is claude's list-price figure (`costBasis: "list"`); on a subscription
+it is notional, not billed money. Per-model `modelUsage` is not stored.
 
 **TUI vs web app.** The web app is the full browser editor for file boards; it
 uses the same tracker/workflow modules as the CLI. The TUI is keyboard-first:

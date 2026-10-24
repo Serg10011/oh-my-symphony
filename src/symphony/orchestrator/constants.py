@@ -27,6 +27,11 @@ RETRY_BASE_MS = 10_000  # §8.4
 # board. The cancel is still issued; this just stops the slot from leaking.
 STALL_FORCE_EJECT_GRACE_S = 30.0
 
+# Reconcile leaves a worker inside its post-turn `after_run` hook alone for
+# `hooks.timeout_ms` plus this margin (the hook may still move the ticket).
+# Past that the worker is treated as stuck and the usual cleanup applies.
+AFTER_RUN_RECONCILE_GRACE_S = 60.0
+
 # Minimum wall-clock interval between auto-archive sweeps. The sweep is
 # day-granular (`archive_after_days`, default 30), so re-scanning the whole
 # terminal board on every poll tick is wasted work — a multi-minute cadence
@@ -51,6 +56,9 @@ ESCALATION_MAX_ATTEMPTS = 5
 TICK_DEGRADED_AFTER_CONSECUTIVE_FAILURES = 3
 TICK_LOOP_MAX_RESTARTS = 3
 TICK_FAILURE_BACKOFF_MAX_S = 30.0
+
+# Start of the debug.last_error text written when agent.done_gate_command refuses a ticket.
+DONE_GATE_FAILURE_PREFIX = "done gate failed"
 
 # Initiative B — how long `stop()` waits for supervised background tasks
 # (worker-exit cleanup, retry firing, escalations) to finish before

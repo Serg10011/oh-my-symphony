@@ -21,7 +21,7 @@ from ..errors import SymphonyError
 from ..issue import Issue, normalize_state
 from ..workflow import ServiceConfig
 from ..workspace import HISTORY_PUSH_FAILED
-from .constants import TICK_DEGRADED_AFTER_CONSECUTIVE_FAILURES
+from .constants import DONE_GATE_FAILURE_PREFIX, TICK_DEGRADED_AFTER_CONSECUTIVE_FAILURES
 from .release_cycle import is_release_evidence_issue as _is_release_evidence_issue
 from .entries import RetryEntry, RunningEntry, _IssueDebug
 from .helpers import (
@@ -168,6 +168,9 @@ async def confirm_done(self: Orchestrator, identifier: str) -> dict[str, Any]:
             if not await self._auto_merge_done_gate_or_block(
                 cfg, issue, path, debug_target=debug
             ):
+                last_error = debug.last_error or ""
+                if last_error.startswith(DONE_GATE_FAILURE_PREFIX):
+                    raise ValueError(last_error)
                 raise ValueError("merge gate failed; workspace preserved; inspect the ticket")
             check_ownership()
             await asyncio.to_thread(self._tracker_call_update_state, cfg, issue, done_state)

@@ -95,6 +95,11 @@ class RunningEntry:
     last_reported_cache_input_tokens: int = 0
     last_reported_output_tokens: int = 0
     last_reported_total_tokens: int = 0
+    # Run cost in USD: sum of per-turn increments of the backend's
+    # session-cumulative `total_cost_usd`. None until one valid value arrives.
+    cost_usd: float | None = None
+    cost_session_id: str | None = None
+    cost_session_last: float | None = None
     # Cumulative state-local total tokens at the close of the previous
     # turn — used by the EMA updater to derive per-turn deltas. Reset to
     # 0 alongside `codex_state_total_tokens` on phase transitions so the
@@ -143,6 +148,9 @@ class RunningEntry:
     # Set when the worker's own `finally` starts exit cleanup. The task done
     # callback is only a fallback for workers that never reached this point.
     exit_started_at: datetime | None = None
+    # Set when the worker starts a post-turn `after_run` hook, cleared when
+    # the next turn starts. Reconcile spares such a worker for a bounded time.
+    after_run_started_at: datetime | None = None
     # First reconcile tick that observed this running ticket in a terminal
     # tracker state. Genuine model progress may extend the cleanup grace;
     # backend keepalives cannot, so chatty CLIs do not hold a slot forever

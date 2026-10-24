@@ -24,6 +24,8 @@ from .coercion import _normalize_state_key
 from .constants import (
     DEFAULT_AGY_COMMAND,
     DEFAULT_AUTO_RECOVER_BLOCKED,
+    DEFAULT_NORMALIZE_LEGACY_HUMAN_REVIEW,
+    DEFAULT_DONE_GATE_TIMEOUT_MS,
     DEFAULT_AUTO_MERGE_EXCLUDE_PATHS,
     DEFAULT_BACKEND_READ_TIMEOUT_MS,
     DEFAULT_BACKEND_STALL_TIMEOUT_MS,
@@ -188,6 +190,10 @@ class AgentConfig:
     # Blocked, the orchestrator opens one FIX ticket that can clarify/fix/prove the
     # root cause before the source returns to the active workflow.
     auto_recover_blocked: bool = DEFAULT_AUTO_RECOVER_BLOCKED
+    # File-board sweep that moves legacy `Human Review` cards carrying completion
+    # evidence to `Done` on every tick. False keeps them in `Human Review` until
+    # a person moves them.
+    normalize_legacy_human_review: bool = DEFAULT_NORMALIZE_LEGACY_HUMAN_REVIEW
     # Render first-turn prompts with state-relevant ticket context instead
     # of the whole accumulating Markdown body. Workflows can opt out when a
     # custom ticket format needs full raw history in every worker prompt.
@@ -247,6 +253,15 @@ class AgentConfig:
     # with a production-critical `after_done` (deploy / apply-to-host)
     # to avoid silent partial completions.
     after_done_failure_policy: str = "warn"
+    # External acceptance gate run on every Done acceptance path (worker
+    # exit, reconcile, confirm_done) before the merge gate. Empty = off.
+    # Fail-closed: non-zero exit, timeout, missing command or any launch
+    # error moves the ticket to Blocked and keeps the workspace.
+    done_gate_command: str = ""
+    done_gate_timeout_ms: int = DEFAULT_DONE_GATE_TIMEOUT_MS
+    # Non-Done terminal states (lowercased) whose workspaces neither reconcile
+    # nor startup cleanup removes; the snapshot commit still runs. Empty = off.
+    preserve_workspace_states: tuple[str, ...] = ()
     # Hard cap on state-local `total_tokens` (input + output across turns
     # while the ticket remains in one state). The counter resets on each
     # state transition, while lifetime totals stay visible in the API. 0 =

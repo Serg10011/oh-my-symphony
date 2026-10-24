@@ -555,6 +555,8 @@ async def _open_session(orch: Orchestrator, st: _AttemptState) -> None:
         st.running.recovery_session_resumed = resumed_checkpoint
         if resumed_checkpoint:
             st.running.resume_session_id = checkpoint.resume_session_id
+            st.running.cost_session_id = checkpoint.resume_session_id
+            st.running.cost_session_last = checkpoint.session_cost_usd
             orch._append_run_event(st.running, "session_started", {})
             log.info(
                 "session_continuation_resumed",
@@ -852,6 +854,7 @@ async def _run_turn(
         st.running_issue_id, _core()._backend_agent_pid(st.client)
     )
     st.after_run_pending = True
+    running.after_run_started_at = None
     try:
         await st.client.run_turn(prompt=prompt, is_continuation=is_continuation)
         if orch._is_factory_profile(st.cfg) and running.state_at_turn_start == "verify":
@@ -895,7 +898,7 @@ async def _after_turn_hooks(orch: Orchestrator, st: _AttemptState) -> None:
             total_tokens=running_entry.codex_total_tokens,
         )
 
-    await _workspace_manager(orch).after_run_best_effort(st.workspace.path)
+    await _after_run_hook(orch, st)
     st.after_run_pending = False
     # Collect before the next loop iteration evaluates the
     # stage contract, so `artifacts.require_for_done` sees
@@ -924,6 +927,15 @@ async def _after_turn_hooks(orch: Orchestrator, st: _AttemptState) -> None:
                 "workspace_updated",
                 {"turn": st.turn_number, "commit_sha": commit_sha},
             )
+
+
+async def _after_run_hook(orch: Orchestrator, st: _AttemptState) -> None:
+    # Stamp first: reconcile spares a worker inside `after_run` (bounded by
+    # `hooks.timeout_ms`), so a long hook can still move the ticket back.
+    running_entry = orch._running.get(st.running_issue_id)
+    if running_entry is not None:
+        running_entry.after_run_started_at = datetime.now(timezone.utc)
+    await _workspace_manager(orch).after_run_best_effort(st.workspace.path)
 
 
 def _checkpoint_completed_turn(orch: Orchestrator, st: _AttemptState) -> None:
@@ -1207,7 +1219,7 @@ async def _cleanup_backend(orch: Orchestrator, st: _AttemptState) -> None:
         else:
             orch._sync_backend_agent_pid(st.running_issue_id, None)
     if st.after_run_pending:
-        await _workspace_manager(orch).after_run_best_effort(st.workspace.path)
+        await _after_run_hook(orch, st)
     # Salvage deliverables written before an abnormal exit (turn
     # timeout, TurnFailed, stall eviction). The per-turn call runs
     # only on the success path, and the workspace is torn down at

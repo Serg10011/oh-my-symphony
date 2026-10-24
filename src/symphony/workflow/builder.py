@@ -65,6 +65,8 @@ from .constants import (
     DEFAULT_AGENT_KIND,
     DEFAULT_AUTO_MERGE_EXCLUDE_PATHS,
     DEFAULT_AUTO_RECOVER_BLOCKED,
+    DEFAULT_NORMALIZE_LEGACY_HUMAN_REVIEW,
+    DEFAULT_DONE_GATE_TIMEOUT_MS,
     DEFAULT_BACKEND_READ_TIMEOUT_MS,
     DEFAULT_BACKEND_STALL_TIMEOUT_MS,
     DEFAULT_BACKEND_TURN_TIMEOUT_MS,
@@ -386,6 +388,11 @@ def build_service_config(
         auto_recover_blocked=bool(
             agent_raw.get("auto_recover_blocked", DEFAULT_AUTO_RECOVER_BLOCKED)
         ),
+        normalize_legacy_human_review=_validated_bool(
+            agent_raw.get("normalize_legacy_human_review"),
+            DEFAULT_NORMALIZE_LEGACY_HUMAN_REVIEW,
+            name="agent.normalize_legacy_human_review",
+        ),
         compact_issue_context=bool(
             agent_raw.get("compact_issue_context", True)
         ),
@@ -422,6 +429,18 @@ def build_service_config(
         ),
         after_done_failure_policy=_validated_after_done_failure_policy(
             agent_raw.get("after_done_failure_policy"),
+        ),
+        done_gate_command=_validated_done_gate_command(
+            agent_raw.get("done_gate_command")
+        ),
+        done_gate_timeout_ms=_validated_strict_int(
+            agent_raw.get("done_gate_timeout_ms"),
+            DEFAULT_DONE_GATE_TIMEOUT_MS,
+            name="agent.done_gate_timeout_ms",
+            minimum=1,
+        ),
+        preserve_workspace_states=_validated_preserve_workspace_states(
+            agent_raw.get("preserve_workspace_states")
         ),
         max_total_tokens=_validated_nonnegative_or_default(
             agent_raw.get("max_total_tokens"),
@@ -1448,6 +1467,36 @@ def _parse_pm_manual_verification_procedures(
             label.strip() if isinstance(label, str) and label.strip() else None,
         )
     return result
+
+
+def _validated_done_gate_command(value: Any) -> str:
+    """String or absent; blank means the gate is off. Never coerced."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ConfigValidationError(
+            "agent.done_gate_command must be a string", value=value
+        )
+    return value.strip()
+
+
+def _validated_preserve_workspace_states(value: Any) -> tuple[str, ...]:
+    """List of non-empty state names, lowercased; Done keeps its own cleanup."""
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item.strip() for item in value
+    ):
+        raise ConfigValidationError(
+            "agent.preserve_workspace_states must be a list of non-empty strings",
+            value=value,
+        )
+    states = tuple(item.strip().lower() for item in value)
+    if "done" in states:
+        raise ConfigValidationError(
+            "agent.preserve_workspace_states cannot include Done", value=value
+        )
+    return states
 
 
 def _validated_strict_int(

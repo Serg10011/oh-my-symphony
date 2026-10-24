@@ -35,6 +35,7 @@ _FAILED_BLOCKER_TERMINAL_STATES = {
     "canceled",
     "duplicate",
     "human review",
+    "needs_human",
 }
 
 
