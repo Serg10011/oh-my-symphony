@@ -7,6 +7,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -450,6 +451,28 @@ def _refresh_linked_worktree_in_place(
     return True
 
 
+_DONE_GATE_TAIL_CHARS = 4000
+
+
+@dataclass(frozen=True)
+class DoneGateResult:
+    """Outcome of `agent.done_gate_command`.
+
+    `reason` is one of passed / exit_code / not_found / timeout / exception;
+    anything but `passed` refuses Done. `output_tail` is the last ~4 KB of
+    stdout+stderr (or the launch error); the full output lives at `artifact`.
+    """
+
+    reason: str
+    returncode: int | None
+    output_tail: str
+    artifact: Path | None
+
+    @property
+    def passed(self) -> bool:
+        return self.reason == "passed"
+
+
 @dataclass(frozen=True)
 class Workspace:
     path: Path
@@ -851,6 +874,99 @@ class WorkspaceManager:
             )
         return meta_path
 
+    def _hook_process_env(self, extra_env: dict[str, str] | None) -> dict[str, str]:
+        env = {
+            **os.environ,
+            "SYMPHONY_WORKFLOW_DIR": str(self._workflow_dir)
+            if self._workflow_dir
+            else "",
+        }
+        # Host-computed hook values (board location, branch policy, etc.) are
+        # part of the lifecycle contract, not just workspace creation.  Every
+        # hook receives the same base values; lifecycle-specific values passed
+        # by the caller still win below.
+        if self._hook_env:
+            env.update(self._hook_env)
+        if extra_env:
+            env.update(extra_env)
+        # Cleanup uses the host interpreter and root, never inherited path guesses.
+        env["SYMPHONY_PYTHON"] = sys.executable
+        env["SYMPHONY_WORKSPACE_ROOT"] = str(self._root)
+        return env
+
+    async def run_done_gate(
+        self,
+        cwd: Path,
+        command: str,
+        *,
+        timeout_ms: int,
+        extra_env: dict[str, str],
+    ) -> DoneGateResult:
+        """Run `agent.done_gate_command`; every path except exit 0 refuses.
+
+        Unlike `_run_hook`, the command leads its own process group and a
+        timeout kills the whole group, so no gate grandchild (test runner,
+        server) outlives the decision. Runs in a worker thread like
+        `_run_hook` so the event loop is never blocked.
+        """
+        try:
+            env = self._hook_process_env(extra_env)
+            argv = [resolve_bash(), "-lc", command]
+
+            def _do_run() -> tuple[int | None, bytes, bytes]:
+                proc = subprocess.Popen(
+                    argv,
+                    cwd=str(cwd),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=env,
+                    start_new_session=os.name == "posix",
+                )
+                try:
+                    out, err = proc.communicate(timeout=timeout_ms / 1000.0)
+                    return proc.returncode, out, err
+                except subprocess.TimeoutExpired:
+                    if os.name == "posix":
+                        try:
+                            os.killpg(proc.pid, signal.SIGKILL)
+                        except OSError:
+                            proc.kill()
+                    else:
+                        proc.kill()
+                    try:
+                        out, err = proc.communicate(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        # A process that left the group still holds the pipes.
+                        proc.wait()
+                        out, err = b"", b""
+                    return None, out, err
+
+            rc, out, err = await asyncio.to_thread(_do_run)
+            out = _strip_shell_exit_trailer(out)
+            artifact = self._write_hook_output_artifacts(
+                name="done_gate",
+                cwd=cwd,
+                returncode=-1 if rc is None else rc,
+                stdout=out,
+                stderr=err,
+            )
+            text = out.decode("utf-8", errors="replace")
+            err_text = err.decode("utf-8", errors="replace")
+            if err_text.strip():
+                text = f"{text}\n--- stderr ---\n{err_text}"
+            if rc is None:
+                reason = "timeout"
+            elif rc == 0:
+                reason = "passed"
+            elif rc == 127:
+                reason = "not_found"
+            else:
+                reason = "exit_code"
+            return DoneGateResult(reason, rc, text.strip()[-_DONE_GATE_TAIL_CHARS:], artifact)
+        except Exception as exc:
+            return DoneGateResult("exception", None, f"{type(exc).__name__}: {exc}", None)
+
     async def _run_hook(
         self,
         name: str,
@@ -873,23 +989,7 @@ class WorkspaceManager:
         # process.wait()`. Using `subprocess.run` in a thread bypasses the
         # watcher entirely — `os.waitpid` runs in the worker thread and
         # returns deterministically.
-        env = {
-            **os.environ,
-            "SYMPHONY_WORKFLOW_DIR": str(self._workflow_dir)
-            if self._workflow_dir
-            else "",
-        }
-        # Host-computed hook values (board location, branch policy, etc.) are
-        # part of the lifecycle contract, not just workspace creation.  Every
-        # hook receives the same base values; lifecycle-specific values passed
-        # by the caller still win below.
-        if self._hook_env:
-            env.update(self._hook_env)
-        if extra_env:
-            env.update(extra_env)
-        # Cleanup uses the host interpreter and root, never inherited path guesses.
-        env["SYMPHONY_PYTHON"] = sys.executable
-        env["SYMPHONY_WORKSPACE_ROOT"] = str(self._root)
+        env = self._hook_process_env(extra_env)
 
         def _do_run() -> subprocess.CompletedProcess[bytes]:
             # `stdin=DEVNULL` is mandatory, not cosmetic. When Symphony is

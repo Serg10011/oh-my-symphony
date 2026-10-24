@@ -21,7 +21,12 @@ from ..issue import Issue, normalize_state
 from ..workflow import ServiceConfig, selectable_agent_kinds, SYMPHONY_BRANCH_PREFIX
 from ..utils.auto_merge import AutoMergeResult
 from ..utils.git_sandbox import SANDBOX_WRITE_DENIED, classify_history_failure
-from ..workspace import HISTORY_PUSH_FAILED, CommitOutcome, HistoryGateResult
+from ..workspace import (
+    HISTORY_PUSH_FAILED,
+    CommitOutcome,
+    DoneGateResult,
+    HistoryGateResult,
+)
 from .constants import AUTO_TRIAGE_NOTE, AUTO_TRIAGE_TARGET_STATE
 from .entries import _IssueDebug
 from .helpers import (
@@ -464,6 +469,85 @@ async def _block_done_ticket_for_merge_gate(
         )
 
 
+async def _done_gate_or_block(
+    self: Orchestrator,
+    cfg: "ServiceConfig",
+    issue: Issue,
+    workspace_path: Path,
+    *,
+    debug_target: "_IssueDebug | None",
+) -> bool:
+    """Run `agent.done_gate_command`; fail closed into `Blocked`."""
+    command = cfg.agent.done_gate_command
+    if not command:
+        return True
+    try:
+        manager = self._workspace_manager
+        if manager is None:
+            raise SymphonyError("workspace manager is unavailable")
+        result = await manager.run_done_gate(
+            workspace_path,
+            command,
+            timeout_ms=cfg.agent.done_gate_timeout_ms,
+            extra_env={
+                "SYMPHONY_ISSUE_ID": issue.identifier,
+                "SYMPHONY_ISSUE_TITLE": issue.title or "",
+                "SYMPHONY_ISSUE_STATE": issue.state or "",
+                "SYMPHONY_WORKSPACE": str(workspace_path),
+                "SYMPHONY_BRANCH": f"{SYMPHONY_BRANCH_PREFIX}{issue.identifier}",
+            },
+        )
+    except Exception as exc:
+        result = DoneGateResult("exception", None, f"{type(exc).__name__}: {exc}", None)
+    artifact = str(result.artifact) if result.artifact is not None else ""
+    if result.passed:
+        log.info(
+            "done_gate_passed",
+            identifier=issue.identifier,
+            returncode=result.returncode,
+            artifact=artifact,
+        )
+        return True
+    log.error(
+        "done_gate_failed",
+        identifier=issue.identifier,
+        reason=result.reason,
+        returncode=result.returncode,
+        output=result.output_tail[-400:],
+        artifact=artifact,
+    )
+    if debug_target is not None:
+        debug_target.last_error = (
+            f"done gate failed ({result.reason}); moved to Blocked; "
+            "workspace preserved"
+        )
+    note_body = (
+        f"`agent.done_gate_command` refused this ticket at `{issue.state}`, so "
+        "it was moved to `Blocked` instead of being accepted as `Done`.\n\n"
+        f"- reason: `{result.reason}`\n"
+        f"- returncode: `{result.returncode}`\n"
+        f"- workspace preserved: `{workspace_path}`\n"
+        f"- full output: `{artifact or 'not saved'}`\n\n"
+        f"Output tail:\n\n```text\n{result.output_tail.replace('```', '` ` `')}\n```"
+    )
+    try:
+        await asyncio.to_thread(
+            self._tracker_call_update_state, cfg, issue, "Blocked"
+        )
+        await asyncio.to_thread(
+            self._tracker_call_append_note, cfg, issue, "Done Gate Failure", note_body
+        )
+    except Exception as exc:
+        log.warning(
+            "done_gate_block_persist_failed",
+            identifier=issue.identifier,
+            reason=result.reason,
+            error=str(exc),
+            path=str(workspace_path),
+        )
+    return False
+
+
 async def _auto_merge_done_gate_or_block(
     self: Orchestrator,
     cfg: "ServiceConfig",
@@ -472,6 +556,12 @@ async def _auto_merge_done_gate_or_block(
     *,
     debug_target: "_IssueDebug | None",
 ) -> bool:
+    # The done gate runs first and regardless of auto-merge: a refused
+    # ticket is never merged.
+    if not await _done_gate_or_block(
+        self, cfg, issue, workspace_path, debug_target=debug_target
+    ):
+        return False
     if not cfg.agent.auto_merge_on_done:
         return True
     result = await _core().auto_merge_on_done_best_effort(
