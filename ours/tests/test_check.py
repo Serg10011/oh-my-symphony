@@ -1,7 +1,8 @@
-"""Tests for ours/hooks/check.py (TASK-K05, TASK-K08a).
+"""Tests for ours/hooks/check.py (TASK-K05, TASK-K08a, TASK-K08b).
 
 Every scenario builds a real code repository, a board folder outside it
-(project.toml, test.sh, kanban/, .ours-state/<ID>.base.json) and a linked
+(project.toml, test.sh, kanban/, .ours-state/<ID>.base.json and
+baseline.json) and a linked
 worktree laid out like ours/hooks/worktree.py does (branch `symphony/<ID>`,
 `kanban` symlinked to the board, hidden through core.excludesFile), a card
 on the board, and a fake `symphony` executable that records its calls and
@@ -113,6 +114,7 @@ class Env:
         git(self.ws, "config", "--worktree", "core.excludesFile", str(exclude))
         (self.ws / "kanban").symlink_to(self.board / "kanban")
         self.record(git(self.code, "rev-parse", "main").strip())
+        self.baseline()
         self.card = self.board / "kanban" / f"{ID}.md"
         self.set_card("Human Review", GOOD_BODY)
         self.bin.mkdir()
@@ -131,10 +133,20 @@ class Env:
         payload = {"base_sha": sha, "base_branch": "main", "created_at": "2026-10-24T00:00:00Z"}
         write(self.board / ".ours-state" / f"{ID}.base.json", json.dumps(payload))
 
-    def config(self, raw: str | None = None, timeouts: dict | None = None, **keys: object) -> None:
-        """project.toml; `test_command` becomes the board test.sh."""
+    def baseline(self, passed: int = 1, skipped: int = 0, failed: int = 0,
+                 branch: str = "main") -> None:
+        payload = {"base_branch": branch, "base_sha": "0" * 40, "passed": passed,
+                   "skipped": skipped, "failed": failed, "setup_s": 0.1, "tests_s": 0.1,
+                   "measured_at": "2026-10-24T00:00:00Z"}
+        write(self.board / ".ours-state" / "baseline.json", json.dumps(payload))
+
+    def config(self, raw: str | None = None, timeouts: dict | None = None,
+               summary: str | None = "passed=1 skipped=0 failed=0", **keys: object) -> None:
+        """project.toml; `test_command` becomes the board test.sh, followed by
+        the summary line `PIPELINE_TESTS <summary>` unless summary is None."""
         if "test_command" in keys:
-            write(self.board / "test.sh", f"{keys.pop('test_command')}\n")
+            tail = f"echo 'PIPELINE_TESTS {summary}'\n" if summary is not None else ""
+            write(self.board / "test.sh", f"{keys.pop('test_command')}\n{tail}")
         if raw is None:
             project = {"name": "t", "repo": str(self.code), "id_prefix": "TT", "port": 9990,
                        "base_branch": keys.pop("base_ref", "main")}
@@ -458,7 +470,7 @@ def test_test_command_timeout_kills_whole_group(env: Env) -> None:
     pids = env.tmp / "pids"
     env.config(
         test_command=f"sleep 300 & echo $! >> {pids}; echo $$ >> {pids}; sleep 300",
-        test_timeout_s=1,
+        timeouts={"tests_s": 1},
     )
     started = time.monotonic()
     result = env.run("gate")
@@ -473,13 +485,13 @@ def test_test_command_timeout_kills_whole_group(env: Env) -> None:
 
 
 def test_test_command_not_found_refused(env: Env) -> None:
-    env.config(test_command="definitely-not-a-command-k05")
+    env.config(test_command="definitely-not-a-command-k05", summary=None)
     assert_refused(env.run("gate"), "command not found (exit 127)")
 
 
 def test_background_straggler_does_not_turn_pass_into_timeout(env: Env) -> None:
     pids = env.tmp / "pids"
-    env.config(test_command=f"sleep 300 & echo $! > {pids}; exit 0", test_timeout_s=20)
+    env.config(test_command=f"sleep 300 & echo $! > {pids}; true", timeouts={"tests_s": 20})
     started = time.monotonic()
     assert_passed(env.run("gate"))
     assert time.monotonic() - started < 15
@@ -488,6 +500,102 @@ def test_background_straggler_does_not_turn_pass_into_timeout(env: Env) -> None:
     while _alive(pid) and time.monotonic() < deadline:
         time.sleep(0.1)
     assert not _alive(pid)
+
+
+# ---------------------------------------------------------------------------
+# 4b. summary line and baseline (TASK-K08b)
+# ---------------------------------------------------------------------------
+
+
+def test_exit_0_without_summary_line_refused(env: Env) -> None:
+    env.config(test_command=f"touch {env.marker}", summary=None)
+    result = env.run("gate")
+    assert_refused(result, "нет строки итогов `PIPELINE_TESTS passed=<n> skipped=<n> failed=<n>`")
+    assert env.marker.exists()
+
+
+def test_failed_tests_refused_even_with_exit_0(env: Env) -> None:
+    env.config(test_command="true", summary="passed=5 skipped=0 failed=1")
+    assert_refused(env.run("gate"), "test.sh: failed=1 при коде 0")
+
+
+def test_fewer_passed_than_baseline_refused_with_both_triples(env: Env) -> None:
+    env.baseline(passed=3, skipped=1)
+    env.config(test_command="true", summary="passed=2 skipped=1 failed=0")
+    result = env.run("gate")
+    assert_refused(
+        result,
+        "test.sh: passed=2 меньше базы 3",
+        "сейчас passed=2 skipped=1 failed=0; база passed=3 skipped=1 failed=0",
+        "перезапусти project-doctor",
+    )
+
+
+def test_more_skipped_than_baseline_refused(env: Env) -> None:
+    env.baseline(passed=3, skipped=1)
+    env.config(test_command="true", summary="passed=4 skipped=2 failed=0")
+    assert_refused(env.run("gate"), "test.sh: skipped=2 больше базы 1")
+
+
+def test_more_passed_and_fewer_skipped_than_baseline_pass(env: Env) -> None:
+    env.baseline(passed=3, skipped=1)
+    env.config(test_command="true", summary="passed=9 skipped=0 failed=0")
+    assert_passed(env.run("gate"))
+
+
+def test_last_summary_line_counts(env: Env) -> None:
+    env.config(test_command="echo 'PIPELINE_TESTS passed=0 skipped=9 failed=9'")
+    assert_passed(env.run("gate"))
+    env.config(test_command="echo 'PIPELINE_TESTS passed=7 skipped=0 failed=0'",
+               summary="passed=0 skipped=0 failed=0")
+    assert_refused(env.run("gate"), "passed=0 меньше базы 1")
+
+
+def test_summary_line_outside_the_output_tail_is_found(env: Env) -> None:
+    # The summary must come from the whole output, not the 4000-byte tail.
+    env.config(test_command="echo 'PIPELINE_TESTS passed=1 skipped=0 failed=0'; "
+                            "for i in $(seq 1 3000); do echo line-$i; done", summary=None)
+    assert_passed(env.run("gate"))
+
+
+def test_indented_or_partial_summary_lines_do_not_count(env: Env) -> None:
+    env.config(test_command="echo '  PIPELINE_TESTS passed=1 skipped=0 failed=0'; "
+                            "echo 'PIPELINE_TESTS passed=1 skipped=0'", summary=None)
+    assert_refused(env.run("gate"), "нет строки итогов")
+
+
+def test_missing_baseline_refused_before_tests(env: Env) -> None:
+    (env.board / ".ours-state" / "baseline.json").unlink()
+    result = env.run("gate")
+    assert_refused(result, "нет замера базы", "запусти project-doctor")
+    assert not env.marker.exists()
+
+
+@pytest.mark.parametrize(
+    ("payload", "reason"),
+    [
+        ("{not json", "повреждён"),
+        (json.dumps({"base_branch": "main", "passed": 1, "skipped": 0}), "неполный"),
+        (json.dumps({"base_branch": "main", "passed": -1, "skipped": 0, "failed": 0}), "неполный"),
+        (json.dumps({"base_branch": "dev", "passed": 1, "skipped": 0, "failed": 0}),
+         "замер сделан на ветке 'dev', а base_branch 'main'"),
+    ],
+)
+def test_bad_baseline_refused(env: Env, payload: str, reason: str) -> None:
+    write(env.board / ".ours-state" / "baseline.json", payload)
+    result = env.run("gate")
+    assert_refused(result, reason, "project-doctor")
+    assert not env.marker.exists()
+
+
+def test_hook_rolls_back_when_a_test_drops_out_of_the_run(env: Env) -> None:
+    env.baseline(passed=2)
+    env.config(test_command="true", summary="passed=1 skipped=0 failed=0")
+    env.set_card("Done")
+    assert env.run("hook").returncode == 0
+    assert env.state() == "In Progress"
+    text = env.card.read_text()
+    assert "## Check Failure" in text and "passed=1 меньше базы 2" in text
 
 
 # ---------------------------------------------------------------------------
@@ -533,7 +641,9 @@ BAD_CONFIG_OR_BASE = [
     (_append("[extra]\n"), "неизвестный раздел(ы) extra"),
     (lambda env: env.config(test_command="true", forbiden_paths=[]),
      "неизвестный ключ(и) в [checks]: forbiden_paths"),
-    (lambda env: env.config(test_command="true", test_timeout_s="9"), "целое число"),
+    (lambda env: env.config(test_command="true", timeouts={"tests_s": "9"}), "целое число"),
+    (lambda env: env.config(test_command="true", test_timeout_s=9),
+     "ключ [checks] test_timeout_s убран (TASK-K08b): перенеси значение в [timeouts] tests_s"),
     (lambda env: env.config(test_command="true", forbidden_paths="ours"), "список непустых строк"),
     (lambda env: env.config(test_command="true", base_ref="-x"), "не может начинаться с '-'"),
     (lambda env: (env.board / ".ours-state" / f"{ID}.base.json").unlink(), "нет записи базы"),
@@ -549,7 +659,7 @@ def test_bad_config_or_base_refused(env: Env, mutate, reason: str) -> None:
     assert not env.marker.exists()
 
 
-@pytest.mark.parametrize(("mutate", "reason"), [BAD_CONFIG_OR_BASE[i] for i in (0, 1, 2, 9, 11)])
+@pytest.mark.parametrize(("mutate", "reason"), [BAD_CONFIG_OR_BASE[i] for i in (0, 1, 2, 10, 12)])
 def test_bad_config_or_base_hook_rolls_back(env: Env, mutate, reason: str) -> None:
     mutate(env)
     # Without a readable config the binary comes from SYMPHONY_PYTHON's dir.
@@ -586,9 +696,11 @@ def test_timeouts_tests_s_is_the_default_test_timeout(env: Env) -> None:
     assert_refused(env.run("gate"), "test.sh timed out after 1s")
 
 
-def test_checks_test_timeout_overrides_timeouts(env: Env) -> None:
-    env.config(test_command="sleep 30", test_timeout_s=1, timeouts={"tests_s": 600})
-    assert_refused(env.run("gate"), "test.sh timed out after 1s")
+def test_old_checks_test_timeout_key_is_refused_with_a_hint(env: Env) -> None:
+    env.config(test_command="true", test_timeout_s=1, timeouts={"tests_s": 600})
+    result = env.run("gate")
+    assert_refused(result, "[checks] test_timeout_s убран", "[timeouts] tests_s")
+    assert not env.marker.exists()
 
 
 @contextmanager
@@ -613,7 +725,7 @@ def test_hook_skips_while_another_check_holds_the_lock(env: Env) -> None:
 
 def test_gate_waits_for_the_lock_then_checks(env: Env) -> None:
     # wait budget = gate 45 s - tests 10 s - margin 30 s = 5 s
-    env.config(test_command=f"touch {env.marker}", test_timeout_s=10, timeouts={"gate_ms": 45000})
+    env.config(test_command=f"touch {env.marker}", timeouts={"tests_s": 10, "gate_ms": 45000})
     with held_lock(env) as handle:
         timer = threading.Timer(1.0, lambda: fcntl.flock(handle.fileno(), fcntl.LOCK_UN))
         timer.start()
@@ -626,7 +738,7 @@ def test_gate_waits_for_the_lock_then_checks(env: Env) -> None:
 
 
 def test_gate_refuses_when_the_lock_stays_busy(env: Env) -> None:
-    env.config(test_command=f"touch {env.marker}", test_timeout_s=10, timeouts={"gate_ms": 41000})
+    env.config(test_command=f"touch {env.marker}", timeouts={"tests_s": 10, "gate_ms": 41000})
     with held_lock(env):
         result = env.run("gate")
     assert_refused(result, "still runs after 1s")
@@ -878,7 +990,7 @@ def test_hook_skips_rollback_when_parent_shell_dies(env: Env) -> None:
     pids = env.tmp / "pids"
     env.config(
         test_command=f"echo $PPID > {env.tmp / 'checkpid'}; sleep 300 & echo $! >> {pids}; sleep 300",
-        test_timeout_s=600,
+        timeouts={"tests_s": 600},
     )
     env.set_card("Done")
     shell = subprocess.Popen(

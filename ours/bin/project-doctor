@@ -1,0 +1,398 @@
+#!/usr/bin/env python3
+"""Check that a project board is ready and measure its base branch (TASK-K08b).
+
+    project-doctor <name> [--root <dir>]
+
+Prints a PASS / FAIL / WARN list; exit 0 only without FAIL. Steps:
+
+1. project.toml parses; [tools] exist and run (`claude --version`); the
+   code repository is a git repository with refs/heads/<base>; the board
+   folder is not inside git; port and prefix are not taken by another
+   project under the same root; setup.sh and test.sh are not the stubs.
+2. Trial worktree of refs/heads/<base> (detached, in a temporary folder
+   outside the board and the code; no branch is created): setup.sh, then
+   test.sh, each with a 3600 s limit in its own process group. test.sh
+   must exit 0 with a summary line and failed = 0. The counts and times go
+   to <board>/.ours-state/baseline.json; the worktree is always removed.
+3. [timeouts] of project.toml from the measured times (only that section
+   is edited; `fixed = true` keeps it and prints the recommendation).
+4. project-render, then `<[tools] symphony> doctor` on WORKFLOW.md.
+
+Run it with the orchestrator's Python, like project-new.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+import tomllib
+from datetime import datetime, timezone
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+
+import project_config as pc  # noqa: E402
+
+SCRIPT_LIMIT_S = 3600
+TOOL_TIMEOUT_S = 60
+GIT_TIMEOUT_S = 120
+TAIL_BYTES = 3000
+POLL_S = 0.2
+# WARN lines of `symphony doctor` that every board of ours shows (REPORT-11).
+KNOWN_WARNS = {
+    "git history writable": "папка доски не git-репозиторий, ветки живут в репозитории кода",
+    "agent git grant": "абсолютный путь к claude; доступ агента к .git сознательно не добавлен",
+}
+_DOCTOR_LINE = re.compile(r"^(PASS|WARN|FAIL)  (.+?)\s{2,}(.*)$")
+
+
+class Report:
+    def __init__(self) -> None:
+        self.fails = 0
+        self.warns = 0
+
+    def add(self, status: str, text: str) -> None:
+        if status == "FAIL":
+            self.fails += 1
+        elif status == "WARN":
+            self.warns += 1
+        print(f"{status}  {text}", flush=True)
+
+    def detail(self, text: str) -> None:
+        for line in text.rstrip().splitlines():
+            print(f"      {line}", flush=True)
+
+
+def run(cmd: list[str], *, cwd: Path | None = None, timeout: float = TOOL_TIMEOUT_S,
+        ) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, cwd=str(cwd) if cwd else None, stdin=subprocess.DEVNULL,
+                          capture_output=True, text=True, timeout=timeout, check=False)
+
+
+def git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return run(["git", "-C", str(repo), *args], timeout=GIT_TIMEOUT_S)
+
+
+def inside(path: Path, root: Path) -> bool:
+    path, root = path.resolve(), root.resolve()
+    return path == root or root in path.parents
+
+
+# ---------------------------------------------------------------------------
+# 1. static checks
+# ---------------------------------------------------------------------------
+
+
+def check_tools(report: Report, tools: dict) -> bool:
+    ok = True
+    for key in ("python", "symphony", "claude"):
+        path = Path(tools[key])
+        if path.is_file() and os.access(path, os.X_OK):
+            report.add("PASS", f"[tools] {key}: {path}")
+        else:
+            report.add("FAIL", f"[tools] {key}: {path} не найден или не исполняемый")
+            ok = False
+    claude = Path(tools["claude"])
+    if claude.is_file() and os.access(claude, os.X_OK):
+        try:
+            proc = run([str(claude), "--version"])
+            if proc.returncode == 0:
+                version = (proc.stdout.strip().splitlines() or ["?"])[0]
+                report.add("PASS", f"claude --version: {version}")
+            else:
+                report.add("FAIL", f"claude --version: код {proc.returncode}")
+                report.detail((proc.stdout + proc.stderr)[-TAIL_BYTES:])
+                ok = False
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            report.add("FAIL", f"claude --version не запускается: {exc}")
+            ok = False
+    return ok
+
+
+def check_repo(report: Report, project: dict) -> bool:
+    repo, base = Path(project["repo"]), project["base_branch"]
+    top = git(repo, "rev-parse", "--show-toplevel")
+    if top.returncode != 0 or Path(top.stdout.strip()).resolve() != repo.resolve():
+        report.add("FAIL", f"[project] repo: {repo} — не корень git-репозитория")
+        return False
+    if git(repo, "show-ref", "--verify", "--quiet", f"refs/heads/{base}").returncode != 0:
+        report.add("FAIL", f"в {repo} нет ветки refs/heads/{base}")
+        return False
+    report.add("PASS", f"репозиторий кода {repo}, ветка {base}")
+    return True
+
+
+def check_board(report: Report, board: Path, project: dict) -> None:
+    probe = git(board, "rev-parse", "--show-toplevel")
+    if probe.returncode == 0:
+        report.add("FAIL", f"папка доски внутри git-репозитория {probe.stdout.strip()}")
+    else:
+        report.add("PASS", "папка доски не внутри git-репозитория")
+    p = project["project"]
+    taken = False
+    for other, data in pc.other_projects(board.parent):
+        if other.resolve() == board.resolve():
+            continue
+        if data.get("port") == p["port"]:
+            report.add("FAIL", f"порт {p['port']} занят проектом {other.name}")
+            taken = True
+        if data.get("id_prefix") == p["id_prefix"]:
+            report.add("FAIL", f"префикс {p['id_prefix']} занят проектом {other.name}")
+            taken = True
+    if not taken:
+        report.add("PASS", f"порт {p['port']} и префикс {p['id_prefix']} не заняты в {board.parent}")
+
+
+def check_scripts(report: Report, board: Path) -> bool:
+    ok = True
+    for name in ("setup.sh", "test.sh"):
+        path = board / name
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            report.add("FAIL", f"{name}: не читается ({exc})")
+            ok = False
+            continue
+        if pc.STUB_MARKER in text:
+            report.add("FAIL", f"{name}: не настроено (заготовка: в файле метка {pc.STUB_MARKER})")
+            ok = False
+        else:
+            report.add("PASS", f"{name}: настроен")
+    return ok
+
+
+# ---------------------------------------------------------------------------
+# 2. trial worktree
+# ---------------------------------------------------------------------------
+
+
+def run_script(script: Path, cwd: Path, env: dict[str, str], limit_s: float):
+    """(exit code or None on timeout, seconds, tail, summary) of one script."""
+    with tempfile.TemporaryFile() as out:
+        started = time.monotonic()
+        proc = subprocess.Popen(["/bin/bash", str(script)], cwd=str(cwd), env=env,
+                                stdin=subprocess.DEVNULL, stdout=out,
+                                stderr=subprocess.STDOUT, start_new_session=True)
+        try:
+            while proc.poll() is None and time.monotonic() - started < limit_s:
+                time.sleep(POLL_S)
+        finally:
+            # Same as check.py: the whole group dies, on timeout and after a
+            # finished run (stragglers).
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            timed_out = proc.poll() is None
+            proc.wait()
+        elapsed = time.monotonic() - started
+        size = out.seek(0, os.SEEK_END)
+        out.seek(max(0, size - TAIL_BYTES))
+        tail = out.read().decode("utf-8", errors="replace")
+        out.seek(0)
+        summary = pc.find_summary(out)
+    return (None if timed_out else proc.returncode), elapsed, tail, summary
+
+
+def trial(report: Report, board: Path, project: dict) -> dict | None:
+    """Measure setup.sh and test.sh on refs/heads/<base>; baseline or None."""
+    repo, base = Path(project["project"]["repo"]), project["project"]["base_branch"]
+    sha = git(repo, "rev-parse", "--verify", f"refs/heads/{base}^{{commit}}").stdout.strip()
+    tmp = Path(tempfile.mkdtemp(prefix="ours-doctor-")).resolve()
+    workdir = tmp / "worktree"
+    added = False
+    try:
+        if inside(tmp, board) or inside(tmp, repo):
+            report.add("FAIL", f"временная папка {tmp} внутри доски или кода; задай TMPDIR")
+            return None
+        add = git(repo, "worktree", "add", "--detach", str(workdir), f"refs/heads/{base}")
+        if add.returncode != 0:
+            report.add("FAIL", f"пробная рабочая копия не создана: {add.stderr.strip()[:300]}")
+            return None
+        added = True
+        report.add("PASS", f"пробная рабочая копия {base} @ {sha[:12]} в {workdir}")
+        env = dict(os.environ)
+        env.update(SYMPHONY_PYTHON=project["tools"]["python"], SYMPHONY_WORKFLOW_DIR=str(board))
+        times = {}
+        for name in ("setup.sh", "test.sh"):
+            print(f"      запуск {name} (предел {SCRIPT_LIMIT_S} с)...", flush=True)
+            code, elapsed, tail, summary = run_script(board / name, workdir, env, SCRIPT_LIMIT_S)
+            times[name] = elapsed
+            if code is None:
+                report.add("FAIL", f"{name}: не уложился в {SCRIPT_LIMIT_S} с")
+            elif code != 0:
+                report.add("FAIL", f"{name}: код {code} за {elapsed:.1f} с")
+            elif name == "test.sh" and summary is None:
+                report.add("FAIL", f"test.sh: код 0, но нет строки итогов `{pc.SUMMARY_FORMAT}`")
+            elif name == "test.sh" and summary["failed"] > 0:
+                report.add("FAIL", f"test.sh: на базе падают тесты ({pc.triple(summary)})")
+            else:
+                extra = f", {pc.triple(summary)}" if name == "test.sh" and summary else ""
+                report.add("PASS", f"{name}: код 0 за {elapsed:.1f} с{extra}")
+                continue
+            report.detail(tail)
+            return None
+        assert summary is not None
+        return {
+            "base_branch": base,
+            "base_sha": sha,
+            **summary,
+            "setup_s": round(times["setup.sh"], 1),
+            "tests_s": round(times["test.sh"], 1),
+            "measured_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+    finally:
+        if added:
+            removed = git(repo, "worktree", "remove", "--force", str(workdir))
+            if removed.returncode != 0:
+                report.add("WARN", f"пробная копия не убрана git: {removed.stderr.strip()[:300]}")
+        shutil.rmtree(tmp, ignore_errors=True)
+        git(repo, "worktree", "prune")
+
+
+def write_atomic(path: Path, text: str) -> None:
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+# ---------------------------------------------------------------------------
+# 3. timeouts
+# ---------------------------------------------------------------------------
+
+
+def apply_timeouts(report: Report, board: Path, project: dict, baseline: dict) -> bool:
+    want = pc.recommend_timeouts(baseline["setup_s"], baseline["tests_s"])
+    shown = ", ".join(f"{k} = {v}" for k, v in want.items())
+    current = {k: project["timeouts"][k] for k in want}
+    if project["timeouts"].get("fixed", False):
+        if current["tests_s"] < want["tests_s"] or current["hooks_ms"] < want["hooks_ms"]:
+            report.add("WARN", f"[timeouts] fixed = true, текущие меньше рекомендации: {shown}")
+        else:
+            report.add("PASS", f"[timeouts] fixed = true, не трогаю; рекомендация: {shown}")
+        return True
+    if current == want:
+        report.add("PASS", f"[timeouts] без изменений: {shown}")
+        return True
+    path = board / pc.PROJECT_FILE
+    text = path.read_text(encoding="utf-8")
+    new = pc.update_timeouts_text(text, want)
+    try:
+        check = pc.validate_project(tomllib.loads(new))
+    except (tomllib.TOMLDecodeError, pc.ProjectError) as exc:
+        report.add("FAIL", f"[timeouts] не записаны: правка дала бы плохой {pc.PROJECT_FILE} ({exc})")
+        return False
+    if {k: check["timeouts"][k] for k in want} != want:  # pragma: no cover - defensive
+        report.add("FAIL", "[timeouts] не записаны: значения не совпали после правки")
+        return False
+    write_atomic(path, new)
+    report.add("PASS", f"[timeouts] записаны: {shown} (было: "
+               + ", ".join(f"{k} = {v}" for k, v in current.items()) + ")")
+    return True
+
+
+# ---------------------------------------------------------------------------
+# 4. render and the core doctor
+# ---------------------------------------------------------------------------
+
+
+def render(report: Report, name: str, root: Path) -> bool:
+    proc = run([sys.executable, str(pc.OURS_DIR / "bin" / "project-render"), name,
+                "--root", str(root)])
+    if proc.returncode != 0:
+        report.add("FAIL", "project-render отказал")
+        report.detail(proc.stderr)
+        return False
+    last = (proc.stdout.strip().splitlines() or [""])[-1]
+    report.add("PASS", f"project-render: {last}")
+    return True
+
+
+def core_doctor(report: Report, board: Path, symphony: str) -> None:
+    try:
+        proc = run([symphony, "doctor", str(board / "WORKFLOW.md"), "--no-color"], cwd=board,
+                   timeout=TOOL_TIMEOUT_S * 3)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        report.add("FAIL", f"symphony doctor не запускается: {exc}")
+        return
+    failed = False
+    passed = 0
+    for line in proc.stdout.splitlines():
+        match = _DOCTOR_LINE.match(line)
+        if not match:
+            continue
+        status, check, message = match.groups()
+        failed = failed or status == "FAIL"
+        text = f"symphony doctor: {check} — {message}"
+        if status == "PASS":
+            passed += 1
+        elif status == "WARN" and check in KNOWN_WARNS:
+            print(f"WARN  (известно, не провал: {KNOWN_WARNS[check]}) {text}", flush=True)
+        else:
+            report.add(status, text)
+    if passed:
+        report.add("PASS", f"symphony doctor: проверок ядра пройдено — {passed}")
+    if proc.returncode != 0 and not failed:
+        report.add("FAIL", f"symphony doctor: код {proc.returncode}")
+        report.detail(proc.stderr or proc.stdout)
+
+
+# ---------------------------------------------------------------------------
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="project-doctor", description=__doc__.splitlines()[0])
+    parser.add_argument("name")
+    parser.add_argument("--root", default=str(pc.DEFAULT_ROOT))
+    args = parser.parse_args(argv)
+    if not pc.NAME_RE.match(args.name):
+        print(f"FAIL  имя {args.name!r} некорректно")
+        return 1
+    root = Path(args.root).expanduser().absolute()
+    board = root / args.name
+    report = Report()
+    print(f"project-doctor: {board}", flush=True)
+    try:
+        project = pc.load_project(board)
+        if project["project"]["name"] != args.name:
+            raise pc.ProjectError(f"имя в {pc.PROJECT_FILE} {project['project']['name']!r}, "
+                                  f"а не {args.name!r}")
+    except pc.ProjectError as exc:
+        report.add("FAIL", f"{pc.PROJECT_FILE}: {exc}")
+        return 1
+    report.add("PASS", f"{pc.PROJECT_FILE} разобран")
+
+    tools_ok = check_tools(report, project["tools"])
+    repo_ok = check_repo(report, project["project"])
+    check_board(report, board, project)
+    scripts_ok = check_scripts(report, board)
+
+    if tools_ok and repo_ok and scripts_ok and report.fails == 0:
+        baseline = trial(report, board, project)
+        if baseline is not None:
+            pc.ensure_state_dir(board)
+            write_atomic(pc.baseline_path(board),
+                         json.dumps(baseline, ensure_ascii=False, indent=2) + "\n")
+            report.add("PASS", f"замер базы записан в {pc.baseline_path(board)}")
+            apply_timeouts(report, board, project, baseline)
+    else:
+        report.add("SKIP", "пробный прогон setup.sh и test.sh: сначала исправь FAIL выше")
+
+    if render(report, args.name, root) and tools_ok:
+        core_doctor(report, board, project["tools"]["symphony"])
+
+    verdict = "готов" if report.fails == 0 else "НЕ готов"
+    print(f"Итог: проект {verdict}; FAIL: {report.fails}, WARN: {report.warns}", flush=True)
+    return 0 if report.fails == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

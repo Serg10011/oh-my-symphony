@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Mechanical checks for the night pipeline (TASK-K05, TASK-K08a).
+"""Mechanical checks for the night pipeline (TASK-K05, TASK-K08a, TASK-K08b).
 
 Two modes share one set of checks:
 
@@ -13,13 +13,16 @@ $SYMPHONY_WORKFLOW_DIR is the project board folder (ours/hooks/
 project_config.py). Checks, fast ones first (all fast violations are
 collected), the project tests last and only when the fast checks passed:
 
-    1. config   <board>/project.toml: [project], [tools], [checks]
+    1. config   <board>/project.toml: [project], [tools], [checks],
+                [timeouts]; <board>/.ours-state/baseline.json (project-doctor)
     2. base     <board>/.ours-state/<ID>.base.json, written by worktree.py
                 when the worktree was created; must be an ancestor of HEAD
     3. forbidden paths changed relative to the base
     4. existing tests changed relative to the base
     5. card shape: required sections present and non-empty
-    6. project tests: `/bin/bash <board>/test.sh`, own process group
+    6. project tests: `/bin/bash <board>/test.sh`, own process group; exit 0
+       and the last `PIPELINE_TESTS passed=.. skipped=.. failed=..` line:
+       failed = 0, passed >= baseline, skipped <= baseline
 
 One check per card at a time (<board>/.ours-state/<ID>.lock): a second hook
 skips, the gate waits within its timeout.
@@ -111,7 +114,7 @@ class Orphaned(Exception):
 class Config:
     base_branch: str
     symphony_bin: str
-    test_timeout_s: int = pc.DEFAULT_TIMEOUTS["tests_s"]
+    test_timeout_s: int = pc.DEFAULT_TIMEOUTS["tests_s"]  # [timeouts] tests_s
     gate_timeout_s: int = pc.DEFAULT_TIMEOUTS["gate_ms"] // 1000
     forbidden_paths: tuple[str, ...] = DEFAULT_FORBIDDEN_PATHS
     test_globs: tuple[str, ...] = DEFAULT_TEST_GLOBS
@@ -134,7 +137,7 @@ def load_config(board: Path) -> Config:
     cfg = Config(
         base_branch=project["project"]["base_branch"],
         symphony_bin=project["tools"]["symphony"],
-        test_timeout_s=pc.test_timeout_s(project),
+        test_timeout_s=project["timeouts"]["tests_s"],
         gate_timeout_s=project["timeouts"]["gate_ms"] // 1000,
         forbidden_paths=DEFAULT_FORBIDDEN_PATHS + tuple(checks.get("forbidden_paths", ())),
         test_globs=tuple(checks.get("test_globs", DEFAULT_TEST_GLOBS)),
@@ -491,8 +494,8 @@ def _kill_group(proc: subprocess.Popen) -> None:
 
 def run_tests(
     workspace: Path, script: Path, cfg: Config, parent_pid: int
-) -> tuple[str | None, str]:
-    """Run test.sh; return (failure reason or None, output tail)."""
+) -> tuple[str | None, str, dict[str, int] | None]:
+    """Run test.sh; return (failure reason or None, output tail, summary)."""
     with tempfile.TemporaryFile() as out:
         # Output goes to a file, not a pipe: a straggler holding the pipe
         # could otherwise turn a passing run into a timeout. No login shell:
@@ -523,15 +526,42 @@ def run_tests(
         size = out.seek(0, os.SEEK_END)
         out.seek(max(0, size - TAIL_BYTES))
         tail = out.read().decode("utf-8", errors="replace")
+        out.seek(0)
+        summary = pc.find_summary(out)
     if orphaned:
         raise Orphaned("parent hook shell died while tests were running")
     if timed_out:
-        return f"test.sh timed out after {cfg.test_timeout_s}s", tail
+        return f"test.sh timed out after {cfg.test_timeout_s}s", tail, summary
     if proc.returncode == 0:
-        return None, tail
+        return None, tail, summary
     if proc.returncode == 127:
-        return "test.sh: command not found (exit 127)", tail
-    return f"test.sh failed (exit {proc.returncode})", tail
+        return "test.sh: command not found (exit 127)", tail, summary
+    return f"test.sh failed (exit {proc.returncode})", tail, summary
+
+
+def summary_violations(summary: dict[str, int] | None, baseline: dict) -> list[str]:
+    """test.sh exited 0: its summary line must exist and hold the baseline."""
+    if summary is None:
+        return [
+            f"test.sh: код 0, но нет строки итогов `{pc.SUMMARY_FORMAT}` "
+            "(её печатает ours/hooks/summarize.py в конце test.sh)"
+        ]
+    problems = []
+    if summary["failed"] > 0:
+        problems.append(f"test.sh: failed={summary['failed']} при коде 0")
+    if summary["passed"] < baseline["passed"]:
+        problems.append(f"test.sh: passed={summary['passed']} меньше базы {baseline['passed']}")
+    if summary["skipped"] > baseline["skipped"]:
+        problems.append(f"test.sh: skipped={summary['skipped']} больше базы {baseline['skipped']}")
+    if problems:
+        sha = str(baseline.get("base_sha", ""))[:12] or "?"
+        problems.append(
+            f"итоги: сейчас {pc.triple(summary)}; база {pc.triple(baseline)} "
+            f"(замер project-doctor на {baseline['base_branch']} @ {sha}). "
+            "Если базовая ветка менялась (тесты добавлены или убраны там), "
+            "перезапусти project-doctor"
+        )
+    return problems
 
 
 # ---------------------------------------------------------------------------
@@ -611,9 +641,27 @@ def try_lock(ctx: Context, wait_s: float):
             time.sleep(POLL_S)
 
 
+def load_baseline(board: Path, cfg: Config) -> dict:
+    try:
+        baseline = pc.read_baseline(board)
+    except pc.ProjectError as exc:
+        raise CheckError(f"baseline: {exc}") from None
+    if baseline["base_branch"] != cfg.base_branch:
+        raise CheckError(
+            f"baseline: замер сделан на ветке {baseline['base_branch']!r}, а base_branch "
+            f"{cfg.base_branch!r}: перезапусти project-doctor"
+        )
+    return baseline
+
+
 def run_checks(ctx: Context, cfg: Config | None = None) -> Result:
     cfg = cfg or load_config(ctx.workflow_dir)
     reasons: list[str] = []
+    baseline: dict = {}
+    try:
+        baseline = load_baseline(ctx.workflow_dir, cfg)
+    except CheckError as exc:
+        reasons.append(str(exc))
     try:
         repo, base = resolve_base(ctx.workspace, ctx.workflow_dir, ctx.issue_id)
     except CheckError as exc:
@@ -625,9 +673,14 @@ def run_checks(ctx: Context, cfg: Config | None = None) -> Result:
     reasons += card_violations(ctx.card, cfg)
     if reasons:
         return Result(False, reasons, "", cfg)
-    failure, tail = run_tests(ctx.workspace, ctx.workflow_dir / TEST_SCRIPT, cfg, ctx.parent_pid)
+    failure, tail, summary = run_tests(
+        ctx.workspace, ctx.workflow_dir / TEST_SCRIPT, cfg, ctx.parent_pid
+    )
     if failure is not None:
         return Result(False, [failure], tail, cfg)
+    problems = summary_violations(summary, baseline)
+    if problems:
+        return Result(False, problems, tail, cfg)
     return Result(True, [], tail, cfg)
 
 
