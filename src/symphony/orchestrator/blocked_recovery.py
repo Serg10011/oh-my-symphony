@@ -27,7 +27,7 @@ from ..workspace import (
     DoneGateResult,
     HistoryGateResult,
 )
-from .constants import AUTO_TRIAGE_NOTE, AUTO_TRIAGE_TARGET_STATE
+from .constants import AUTO_TRIAGE_NOTE, AUTO_TRIAGE_TARGET_STATE, DONE_GATE_FAILURE_PREFIX
 from .entries import _IssueDebug
 from .helpers import (
     _is_successful_terminal_state,
@@ -518,7 +518,7 @@ async def _done_gate_or_block(
     )
     if debug_target is not None:
         debug_target.last_error = (
-            f"done gate failed ({result.reason}); moved to Blocked; "
+            f"{DONE_GATE_FAILURE_PREFIX} ({result.reason}); moved to Blocked; "
             "workspace preserved"
         )
     note_body = (

@@ -52,6 +52,9 @@ TICK_DEGRADED_AFTER_CONSECUTIVE_FAILURES = 3
 TICK_LOOP_MAX_RESTARTS = 3
 TICK_FAILURE_BACKOFF_MAX_S = 30.0
 
+# Start of the debug.last_error text written when agent.done_gate_command refuses a ticket.
+DONE_GATE_FAILURE_PREFIX = "done gate failed"
+
 # Initiative B — how long `stop()` waits for supervised background tasks
 # (worker-exit cleanup, retry firing, escalations) to finish before
 # cancelling the stragglers. Bounded so shutdown can never hang on a

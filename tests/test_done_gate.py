@@ -353,7 +353,7 @@ def test_confirm_done_refusal_never_writes_done(tmp_path, monkeypatch):
 
     monkeypatch.setattr(orch, "_tracker_call_update_state", _record)
 
-    with pytest.raises(ValueError, match="merge gate failed"):
+    with pytest.raises(ValueError, match=r"done gate failed \(exit_code\)"):
         asyncio.run(orch.confirm_done(IDENT))
 
     assert written == ["Blocked"]
