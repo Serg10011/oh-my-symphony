@@ -28,7 +28,7 @@
 - [ ] Рабочая конфигурация `WORKFLOW.md`: `needs_human` в `terminal_states` (порядок `[Human Review, needs_human, Done, Blocked, Archive]`), `budget_exhausted_state: needs_human`, `auto_recover_blocked: false`, `auto_merge_on_done: false` и `auto_merge_push_target: false`, явная `feature_base_branch`, полные пути к `python`, `symphony`, `claude`; видимость `needs_human` и `Blocked` для утреннего разбора.
 - [ ] Хук `after_run` с откатом Done: вызов первой строкой блока, прототип — `scripts/gate-probe.sh` из локальной пробы; внешний скрипт чистого старта.
 - [ ] Правка №4 из REPORT-01: внешний скрипт чистого старта ветки.
-- [ ] Правка №7 из REPORT-01: лимиты `claude` в `/api/v1/state` (формат кадра `rate_limit_event` проверен, DECISIONS.md, 2026-10-24). — в облаке (K04)
+- [x] Правка №7 из REPORT-01: лимиты `claude` в `/api/v1/state` (формат кадра `rate_limit_event` проверен, DECISIONS.md, 2026-10-24). — в облаке (K04)
 
 ## Этап 4 — лестница
 
