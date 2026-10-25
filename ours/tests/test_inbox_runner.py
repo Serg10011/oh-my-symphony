@@ -1,0 +1,1007 @@
+"""Tests of ours/bin/inbox-runner (TASK-S4-02).
+
+External world (subprocesses, osascript, gh, post-merge) is substituted through
+`Ops`; real git is used only on temporary repositories. Scripts of ours/ are
+started through sys.executable, never through the shebang.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import stat
+import subprocess
+import sys
+import threading
+from pathlib import Path
+
+import pytest
+
+OURS = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(OURS / "hooks"))
+
+import inbox_runner as ir  # noqa: E402
+
+LAUNCHD = OURS / "bin" / "inbox-runner-launchd"
+RUNNER = OURS / "bin" / "inbox-runner"
+OLD = 100.0  # mtime far in the past; the fake clock says "now" = 1000
+NOW = 1000.0
+
+
+def git(cwd: Path, *args: str) -> str:
+    return subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+
+def identify(repo: Path) -> None:
+    git(repo, "config", "user.email", "t@example.invalid")
+    git(repo, "config", "user.name", "t")
+
+
+class Fake:
+    """Records every external call; `rules` decide the answer by a part of the command line."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+        self.windows: list[tuple[str, str]] = []
+        self.rules: list[tuple[str, ir.Proc]] = []
+        self.window_ok = True
+        self.hash = "h1"
+        self.on_call = None  # callable(argv) run at call time
+        self.branch_rc = 1  # `show-ref` answer: 1 = branch absent
+
+    def on(self, fragment: str, rc: int = 0, out: str = "", timed_out: bool = False) -> None:
+        self.rules.insert(0, (fragment, ir.Proc(rc, out, timed_out)))
+
+    def proc(self, argv, cwd=None, env=None, timeout=120, stdin_text=None) -> ir.Proc:
+        line = " ".join(str(a) for a in argv)
+        self.calls.append({"argv": [str(a) for a in argv], "line": line, "cwd": cwd, "env": env, "timeout": timeout})
+        if self.on_call:
+            self.on_call(argv)
+        for fragment, answer in self.rules:
+            if fragment in line:
+                return answer
+        if "show-ref" in line:
+            return ir.Proc(self.branch_rc)
+        return ir.Proc(0, "")
+
+    def terminal(self, osascript: str, command: str) -> tuple[bool, str]:
+        self.windows.append((osascript, command))
+        if self.on_call:
+            self.on_call(["terminal", command])
+        return self.window_ok, "" if self.window_ok else "не вышло"
+
+    def ops(self) -> ir.Ops:
+        return ir.Ops(proc=self.proc, terminal=self.terminal, code_hash=lambda: self.hash, clock=lambda: NOW,
+                      sleep=lambda s: None)
+
+    def lines(self, fragment: str) -> list[str]:
+        return [c["line"] for c in self.calls if fragment in c["line"]]
+
+
+@pytest.fixture(autouse=True)
+def _reset_stop():
+    ir.STOP.clear()
+    yield
+    ir.STOP.clear()
+
+
+class Env:
+    def __init__(self, root: Path) -> None:
+        self.main = root / "main"
+        self.wroot = root / "wt"
+        self.main.mkdir()
+        (self.main / ".git").mkdir()  # enough for the fake-ops tests
+        self.gh = root / "bin" / "gh"
+        self.gh.parent.mkdir()
+        self.gh.write_text("#!/bin/sh\n")
+        self.fake = Fake()
+        self.settings = ir.Settings(self.main, self.wroot, str(self.gh), "/usr/bin/osascript", 0.01)
+        self.inbox = self.main / "tmp_workspaces" / "inbox"
+        self.outbox = self.main / "tmp_workspaces" / "outbox"
+        self.inbox.mkdir(parents=True)
+
+    def put(self, name: str, text: str | bytes = "", age: float = NOW - OLD) -> Path:
+        path = self.inbox / name
+        path.write_bytes(text.encode() if isinstance(text, str) else text)
+        os.utime(path, (NOW - age, NOW - age))
+        return path
+
+    def task(self, code: str) -> None:
+        self.put(f"{code}.md", "task")
+
+    def runner(self) -> ir.Runner:
+        return ir.Runner(self.settings, self.fake.ops())
+
+    def pass_(self) -> bool:
+        return self.runner().run_pass()
+
+    def log(self, name: str) -> str:
+        return (self.outbox / name).read_text()
+
+    def skipped(self) -> str:
+        path = self.outbox / "_skipped.log"
+        return path.read_text() if path.exists() else ""
+
+    def done(self) -> list[str]:
+        return sorted(p.name for p in (self.inbox / "done").iterdir()) if (self.inbox / "done").exists() else []
+
+
+@pytest.fixture
+def env(tmp_path: Path) -> Env:
+    return Env(tmp_path)
+
+
+# --- pure validation ----------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", [
+    "S4-02", "a", "A" * 31, "0abc", "x-y-z",
+])
+def test_code_accepted(name: str) -> None:
+    assert ir.valid_code(name)
+
+
+@pytest.mark.parametrize("name", [
+    "", "a;b", "a b", "$(id)", "a..b", "a.b", "Задача", "A" * 32, "-x", "a\n", "a/b", "a`b`", "a|b",
+])
+def test_code_rejected(name: str) -> None:
+    assert not ir.valid_code(name)
+
+
+@pytest.mark.parametrize("branch", ["dev/S4-03", "feature/x.y", "a" * 81])
+def test_branch_accepted(branch: str) -> None:
+    assert ir.valid_branch(branch)
+
+
+@pytest.mark.parametrize("branch", [
+    "our-main", "main", "--admin", "a b", "x;y", "-x", "a..b", "a//b", "dev/", "x.lock", "dev/x.lock", "x.",
+    "dev/.hidden", "a\n", "", "a" * 82, "ветка", "$(id)",
+])
+def test_branch_rejected(branch: str) -> None:
+    assert not ir.valid_branch(branch)
+
+
+@pytest.mark.parametrize("name", ["S4-02.RUN", "S4-02.Test", "S4-02.Merge", "S4-02.sh", "S4-02", "S4-02.run.bak",
+                                  ".run", "a b.run", "a;b.run", "a..b.run", "$(id).run", "Задача.run",
+                                  ("A" * 32) + ".run"])
+def test_bad_names(name: str) -> None:
+    assert ir.split_name(name) is None
+
+
+def test_good_names() -> None:
+    assert ir.split_name("S4-02.run") == ("S4-02", "run")
+    assert ir.split_name("S4-02.test") == ("S4-02", "test")
+    assert ir.split_name("S4-02.merge") == ("S4-02", "merge")
+
+
+def test_abs_path_rules() -> None:
+    assert ir.valid_abs_path("/Users/x/dev/oms-dev")
+    for bad in ("rel/path", "/a b", "/a;b", "/a/../b", "/a$b", "/a'b", "/a\nb", "/"):
+        assert not ir.valid_abs_path(bad), bad
+
+
+# --- .run: command building ------------------------------------------------------
+
+
+def test_terminal_command_exact() -> None:
+    cmd = ir.terminal_command(Path("/m/main"), Path("/m/wt"), "S4-03", "sonnet")
+    assert cmd == 'cd /m/wt/S4-03 && claude --model sonnet "Выполни задание из файла /m/main/tmp_workspaces/inbox/S4-03.md"'
+
+
+def test_terminal_command_rejects_unvalidated_parts() -> None:
+    for code, model in (("a;b", "sonnet"), ("S4", "sonnet;rm -rf ~"), ("S4", "gpt4")):
+        with pytest.raises(AssertionError):
+            ir.terminal_command(Path("/m/main"), Path("/m/wt"), code, model)
+    with pytest.raises(AssertionError):
+        ir.terminal_command(Path("/m/ma in"), Path("/m/wt"), "S4", "opus")
+
+
+def test_run_default_model_order_and_window(env: Env) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run")
+    assert env.pass_() is False
+    f = env.fake
+    lines = [c["line"] for c in f.calls]
+    assert "show-ref --verify --quiet refs/heads/dev/S4-03" in lines[0]
+    assert lines[1].endswith("fetch origin our-main")
+    assert lines[2].endswith(f"worktree add --no-track -b dev/S4-03 {env.wroot}/S4-03 origin/our-main")
+    assert len(f.calls) == 3 and len(f.windows) == 1
+    osa, command = f.windows[0]
+    assert osa == "/usr/bin/osascript"
+    assert command == (f'cd {env.wroot}/S4-03 && claude --model sonnet '
+                       f'"Выполни задание из файла {env.main}/tmp_workspaces/inbox/S4-03.md"')
+    assert all(c["argv"][0] == "/usr/bin/git" for c in f.calls)
+    assert not (env.inbox / "S4-03.run").exists() and len(env.done()) == 1
+    assert "Окно Терминала открыто" in env.log("S4-03.run.log")
+
+
+def test_run_model_opus(env: Env) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run", "model=opus\n")
+    env.pass_()
+    assert "--model opus " in env.fake.windows[0][1]
+
+
+@pytest.mark.parametrize("text", [
+    "model=gpt4", "model=sonnet;rm -rf ~", "model=sonnet\nmodel=opus", "model = opus", "model= opus", "model =opus",
+    " model=opus", "model=opus ", "model=Opus", "MODEL=opus", "opus", "model=", "model=opus\r\n", "\n\nmodel=opus",
+    "model=sonnet opus", "model=$(id)",
+])
+def test_run_bad_content_skipped(env: Env, text: str) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run", text)
+    env.pass_()
+    assert env.fake.calls == [] and env.fake.windows == []
+    assert "S4-03.run" in env.skipped()
+    assert (env.inbox / "S4-03.run").exists()  # untouched
+    assert not (env.outbox / "S4-03.run.log").exists()
+
+
+def test_run_without_task_file_skipped(env: Env) -> None:
+    env.put("S4-03.run")
+    env.pass_()
+    assert env.fake.calls == [] and "нет файла задания" in env.skipped()
+
+
+def test_run_task_symlink_does_not_count(env: Env, tmp_path: Path) -> None:
+    (env.inbox / "S4-03.md").symlink_to(tmp_path)
+    env.put("S4-03.run")
+    env.pass_()
+    assert env.fake.calls == []
+
+
+def test_run_branch_exists_nothing_done(env: Env) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run")
+    env.fake.branch_rc = 0
+    env.pass_()
+    assert len(env.fake.calls) == 1 and env.fake.windows == []
+    assert "уже есть" in env.log("S4-03.run.log")
+
+
+def test_run_folder_exists_nothing_done(env: Env) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run")
+    (env.wroot / "S4-03").mkdir(parents=True)
+    env.pass_()
+    assert not env.fake.lines("fetch") and env.fake.windows == []
+    assert "папка" in env.log("S4-03.run.log")
+
+
+def test_run_branch_check_error_is_refusal(env: Env) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run")
+    env.fake.branch_rc = 128
+    env.pass_()
+    assert not env.fake.lines("fetch") and env.fake.windows == []
+
+
+def test_run_fetch_failure_stops(env: Env) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run")
+    env.fake.on("fetch", 1, "fatal: no network")
+    env.pass_()
+    assert not env.fake.lines("worktree add") and env.fake.windows == []
+    log = env.log("S4-03.run.log")
+    assert "fatal: no network" in log and "fetch не прошёл" in log
+
+
+def test_run_worktree_add_failure_no_window(env: Env) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run")
+    env.fake.on("worktree add", 128, "fatal: boom")
+    env.pass_()
+    assert env.fake.windows == [] and "fatal: boom" in env.log("S4-03.run.log")
+
+
+def test_run_window_failure_keeps_worktree_and_prints_command(env: Env) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run")
+    env.fake.window_ok = False
+    env.pass_()
+    log = env.log("S4-03.run.log")
+    assert "оставлена" in log and env.fake.windows[0][1] in log
+    assert not env.fake.lines("remove")
+
+
+def test_run_repeat_not_executed(env: Env) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run")
+    env.pass_()
+    n = len(env.fake.calls)
+    env.put("S4-03.run")
+    env.pass_()
+    assert len(env.fake.calls) == n and len(env.fake.windows) == 1
+    assert "повтор" in env.skipped()
+
+
+# --- .run on real git ---------------------------------------------------------------
+
+
+def test_run_with_real_git(tmp_path: Path) -> None:
+    origin, main = tmp_path / "origin.git", tmp_path / "main"
+    git(tmp_path, "init", "-q", "--bare", "-b", "our-main", str(origin))
+    git(tmp_path, "clone", "-q", str(origin), str(main))
+    identify(main)
+    git(main, "checkout", "-q", "-b", "our-main")
+    (main / "a.txt").write_text("1\n")
+    git(main, "add", ".")
+    git(main, "commit", "-q", "-m", "init")
+    git(main, "push", "-q", "origin", "our-main")
+    git(main, "branch", "--set-upstream-to=origin/our-main")
+    inbox = main / "tmp_workspaces" / "inbox"
+    inbox.mkdir(parents=True)
+    (inbox / "T1.md").write_text("task")
+    (inbox / "T1.run").write_text("")
+    os.utime(inbox / "T1.run", (OLD, OLD))
+    head, status = git(main, "rev-parse", "HEAD"), git(main, "status", "--porcelain")
+    fake = Fake()
+
+    def real(argv, cwd=None, env=None, timeout=120, stdin_text=None):
+        done = subprocess.run(["git", *argv[1:]] if argv[0] == ir.GIT else argv, cwd=cwd, capture_output=True,
+                              text=True, stdin=subprocess.DEVNULL)
+        return ir.Proc(done.returncode, done.stdout + done.stderr)
+
+    ops = fake.ops()
+    ops.proc = real
+    settings = ir.Settings(main, tmp_path / "wt", "/x/gh")
+    ir.Runner(settings, ops).run_pass()
+    wt = tmp_path / "wt" / "T1"
+    assert (wt / "a.txt").exists()
+    assert git(wt, "rev-parse", "--abbrev-ref", "HEAD") == "dev/T1"
+    assert git(wt, "rev-parse", "HEAD") == head
+    up = subprocess.run(["git", "rev-parse", "--abbrev-ref", "dev/T1@{upstream}"], cwd=main, capture_output=True)
+    assert up.returncode != 0
+    assert git(main, "rev-parse", "HEAD") == head
+    assert git(main, "status", "--porcelain") == status
+    assert len(fake.windows) == 1
+    # a second command with the same code does nothing more
+    (inbox / "T1.run").write_text("")
+    os.utime(inbox / "T1.run", (OLD, OLD))
+    ir.Runner(settings, ops).run_pass()
+    assert len(fake.windows) == 1
+
+
+# --- .merge ------------------------------------------------------------------------
+
+
+def pr(**over) -> dict:
+    base = {"number": 7, "headRefName": "dev/S4-03", "baseRefName": "our-main", "isCrossRepository": False,
+            "headRepositoryOwner": {"login": "Serg10011"}}
+    base.update(over)
+    return base
+
+
+def merge_env(env: Env, prs: list, text: str = "dev/S4-03\n") -> None:
+    env.put("S4-03.merge", text)
+    env.fake.on("pr list", 0, json.dumps(prs))
+
+
+def test_merge_happy_path(env: Env) -> None:
+    merge_env(env, [pr()])
+    env.pass_()
+    lines = [c["line"] for c in env.fake.calls]
+    assert lines[0].startswith(f"{env.gh} pr list --repo Serg10011/oh-my-symphony --head dev/S4-03 --base our-main "
+                               "--state open --json ")
+    assert lines[1] == f"{env.gh} pr merge dev/S4-03 --repo Serg10011/oh-my-symphony --merge"
+    assert lines[2] == f"{sys.executable} {env.main}/ours/bin/post-merge --main {env.main}"
+    assert env.fake.calls[2]["timeout"] == ir.POST_MERGE_TIMEOUT_S
+    assert env.fake.calls[2]["cwd"] == env.main
+    assert "--admin" not in " ".join(lines) and "--auto" not in " ".join(lines)
+    assert "--delete-branch" not in " ".join(lines)
+    assert "post-merge: готово" in env.log("S4-03.merge.log")
+
+
+@pytest.mark.parametrize("prs", [
+    [],
+    [pr(), pr(number=8)],
+    [pr(isCrossRepository=True, headRepositoryOwner={"login": "someone"})],
+    [pr(isCrossRepository=True)],
+    [pr(headRepositoryOwner={"login": "someone"})],
+    [pr(headRepositoryOwner=None)],
+    [pr(baseRefName="main")],
+    [pr(baseRefName=None)],
+    [pr(headRefName="other")],
+    [pr(isCrossRepository="false")],
+    [pr(number="7")],
+    [pr(number=True)],
+    {"number": 7},
+    ["x"],
+])
+def test_merge_refused_when_pr_not_suitable(env: Env, prs) -> None:
+    merge_env(env, prs)
+    env.pass_()
+    assert not env.fake.lines("pr merge") and not env.fake.lines("post-merge")
+    assert "ОТКАЗ" in env.log("S4-03.merge.log")
+
+
+def test_merge_not_json(env: Env) -> None:
+    env.put("S4-03.merge", "dev/S4-03")
+    env.fake.on("pr list", 0, "not json")
+    env.pass_()
+    assert not env.fake.lines("pr merge")
+
+
+def test_merge_pr_list_failure(env: Env) -> None:
+    env.put("S4-03.merge", "dev/S4-03")
+    env.fake.on("pr list", 1, "gh: not logged in")
+    env.pass_()
+    assert not env.fake.lines("pr merge") and "not logged in" in env.log("S4-03.merge.log")
+
+
+def test_merge_failure_no_post_merge(env: Env) -> None:
+    merge_env(env, [pr()])
+    env.fake.on("pr merge", 1, "merge conflict")
+    env.pass_()
+    assert not env.fake.lines("post-merge")
+    assert "post-merge не запускался" in env.log("S4-03.merge.log")
+
+
+def test_merge_post_merge_rc2_is_normal(env: Env) -> None:
+    merge_env(env, [pr()])
+    env.fake.on("post-merge", 2, "deferred")
+    assert env.pass_() is False
+    assert "код 2 — это нормально" in env.log("S4-03.merge.log")
+
+
+def test_merge_post_merge_rc1_reported(env: Env) -> None:
+    merge_env(env, [pr()])
+    env.fake.on("post-merge", 1, "boom")
+    env.pass_()
+    assert "ОШИБКА (код 1)" in env.log("S4-03.merge.log")
+
+
+@pytest.mark.parametrize("branch", ["our-main", "main", "--admin", "a b", "x;y", "-x", "a..b", "dev/", "x.lock"])
+def test_merge_bad_branch_skipped(env: Env, branch: str) -> None:
+    env.put("S4-03.merge", branch)
+    env.pass_()
+    assert env.fake.calls == [] and "S4-03.merge" in env.skipped()
+
+
+@pytest.mark.parametrize("text", ["", "\n", "a\nb", "a\n\n", "dev/a dev/b"])
+def test_merge_bad_content_skipped(env: Env, text: str) -> None:
+    env.put("S4-03.merge", text)
+    env.pass_()
+    assert env.fake.calls == []
+
+
+def test_merge_repeat_not_executed(env: Env) -> None:
+    merge_env(env, [pr()])
+    env.pass_()
+    n = len(env.fake.calls)
+    env.put("S4-03.merge", "dev/S4-03")
+    env.pass_()
+    assert len(env.fake.calls) == n and "повтор" in env.skipped()
+
+
+def test_self_update_after_merge_restarts_after_report(env: Env) -> None:
+    merge_env(env, [pr()])
+    runner = env.runner()
+    seen: dict = {}
+
+    def change_hash(argv):
+        if "post-merge" in " ".join(map(str, argv)):
+            env.fake.hash = "h2"
+    env.fake.on_call = change_hash
+    real_hash = env.fake.ops().code_hash
+
+    def checking_hash():
+        # called after the command: the report must be complete on disk by now
+        log = env.outbox / "S4-03.merge.log"
+        if log.exists() and env.fake.hash == "h2":
+            seen["log"] = log.read_text()
+        return real_hash()
+    runner.ops.code_hash = checking_hash
+    assert runner.run_pass() is True
+    assert "Конец." in seen["log"] and "post-merge" in seen["log"]
+
+
+def test_no_restart_when_hash_unchanged_or_other_command(env: Env) -> None:
+    env.task("S4-04")
+    env.put("S4-04.run")
+    env.fake.hash = "h1"
+    runner = env.runner()
+    env.fake.hash = "h2"  # changed, but .run does not trigger the restart check
+    assert runner.run_pass() is False
+
+
+# --- file acceptance ----------------------------------------------------------------
+
+
+def test_symlink_not_processed(env: Env, tmp_path: Path) -> None:
+    target = tmp_path / "real.txt"
+    target.write_text("")
+    (env.inbox / "S4-03.test").symlink_to(target)
+    env.task("S4-03")
+    env.pass_()
+    assert env.fake.calls == [] and "обычный файл" in env.skipped()
+    assert (env.inbox / "S4-03.test").is_symlink()
+
+
+def test_directory_named_like_command_not_processed(env: Env) -> None:
+    (env.inbox / "S4-03.test").mkdir()
+    env.pass_()
+    assert env.fake.calls == [] and "обычный файл" in env.skipped()
+
+
+def test_big_file_not_processed(env: Env) -> None:
+    env.put("S4-03.merge", "dev/" + "a" * 2000)
+    env.pass_()
+    assert env.fake.calls == [] and "больше" in env.skipped()
+
+
+def test_non_utf8_not_processed(env: Env) -> None:
+    env.put("S4-03.merge", b"dev/\xff\xfe")
+    env.pass_()
+    assert env.fake.calls == [] and "UTF-8" in env.skipped()
+
+
+def test_fresh_file_waits_and_is_not_logged(env: Env) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run", age=0.5)
+    env.pass_()
+    assert env.fake.calls == [] and env.skipped() == ""
+    assert (env.inbox / "S4-03.run").exists()
+    env.put("S4-03.run", age=5)
+    env.pass_()
+    assert len(env.fake.windows) == 1
+
+
+def test_unknown_files_logged_once_md_and_done_silent(env: Env) -> None:
+    env.put("notes.txt", "x")
+    env.put("S4-03.RUN", "")
+    env.put("S4-03.sh", "rm -rf /")
+    env.task("S4-03")
+    (env.inbox / "done").mkdir()
+    (env.inbox / "done" / "old.run.20250101").write_text("")
+    runner = env.runner()
+    runner.run_pass()
+    first = env.skipped()
+    runner.run_pass()
+    runner.run_pass()
+    assert env.skipped() == first
+    assert "notes.txt" in first and "S4-03.RUN" in first and "S4-03.sh" in first
+    assert "S4-03.md" not in first and "done" not in first
+    assert env.fake.calls == []
+    assert (env.inbox / "notes.txt").exists()
+
+
+@pytest.mark.parametrize("name", [
+    "a;b.run", "a b.run", "$(id).run", "a..b.run", "Задача.run", ("a" * 40) + ".run", "S4-02.RUN", "x\ny.run",
+])
+def test_bad_code_names_skipped(env: Env, name: str) -> None:
+    env.put(name, "")
+    env.pass_()
+    assert env.fake.calls == [] and env.fake.windows == []
+    assert (env.inbox / name).exists()
+
+
+# --- accounting -----------------------------------------------------------------------
+
+
+def test_file_claimed_into_done_before_execution(env: Env) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run")
+    seen: list[tuple[bool, list[str]]] = []
+    env.fake.on_call = lambda argv: seen.append(((env.inbox / "S4-03.run").exists(), env.done()))
+    env.pass_()
+    assert seen and all(not present and len(done) == 1 for present, done in seen)
+    assert env.done()[0].startswith("S4-03.run.") and env.done()[0].endswith("Z")
+
+
+def test_after_failure_file_stays_in_done_and_second_pass_idle(env: Env) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run")
+    env.fake.on("fetch", 1, "x")
+    runner = env.runner()
+    runner.run_pass()
+    n = len(env.fake.calls)
+    runner.run_pass()
+    assert len(env.fake.calls) == n and len(env.done()) == 1
+
+
+def test_internal_error_does_not_crash_pass(env: Env) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run")
+
+    def boom(argv):
+        raise RuntimeError("boom")
+    env.fake.on_call = boom
+    env.pass_()  # must not raise
+    assert "ВНУТРЕННЯЯ ОШИБКА" in env.log("S4-03.run.log")
+
+
+def test_files_and_dirs_are_owner_only(env: Env) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run")
+    env.pass_()
+    for p in (env.outbox / "S4-03.run.log", env.outbox / "_skipped.log"):
+        if p.exists():
+            assert stat.S_IMODE(p.stat().st_mode) == 0o600
+    assert stat.S_IMODE((env.inbox / "done").stat().st_mode) & 0o077 == 0
+    assert stat.S_IMODE(env.outbox.stat().st_mode) & 0o077 == 0
+
+
+def test_lock_second_copy_refuses(env: Env, capsys) -> None:
+    first = ir.acquire_lock(env.main)
+    assert first is not None
+    try:
+        assert ir.serve(env.settings, env.fake.ops(), once=True) == ir.EXIT_FAIL
+        assert "уже запущена" in capsys.readouterr().err
+    finally:
+        first.close()
+    assert ir.serve(env.settings, env.fake.ops(), once=True) == ir.EXIT_OK
+
+
+def test_serve_returns_ok_on_restart(env: Env, capsys) -> None:
+    merge_env(env, [pr()])
+    env.fake.on_call = lambda argv: setattr(env.fake, "hash", "h2") if "post-merge" in " ".join(map(str, argv)) else None
+    assert ir.serve(env.settings, env.fake.ops(), once=False) == 0
+    assert "launchd запустит новую версию" in capsys.readouterr().out
+
+
+def test_stop_flag_ends_loop(env: Env) -> None:
+    ir.STOP.set()
+    assert ir.serve(env.settings, env.fake.ops(), once=False) == 0
+    assert env.fake.calls == []
+
+
+# --- .test ------------------------------------------------------------------------------
+
+
+def wt_listing(env: Env, code: str, branch: str | None = None) -> str:
+    branch = branch or f"dev/{code}"
+    return (f"worktree {env.main}\nHEAD abc\nbranch refs/heads/our-main\n\n"
+            f"worktree {env.wroot}/{code}\nHEAD def\nbranch refs/heads/{branch}\n")
+
+
+def prep_test(env: Env, changed: str, code: str = "S4-05", main_venv: bool = True, listing: str | None = None) -> None:
+    env.put(f"{code}.test")
+    (env.wroot / code).mkdir(parents=True)
+    if main_venv:
+        py = env.main / ".venv" / "bin" / "python"
+        py.parent.mkdir(parents=True)
+        py.write_text("")
+    env.fake.on("worktree list", 0, listing if listing is not None else wt_listing(env, code))
+    env.fake.on("diff --name-only", 0, changed)
+
+
+def steps(env: Env) -> list[str]:
+    return [" ".join(c["argv"][1:]) for c in env.fake.calls if "-m" in c["argv"] and c["argv"][1] == "-m"]
+
+
+def test_test_ours_only(env: Env) -> None:
+    prep_test(env, "ours/a.py\ndocs/b.md\n")
+    env.pass_()
+    py = str(env.main / ".venv" / "bin" / "python")
+    checks = [c for c in env.fake.calls if c["argv"][0] == py]
+    assert [" ".join(c["argv"][1:]) for c in checks] == ["-m ruff check ours", "-m pytest ours/tests -q"]
+    assert all(c["cwd"] == env.wroot / "S4-05" for c in checks)
+    log = env.log("S4-05.test.log")
+    assert "ТЕСТЫ: PASS" in log and "docs/, ours/" in log and py in log
+    assert "Код возврата: 0" in log
+    assert not [c for c in env.fake.calls if "venv" in c["line"] and "-m venv" in c["line"]]
+
+
+def test_test_tests_dir_runs_four_steps_with_main_python(env: Env) -> None:
+    prep_test(env, "tests/test_a.py\nours/a.py\n")
+    env.pass_()
+    py = str(env.main / ".venv" / "bin" / "python")
+    checks = [" ".join(c["argv"][1:]) for c in env.fake.calls if c["argv"][0] == py]
+    assert checks == ["-m ruff check ours", "-m pytest ours/tests -q", "-m ruff check src tests", "-m pytest -q"]
+    assert not any("-m venv" in c["line"] for c in env.fake.calls)
+
+
+def test_test_src_creates_own_venv(env: Env) -> None:
+    prep_test(env, "src/symphony/a.py\n")
+    wt = env.wroot / "S4-05"
+    env.fake.on("import symphony", 0, f"{wt}/src/symphony/__init__.py\n")
+    env.pass_()
+    own = str(wt / ".venv" / "bin" / "python")
+    lines = [c["line"] for c in env.fake.calls]
+    venv_i = next(i for i, ln in enumerate(lines) if "-m venv .venv" in ln)
+    pip_i = next(i for i, ln in enumerate(lines) if "pip install -e .[dev]" in ln)
+    probe_i = next(i for i, ln in enumerate(lines) if "import symphony" in ln)
+    first_check = next(i for i, ln in enumerate(lines) if ln.startswith(f"{own} -m ruff check ours"))
+    assert venv_i < pip_i < probe_i < first_check
+    checks = [" ".join(c["argv"][1:]) for c in env.fake.calls if c["argv"][0] == own and c["argv"][1] == "-m"]
+    assert checks == ["-m ruff check ours", "-m pytest ours/tests -q", "-m ruff check src tests", "-m pytest -q"]
+    assert "ТЕСТЫ: PASS" in env.log("S4-05.test.log")
+    assert env.fake.calls[venv_i]["timeout"] == 900 and env.fake.calls[pip_i]["timeout"] == 900
+
+
+def test_test_src_existing_venv_not_recreated_but_checked(env: Env) -> None:
+    prep_test(env, "src/a.py\n")
+    wt = env.wroot / "S4-05"
+    (wt / ".venv").mkdir()
+    env.fake.on("import symphony", 0, f"{wt}/src/symphony/__init__.py\n")
+    env.pass_()
+    assert not any("-m venv" in c["line"] for c in env.fake.calls)
+    assert "ТЕСТЫ: PASS" in env.log("S4-05.test.log")
+
+
+def test_test_src_wrong_symphony_path_fails(env: Env, tmp_path: Path) -> None:
+    prep_test(env, "src/a.py\n")
+    env.fake.on("import symphony", 0, f"{env.main}/src/symphony/__init__.py\n")
+    env.pass_()
+    log = env.log("S4-05.test.log")
+    assert "ТЕСТЫ: FAIL" in log and "чужой код" in log
+    assert not [c for c in env.fake.calls if c["argv"][1:3] == ["-m", "ruff"]]
+
+
+def test_test_src_pip_failure_fails_without_checks(env: Env) -> None:
+    prep_test(env, "src/a.py\n")
+    env.fake.on("pip install", 1, "no network")
+    env.pass_()
+    log = env.log("S4-05.test.log")
+    assert "ТЕСТЫ: FAIL" in log and "no network" in log
+    assert not [c for c in env.fake.calls if c["argv"][1:3] == ["-m", "ruff"]]
+
+
+def test_test_no_main_venv_refused(env: Env) -> None:
+    prep_test(env, "ours/a.py\n", main_venv=False)
+    env.pass_()
+    assert not [c for c in env.fake.calls if c["argv"][1:3] == ["-m", "ruff"]]
+    assert "ОТКАЗ" in env.log("S4-05.test.log") and "ТЕСТЫ: PASS" not in env.log("S4-05.test.log")
+
+
+def test_test_worktree_not_registered(env: Env) -> None:
+    prep_test(env, "ours/a.py\n", listing=f"worktree {env.main}\nHEAD a\nbranch refs/heads/our-main\n")
+    env.pass_()
+    assert not [c for c in env.fake.calls if c["argv"][1:3] == ["-m", "ruff"]]
+    assert "не числится" in env.log("S4-05.test.log")
+
+
+def test_test_wrong_branch_refused(env: Env) -> None:
+    prep_test(env, "ours/a.py\n", listing=wt_listing(env, "S4-05", "dev/other"))
+    env.pass_()
+    assert not [c for c in env.fake.calls if c["argv"][1:3] == ["-m", "ruff"]]
+    assert "ОТКАЗ" in env.log("S4-05.test.log")
+
+
+def test_test_env_has_no_symphony_vars(env: Env, monkeypatch) -> None:
+    monkeypatch.setenv("SYMPHONY_WORKFLOW_DIR", "/x")
+    monkeypatch.setenv("SYMPHONY_PYTHON", "/y")
+    monkeypatch.setenv("VIRTUAL_ENV", "/z")
+    prep_test(env, "tests/a.py\n")
+    env.pass_()
+    assert env.fake.calls
+    for c in env.fake.calls:
+        assert c["env"] is not None
+        assert not [k for k in c["env"] if k.startswith("SYMPHONY_")]
+        assert "VIRTUAL_ENV" not in c["env"]
+    check = next(c for c in env.fake.calls if c["argv"][1:3] == ["-m", "ruff"])
+    assert check["env"]["PATH"] == f"{env.main}/.venv/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+    assert set(check["env"]) == {"PATH", "HOME", "LANG"}
+
+
+def test_test_one_failure_does_not_stop_others(env: Env) -> None:
+    prep_test(env, "tests/a.py\n")
+    env.fake.on("-m ruff check ours", 1, "E501 lint problem")
+    env.pass_()
+    log = env.log("S4-05.test.log")
+    py = str(env.main / ".venv" / "bin" / "python")
+    assert len([c for c in env.fake.calls if c["argv"][0] == py]) == 4
+    assert "ТЕСТЫ: FAIL" in log and "E501 lint problem" in log and "Код возврата: 1" in log
+    assert "ПАДЕНИЕ (код 1)" in log
+
+
+def test_test_timeout_marks_step_failed(env: Env) -> None:
+    prep_test(env, "ours/a.py\n")
+    env.fake.on("pytest ours/tests", -9, "partial", timed_out=True)
+    env.pass_()
+    log = env.log("S4-05.test.log")
+    assert "таймаут" in log and "ТЕСТЫ: FAIL" in log
+    timeouts = {" ".join(c["argv"][1:]): c["timeout"] for c in env.fake.calls if c["argv"][1:2] == ["-m"]}
+    assert timeouts["-m ruff check ours"] == 300 and timeouts["-m pytest ours/tests -q"] == 1200
+
+
+def test_test_full_pytest_timeout_3600(env: Env) -> None:
+    prep_test(env, "tests/a.py\n")
+    env.pass_()
+    full = next(c for c in env.fake.calls if c["argv"][1:] == ["-m", "pytest", "-q"])
+    assert full["timeout"] == 3600
+
+
+def test_test_nonempty_content_skipped(env: Env) -> None:
+    prep_test(env, "ours/a.py\n")
+    env.put("S4-05.test", "pytest -x; rm -rf ~")
+    env.pass_()
+    assert env.fake.calls == [] and "S4-05.test" in env.skipped()
+
+
+def test_test_repeat_allowed_old_report_renamed(env: Env) -> None:
+    prep_test(env, "ours/a.py\n")
+    env.pass_()
+    first = env.log("S4-05.test.log")
+    env.fake.on("pytest ours/tests", 1, "now failing")
+    env.put("S4-05.test")
+    env.pass_()
+    rotated = [p for p in env.outbox.iterdir() if p.name.startswith("S4-05.test.") and p.name != "S4-05.test.log"]
+    assert len(rotated) == 1 and rotated[0].name.endswith("Z.log")
+    assert rotated[0].read_text() == first
+    assert "ТЕСТЫ: FAIL" in env.log("S4-05.test.log")
+    assert len(env.done()) == 2
+
+
+def test_test_file_in_done_before_checks(env: Env) -> None:
+    prep_test(env, "ours/a.py\n")
+    seen: list[bool] = []
+    env.fake.on_call = lambda argv: seen.append(not (env.inbox / "S4-05.test").exists() and len(env.done()) == 1)
+    env.pass_()
+    assert seen and all(seen)
+
+
+def test_test_diff_failure_refused(env: Env) -> None:
+    prep_test(env, "")
+    env.fake.on("diff --name-only", 128, "fatal: bad revision")
+    env.pass_()
+    assert "ОТКАЗ" in env.log("S4-05.test.log")
+    assert not [c for c in env.fake.calls if c["argv"][1:3] == ["-m", "ruff"]]
+
+
+# --- real process runner ----------------------------------------------------------------
+
+
+def test_run_process_timeout_kills_group(tmp_path: Path) -> None:
+    marker = tmp_path / "alive"
+    child = tmp_path / "child.py"
+    child.write_text(f"import time, pathlib\ntime.sleep(3)\npathlib.Path({str(marker)!r}).write_text('x')\n")
+    parent = tmp_path / "parent.py"
+    parent.write_text(f"import subprocess, sys, time\nsubprocess.Popen([sys.executable, {str(child)!r}])\ntime.sleep(30)\n")
+    done = ir.run_process([sys.executable, str(parent)], timeout=1)
+    assert done.timed_out
+    import time
+    time.sleep(4)
+    assert not marker.exists()  # the grandchild died with the group
+
+
+def test_run_process_stdin_closed_and_output_merged() -> None:
+    done = ir.run_process([sys.executable, "-c", "import sys; print(repr(sys.stdin.read())); print('e', file=sys.stderr)"],
+                          timeout=20)
+    assert done.rc == 0 and "''" in done.out and "e" in done.out
+
+
+def test_run_process_missing_binary_is_clean_error() -> None:
+    done = ir.run_process(["/nonexistent/gh", "x"])
+    assert done.rc == 127 and "не удалось запустить" in done.out
+
+
+def test_run_process_stop_interrupts() -> None:
+    threading.Timer(0.7, ir.STOP.set).start()
+    done = ir.run_process([sys.executable, "-c", "import time; time.sleep(30)"], timeout=60)
+    assert done.interrupted
+
+
+def test_open_terminal_passes_command_as_argument(tmp_path: Path) -> None:
+    out = tmp_path / "args.txt"
+    stub = tmp_path / "osascript"
+    stub.write_text(f"#!{sys.executable}\nimport sys, pathlib\n"
+                    f"pathlib.Path({str(out)!r}).write_text(repr(sys.argv[1:]) + '\\n' + sys.stdin.read())\n")
+    stub.chmod(0o755)
+    command = ir.terminal_command(Path("/m/main"), Path("/m/wt"), "S4-03", "opus")
+    ok, _ = ir.open_terminal(str(stub), command)
+    assert ok
+    written = out.read_text()
+    argv_line, script = written.split("\n", 1)
+    assert argv_line == repr(["-", command])
+    assert script == ir.TERMINAL_SCRIPT
+    assert "Выполни задание" not in script and "S4-03" not in script
+    assert "do script (item 1 of argv)" in script
+
+
+def test_open_terminal_missing_program() -> None:
+    ok, text = ir.open_terminal("/nonexistent/osascript", "x")
+    assert not ok and "нет программы" in text
+
+
+# --- inbox-runner-launchd ------------------------------------------------------------------
+
+
+def launchd(main: Path, *extra: str, path: str | None = None) -> subprocess.CompletedProcess:
+    env = {"HOME": os.environ["HOME"], "PATH": path if path is not None else "/usr/bin:/bin:/usr/sbin:/sbin"}
+    return subprocess.run([sys.executable, str(LAUNCHD), "--main", str(main), *extra], capture_output=True,
+                          text=True, env=env, timeout=60)
+
+
+def test_launchd_plist_content_and_idempotence(tmp_path: Path) -> None:
+    import plistlib
+    main = tmp_path / "main"
+    (main / ".git").mkdir(parents=True)
+    gh = tmp_path / "bin" / "gh"
+    gh.parent.mkdir()
+    gh.write_text("")
+    first = launchd(main, "--gh", str(gh))
+    assert first.returncode == 0, first.stderr
+    target = main.resolve() / "tmp_workspaces" / "launchd" / "local.symphony.inbox-runner.plist"
+    data = plistlib.loads(target.read_bytes())
+    assert data["Label"] == "local.symphony.inbox-runner"
+    assert data["ProgramArguments"] == [sys.executable, str(main.resolve() / "ours/bin/inbox-runner"), "--main",
+                                        str(main.resolve()), "--gh", str(gh)]
+    assert all(os.path.isabs(a) for a in (data["ProgramArguments"][0], data["ProgramArguments"][1],
+                                          data["ProgramArguments"][3], data["ProgramArguments"][5]))
+    assert data["RunAtLoad"] is True and data["KeepAlive"] is True and data["ThrottleInterval"] == 10
+    assert data["EnvironmentVariables"]["PATH"] == "/usr/bin:/bin:/usr/sbin:/sbin"
+    assert "HOME" in data["EnvironmentVariables"]
+    assert data["StandardOutPath"] == str(main.resolve() / "tmp_workspaces/outbox/_launchd.log")
+    assert "launchctl bootstrap gui/$(id -u)" in first.stdout and "launchctl bootout gui/$(id -u)" in first.stdout
+    second = launchd(main, "--gh", str(gh))
+    assert "без изменений" in second.stdout
+
+
+def test_launchd_refuses_without_gh(tmp_path: Path) -> None:
+    main = tmp_path / "main"
+    (main / ".git").mkdir(parents=True)
+    done = launchd(main, path=str(tmp_path / "empty"))
+    assert done.returncode == 1 and "gh" in done.stderr
+    assert not (main / "tmp_workspaces" / "launchd").exists()
+
+
+def test_launchd_never_calls_launchctl() -> None:
+    src = LAUNCHD.read_text()
+    assert "subprocess" not in src and "os.system" not in src
+
+
+# --- the whole command as a subprocess ---------------------------------------------------
+
+
+def test_command_once_end_to_end(tmp_path: Path) -> None:
+    origin, main = tmp_path / "origin.git", tmp_path / "main"
+    git(tmp_path, "init", "-q", "--bare", "-b", "our-main", str(origin))
+    git(tmp_path, "clone", "-q", str(origin), str(main))
+    identify(main)
+    git(main, "checkout", "-q", "-b", "our-main")
+    (main / "a.txt").write_text("1\n")
+    git(main, "add", ".")
+    git(main, "commit", "-q", "-m", "init")
+    git(main, "push", "-q", "origin", "our-main")
+    main = main.resolve()
+    inbox = main / "tmp_workspaces" / "inbox"
+    inbox.mkdir(parents=True)
+    out = tmp_path / "osascript-args.txt"
+    osa = tmp_path / "osascript"
+    osa.write_text(f"#!{sys.executable}\nimport sys, pathlib\npathlib.Path({str(out)!r}).write_text(repr(sys.argv[1:]))\n")
+    osa.chmod(0o755)
+    gh = tmp_path / "gh"
+    gh.write_text(f"#!{sys.executable}\nimport sys\nprint('[]')\n")
+    gh.chmod(0o755)
+    (inbox / "E2E-1.md").write_text("task")
+    for name, text in (("E2E-1.run", "model=haiku\n"), ("E2E-2.merge", "dev/E2E-2\n"), ("junk.txt", "x")):
+        (inbox / name).write_text(text)
+    for p in inbox.iterdir():
+        os.utime(p, (OLD, OLD))
+    env = {"HOME": os.environ["HOME"], "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
+    done = subprocess.run(
+        [sys.executable, str(RUNNER), "--main", str(main), "--worktree-root", str(tmp_path / "wt"), "--once",
+         "--gh", str(gh), "--osascript", str(osa)],
+        capture_output=True, text=True, env=env, timeout=120,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert (tmp_path / "wt" / "E2E-1" / "a.txt").exists()
+    assert git(main, "rev-parse", "--abbrev-ref", "dev/E2E-1") == "dev/E2E-1"
+    args = eval(out.read_text())  # noqa: S307 - our own stub wrote a repr of a list of str
+    assert args[0] == "-"
+    assert args[1] == (f'cd {tmp_path / "wt" / "E2E-1"} && claude --model haiku '
+                       f'"Выполни задание из файла {main}/tmp_workspaces/inbox/E2E-1.md"')
+    outbox = main / "tmp_workspaces" / "outbox"
+    assert "Окно Терминала открыто" in (outbox / "E2E-1.run.log").read_text()
+    assert "нет открытого PR" in (outbox / "E2E-2.merge.log").read_text()
+    assert "junk.txt" in (outbox / "_skipped.log").read_text()
+    assert sorted(p.name.split(".")[0] + "." + p.name.split(".")[1] for p in (inbox / "done").iterdir()) == [
+        "E2E-1.run", "E2E-2.merge"]
+    # a second copy while the lock is held refuses
+    holder = ir.acquire_lock(main)
+    try:
+        again = subprocess.run([sys.executable, str(RUNNER), "--main", str(main), "--once", "--gh", str(gh)],
+                               capture_output=True, text=True, env=env, timeout=60)
+    finally:
+        holder.close()
+    assert again.returncode == 1 and "уже запущена" in again.stderr
+
+
+def test_command_rejects_bad_paths(tmp_path: Path) -> None:
+    main = tmp_path / "main dir"
+    (main / ".git").mkdir(parents=True)
+    done = subprocess.run([sys.executable, str(RUNNER), "--main", str(main), "--once", "--gh", "/x/gh"],
+                          capture_output=True, text=True, timeout=60)
+    assert done.returncode == 1 and "без пробелов" in done.stderr
