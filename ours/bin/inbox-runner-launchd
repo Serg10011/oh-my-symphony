@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""Write the launchd plist of the command queue service (TASK-S4-02).
+
+    inbox-runner-launchd [--main DIR] [--gh PATH]
+
+Writes <main>/tmp_workspaces/launchd/local.symphony.inbox-runner.plist, prints the
+diff against the old file and the launchctl commands. The service is never
+loaded from here. It must run as a user agent (gui/<uid>): otherwise osascript
+cannot open a Terminal window.
+"""
+
+from __future__ import annotations
+
+import argparse
+import difflib
+import os
+import plistlib
+import shutil
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+
+import inbox_runner as ir  # noqa: E402
+
+LABEL = "local.symphony.inbox-runner"
+PLIST_DIR = Path("tmp_workspaces") / "launchd"
+LOG_NAME = "_launchd.log"
+
+
+def build_plist(main: Path, gh: str, python: str = sys.executable) -> bytes:
+    log = str(main / ir.OUTBOX_REL / LOG_NAME)
+    data = {
+        "Label": LABEL,
+        "ProgramArguments": [python, str(main / "ours" / "bin" / "inbox-runner"), "--main", str(main), "--gh", gh],
+        "WorkingDirectory": str(main),
+        "EnvironmentVariables": {"PATH": ir.SAFE_PATH, "HOME": str(Path.home()), "PYTHONUNBUFFERED": "1"},
+        "StandardOutPath": log,
+        "StandardErrorPath": log,
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ThrottleInterval": 10,
+    }
+    return plistlib.dumps(data, sort_keys=False)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="inbox-runner-launchd", description=__doc__.splitlines()[0])
+    parser.add_argument("--main", default=None, help="основная папка форка")
+    parser.add_argument("--gh", default=None, help="абсолютный путь к gh (по умолчанию — найти в PATH)")
+    args = parser.parse_args(argv)
+    root = Path(args.main).expanduser() if args.main else ir.default_main()
+    if root is None or not (root / ".git").exists():
+        print("inbox-runner-launchd: не нашёл основную папку форка; укажите --main", file=sys.stderr)
+        return 1
+    root = root.resolve()
+    gh = args.gh or shutil.which("gh")
+    if not gh:
+        print("inbox-runner-launchd: отказ: не найден gh. Установите GitHub CLI (brew install gh) и войдите "
+              "(gh auth login) либо укажите --gh /абсолютный/путь/к/gh", file=sys.stderr)
+        return 1
+    gh = os.path.abspath(gh)
+    if not os.path.isfile(gh):
+        print(f"inbox-runner-launchd: отказ: нет файла {gh}", file=sys.stderr)
+        return 1
+    for label, p in (("основная папка", str(root)), ("gh", gh), ("python", sys.executable)):
+        if not ir.valid_abs_path(p):
+            print(f"inbox-runner-launchd: отказ: {label}: путь {p!r} с пробелами или спецсимволами", file=sys.stderr)
+            return 1
+    target = root / PLIST_DIR / f"{LABEL}.plist"
+    new = build_plist(root, gh).decode("utf-8")
+    old = target.read_text(encoding="utf-8") if target.exists() else ""
+    (root / ir.OUTBOX_REL).mkdir(mode=0o700, parents=True, exist_ok=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if new == old:
+        print(f"{target}: без изменений")
+    else:
+        sys.stdout.writelines(difflib.unified_diff(
+            old.splitlines(keepends=True), new.splitlines(keepends=True),
+            fromfile=f"{target} (было)", tofile=f"{target} (стало)",
+        ))
+        tmp = target.with_name(f".{target.name}.tmp")
+        tmp.write_text(new, encoding="utf-8")
+        tmp.replace(target)
+        print(f"{target}: записан")
+    print(f"""
+Запуск:    launchctl bootstrap gui/$(id -u) {target}
+Остановка: launchctl bootout gui/$(id -u) {target}
+Лог:       {root / ir.OUTBOX_REL / LOG_NAME}
+
+Служба работает как агент пользователя (gui/<uid>): иначе она не сможет открыть окно Терминала.
+При первом открытии окна macOS спросит разрешение на управление «Терминалом» — подтвердите один раз.""")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
