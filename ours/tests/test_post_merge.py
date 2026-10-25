@@ -405,7 +405,7 @@ def test_command_dry_run_with_fake_api(env: Env) -> None:
         env.project("oms", env.clone, server.server_address[1])
         before = snapshot(env)
         done = subprocess.run(
-            [str(POST_MERGE), "--dry-run", "--root", str(env.root), "--main", str(env.main),
+            [sys.executable, str(POST_MERGE), "--dry-run", "--root", str(env.root), "--main", str(env.main),
              "--state", str(env.state)],
             capture_output=True, text=True, timeout=60,
         )

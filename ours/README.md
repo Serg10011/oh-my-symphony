@@ -265,4 +265,7 @@ python -m pytest ours/tests -q
 python -m ruff check ours
 E2E_OUT=/tmp/kit-e2e ours/tests/e2e/run.sh                   # обычный путь до Human Review
 E2E_DROP_TEST=1 E2E_OUT=/tmp/kit-e2e ours/tests/e2e/run.sh    # агент убирает тест из запуска
+env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin .venv/bin/python -m pytest ours/tests -q   # как видит тесты project-doctor
 ```
+
+Правило для тестов: подпроцессы со скриптами `ours/` запускать только через `sys.executable`, не через шебанг и не через `python3` из `PATH`. Тест обязан проходить в среде `env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin` (там системный Python без `tomllib`; в обычном Терминале это не видно).
