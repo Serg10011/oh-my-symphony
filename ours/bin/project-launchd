@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""Write launchd.plist of a project board (TASK-K13).
+
+    project-launchd <name> [--root <dir>]
+
+Reads project.toml and writes <board>/launchd.plist: the service runs in the
+foreground under launchd with the same command `symphony service start`
+builds (`<python> -m symphony.cli <WORKFLOW.md> --host 127.0.0.1 --port <port>`)
+and the short environment measured on the Mac probe. Prints the diff against
+the old file (like project-render), then the launchctl commands. The service
+is never loaded from here.
+"""
+
+from __future__ import annotations
+
+import argparse
+import difflib
+import plistlib
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+
+import project_config as pc  # noqa: E402
+
+LABEL_PREFIX = "local.symphony."
+LAUNCHD_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
+PLIST_FILE = "launchd.plist"
+LOG_DIR = "log"
+LOG_FILE = "symphony.log"
+
+
+def build_plist(board: Path, project: dict) -> bytes:
+    """launchd.plist of the board: foreground service, no restart, short PATH."""
+    board = board.resolve()
+    p, tools = project["project"], project["tools"]
+    env = {
+        "PATH": LAUNCHD_PATH,
+        "HOME": str(Path.home()),
+        "PYTHONUNBUFFERED": "1",
+        "SYMPHONY_PYTHON": tools["python"],
+    }
+    if "model" in project["service"]:
+        env["ANTHROPIC_MODEL"] = project["service"]["model"]
+    log = str(board / LOG_DIR / LOG_FILE)
+    data = {
+        "Label": LABEL_PREFIX + p["name"],
+        "ProgramArguments": [
+            tools["python"], "-m", "symphony.cli", str(board / "WORKFLOW.md"),
+            "--host", "127.0.0.1", "--port", str(p["port"]),
+        ],
+        "WorkingDirectory": str(board),
+        "EnvironmentVariables": env,
+        "StandardOutPath": log,
+        "StandardErrorPath": log,
+        "RunAtLoad": True,
+        "KeepAlive": False,
+    }
+    return plistlib.dumps(data, sort_keys=False)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(prog="project-launchd", description=__doc__.splitlines()[0])
+    parser.add_argument("name")
+    parser.add_argument("--root", default=str(pc.DEFAULT_ROOT))
+    args = parser.parse_args(argv)
+    if not pc.NAME_RE.match(args.name):
+        print(f"project-launchd: имя {args.name!r} некорректно", file=sys.stderr)
+        return 1
+    board = Path(args.root).expanduser().absolute() / args.name
+    target = board / PLIST_FILE
+    try:
+        project = pc.load_project(board)
+        if project["project"]["name"] != args.name:
+            raise pc.ProjectError(
+                f"в {board / pc.PROJECT_FILE} имя {project['project']['name']!r}, а не {args.name!r}"
+            )
+        new = build_plist(board, project).decode("utf-8")
+        old = target.read_text(encoding="utf-8") if target.exists() else ""
+        (board / LOG_DIR).mkdir(exist_ok=True)
+    except (pc.ProjectError, OSError, UnicodeDecodeError) as exc:
+        print(f"project-launchd: отказ: {exc}", file=sys.stderr)
+        return 1
+    if new == old:
+        print(f"{target}: без изменений")
+    else:
+        sys.stdout.writelines(difflib.unified_diff(
+            old.splitlines(keepends=True), new.splitlines(keepends=True),
+            fromfile=f"{target} (было)", tofile=f"{target} (стало)",
+        ))
+        tmp = target.with_name(f".{PLIST_FILE}.tmp")
+        tmp.write_text(new, encoding="utf-8")
+        tmp.replace(target)
+        print(f"{target}: записан")
+    if not (board / "WORKFLOW.md").exists():
+        print("ВНИМАНИЕ: нет WORKFLOW.md — сначала project-render или project-doctor")
+    print(f"""
+Запуск:   launchctl bootstrap gui/$(id -u) {target}
+Остановка: launchctl bootout gui/$(id -u) {target}
+Лог:      {board / LOG_DIR / LOG_FILE}
+Окружение работающей службы: ps eww -p <pid>
+
+Служба из Терминала (`symphony service start`) и служба из launchd — одно вместо другого,
+не обе сразу: у них один порт ({project['project']['port']}) и одна доска.
+Перед project-doctor службу остановить.""")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

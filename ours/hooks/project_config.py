@@ -50,6 +50,20 @@ PREFIX_RE = re.compile(r"^[A-Z][A-Z0-9]{1,9}$")
 
 DEFAULT_TIMEOUTS = {"tests_s": 900, "gate_ms": 960000, "hooks_ms": 1200000}
 DEFAULT_LIMITS = {"max_turns": 30, "max_total_turns": 60, "max_attempts": 3}
+# Bash allowances every project gets (the set that passed the Mac probe, K13);
+# `/bin/bash <board>/test.sh` is added per board by agent_bash_rules().
+BASE_ALLOWED_BASH = ("git merge-tree", "test", "echo", "cat", "wc", "head", "tail")
+# claude -p refuses Bash outside the allow list; a rule that lets any command
+# through (or switches the permission checks off) is a config error.
+_BARE_WILDCARDS = {"*", "bash", "sh", "zsh", "env", "sudo", "eval", "exec"}
+_PERMISSION_BYPASS_RE = re.compile(
+    r"dangerously|bypass|skip[-_ ]?permissions|permission[-_ ]?mode|allowed[-_ ]?tools|yolo",
+    re.IGNORECASE,
+)
+MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:\[\]-]*$")
+STALL_MIN_MS = 300_000
+# Margin over the test run for the model's own output around a long Bash call.
+STALL_MARGIN_S = 120
 # Active states of the template: the core refuses agent.max_turns below this.
 ACTIVE_STATE_COUNT = 4
 
@@ -81,6 +95,8 @@ _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
         "max_total_turns": (int, False),
         "max_attempts": (int, False),
     },
+    "agent": {"allowed_bash": (list, False)},
+    "service": {"model": (str, False)},
 }
 # Keys that moved; a stale project.toml gets a hint instead of "unknown key".
 _MOVED_KEYS = {("checks", "test_timeout_s"): "[timeouts] tests_s"}
@@ -105,6 +121,57 @@ def _check_value(where: str, value: object, kind: type) -> None:
         isinstance(item, str) and item.strip() for item in value
     ):
         raise ProjectError(f"{where}: нужен список непустых строк")
+
+
+def _check_allowed_bash(entries: list[str]) -> list[str]:
+    """[agent] allowed_bash: command prefixes for `Bash(<entry>:*)`, de-duplicated."""
+    where = f"{PROJECT_FILE}: [agent] allowed_bash"
+    checked: list[str] = []
+    for raw in entries:
+        entry = raw.strip()
+        if not entry or any(ord(ch) < 32 for ch in entry):
+            raise ProjectError(f"{where}: пустая запись или управляющие символы в {raw!r}")
+        if "(" in entry or ")" in entry:
+            raise ProjectError(
+                f"{where}: {raw!r}: пиши команду без обёртки Bash(...), "
+                "например \".venv/bin/python -m ruff\""
+            )
+        if entry.endswith(":*"):
+            raise ProjectError(f"{where}: {raw!r}: суффикс :* добавляется сам, убери его")
+        if entry.lower() in _BARE_WILDCARDS:
+            raise ProjectError(
+                f"{where}: {raw!r} разрешает любую команду; "
+                "перечисли нужные команды целиком (проверки разрешений агента не отключаются)"
+            )
+        if _PERMISSION_BYPASS_RE.search(entry):
+            raise ProjectError(
+                f"{where}: {raw!r} похоже на отключение проверок разрешений агента; "
+                "это запрещено правилами проекта"
+            )
+        if entry not in checked:
+            checked.append(entry)
+    return checked
+
+
+def agent_bash_rules(board: Path, allowed_bash: Iterable[str]) -> list[str]:
+    """`--allowedTools` rules: the built-in base, then the project's own."""
+    base = [f"/bin/bash {board.resolve() / 'test.sh'}", *BASE_ALLOWED_BASH]
+    rules: list[str] = []
+    for entry in (*base, *allowed_bash):
+        rule = f"Bash({entry}:*)"
+        if rule not in rules:
+            rules.append(rule)
+    return rules
+
+
+def stall_timeout_ms(tests_s: int) -> int:
+    """agent stall watchdog (claude.stall_timeout_ms) from the test timeout.
+
+    The core counts only `assistant` frames, lifecycle events and output-token
+    deltas as progress (not `tool_result` echoes), so one long Bash call such
+    as test.sh is silent for its whole duration.
+    """
+    return max(STALL_MIN_MS, (tests_s + STALL_MARGIN_S) * 1000)
 
 
 def validate_project(data: dict) -> dict:
@@ -154,6 +221,12 @@ def validate_project(data: dict) -> dict:
     )):
         if not Path(path).is_absolute():
             raise ProjectError(f"{PROJECT_FILE}: {where} должен быть абсолютным путём")
+    out["agent"]["allowed_bash"] = _check_allowed_bash(out["agent"].get("allowed_bash", []))
+    if "model" in out["service"] and not MODEL_RE.match(out["service"]["model"]):
+        raise ProjectError(
+            f"{PROJECT_FILE}: [service] model {out['service']['model']!r}: "
+            "только буквы, цифры и . _ : [ ] - (например haiku)"
+        )
     out["timeouts"] = {**DEFAULT_TIMEOUTS, **out["timeouts"]}
     limits = out["limits"] = {**DEFAULT_LIMITS, **out["limits"]}
     if limits["max_turns"] < ACTIVE_STATE_COUNT:
@@ -355,7 +428,8 @@ def template_values(board: Path, project: dict) -> dict[str, object]:
     q = shlex.quote
     claude = " ".join(
         [q(tools["claude"]), "-p", "--output-format", "stream-json", "--verbose",
-         "--permission-mode", "acceptEdits"]
+         "--permission-mode", "acceptEdits", "--allowedTools"]
+        + [q(rule) for rule in agent_bash_rules(board, project["agent"]["allowed_bash"])]
         + [f"--add-dir {q(str(board / d))}" for d in (BOARD_DIR, ARTIFACTS_DIR, WIKI_DIR)]
     )
     values: dict[str, object] = {
@@ -369,6 +443,7 @@ def template_values(board: Path, project: dict) -> dict[str, object]:
         "claude_command": claude,
         "done_gate_command": f'"$SYMPHONY_PYTHON" {q(str(hooks / "check.py"))} gate',
         "gate_ms": timeouts["gate_ms"],
+        "stall_ms": stall_timeout_ms(timeouts["tests_s"]),
         "hooks_ms": timeouts["hooks_ms"],
         "max_turns": limits["max_turns"],
         "max_total_turns": limits["max_total_turns"],

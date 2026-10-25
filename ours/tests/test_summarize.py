@@ -177,3 +177,34 @@ def test_real_pytest_report(tmp_path: Path) -> None:
     assert proc.returncode == 1, proc.stdout
     result = run(str(report))
     assert result.stdout == "PIPELINE_TESTS passed=3 skipped=1 failed=2\n"
+
+
+def test_several_reports_are_summed(tmp_path: Path) -> None:
+    reports = []
+    for name, xml in (("a", VITEST), ("b", PYTEST), ("c", "<testsuites/>")):
+        path = tmp_path / f"{name}.xml"
+        path.write_text(xml, encoding="utf-8")
+        reports.append(str(path))
+    result = run(*reports)
+    assert result.returncode == 0, result.stderr
+    # vitest 3/1/1 + pytest 2/2/2 + empty
+    assert result.stdout == "PIPELINE_TESTS passed=5 skipped=3 failed=3\n"
+
+
+def test_one_report_gives_the_same_line_as_before(tmp_path: Path) -> None:
+    report = tmp_path / "junit.xml"
+    report.write_text(JEST, encoding="utf-8")
+    assert run(str(report)).stdout == "PIPELINE_TESTS passed=1 skipped=1 failed=1\n"
+
+
+def test_one_bad_report_among_several_prints_no_line(tmp_path: Path) -> None:
+    good = tmp_path / "good.xml"
+    good.write_text(VITEST, encoding="utf-8")
+    bad = tmp_path / "bad.xml"
+    bad.write_text("not xml at all", encoding="utf-8")
+    missing = tmp_path / "missing.xml"
+    for order in ((good, bad), (bad, good), (good, missing)):
+        result = run(*map(str, order))
+        assert result.returncode == 1
+        assert result.stdout == ""
+        assert result.stderr

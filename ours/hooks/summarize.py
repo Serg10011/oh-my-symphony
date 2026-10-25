@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """Print the test.sh summary line from a JUnit XML report (TASK-K08b).
 
-    summarize.py <junit.xml>
+    summarize.py <junit.xml> [<junit.xml> ...]
 
 Prints `PIPELINE_TESTS passed=<n> skipped=<n> failed=<n>` and exits 0.
+With several reports (test.sh runs the suite in more than one pass) the
+counts are summed into one line.
 Every <testcase> anywhere in the tree counts once (nested <testsuite>
 elements included): a <failure> or <error> child = failed, else a
 <skipped> child = skipped, else passed. The suite-level counters
 (`tests=`, `failures=`) are ignored: runners fill them differently.
 
 A missing, empty or unparsable file, or a root other than <testsuites> /
-<testsuite>, prints nothing to stdout and exits 1: test.sh must then fail
-instead of reporting a summary nobody measured.
+<testsuite> (in any of the reports), prints nothing to stdout and exits 1:
+test.sh must then fail instead of reporting a summary nobody measured.
 
 Standalone on purpose (standard library only, no imports from ours/): it
 runs inside the agent's worktree.
@@ -59,14 +61,18 @@ def summarize(path: str) -> dict[str, int]:
 
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
-    if len(args) != 1:
-        print("usage: summarize.py <junit.xml>", file=sys.stderr)
+    if not args:
+        print("usage: summarize.py <junit.xml> [<junit.xml> ...]", file=sys.stderr)
         return 2
-    try:
-        counts = summarize(args[0])
-    except ValueError as exc:
-        print(f"summarize.py: {exc}", file=sys.stderr)
-        return 1
+    counts = {"passed": 0, "skipped": 0, "failed": 0}
+    for path in args:
+        try:
+            part = summarize(path)
+        except ValueError as exc:
+            print(f"summarize.py: {exc}", file=sys.stderr)
+            return 1
+        for key, value in part.items():
+            counts[key] += value
     print("PIPELINE_TESTS " + " ".join(f"{k}={v}" for k, v in counts.items()), flush=True)
     return 0
 
