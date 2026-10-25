@@ -49,7 +49,8 @@ NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 PREFIX_RE = re.compile(r"^[A-Z][A-Z0-9]{1,9}$")
 
 DEFAULT_TIMEOUTS = {"tests_s": 900, "gate_ms": 960000, "hooks_ms": 1200000}
-DEFAULT_LIMITS = {"max_turns": 30, "max_total_turns": 60, "max_attempts": 3}
+# max_state_turns 30 = core default, so a project.toml without the key behaves as before K14.
+DEFAULT_LIMITS = {"max_turns": 30, "max_total_turns": 60, "max_attempts": 3, "max_state_turns": 30}
 # Bash allowances every project gets (the set that passed the Mac probe, K13);
 # `/bin/bash <board>/test.sh` is added per board by agent_bash_rules().
 BASE_ALLOWED_BASH = ("git merge-tree", "test", "echo", "cat", "wc", "head", "tail")
@@ -94,10 +95,17 @@ _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
         "max_turns": (int, False),
         "max_total_turns": (int, False),
         "max_attempts": (int, False),
+        "max_state_turns": (int, False),
     },
     "agent": {"allowed_bash": (list, False)},
     "service": {"model": (str, False)},
 }
+# [levels]: `default_level` plus one table per level (TASK-K14). Mirrors the core
+# parser (src/symphony/workflow/levels.py); the core re-checks on WORKFLOW.md load.
+LEVEL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+_LEVEL_KEYS = ("claude", "codex", "max_turns", "max_state_turns")
+_BACKEND_KEYS = ("model", "effort")
 # Keys that moved; a stale project.toml gets a hint instead of "unknown key".
 _MOVED_KEYS = {("checks", "test_timeout_s"): "[timeouts] tests_s"}
 _REQUIRED_SECTIONS = ("project", "tools")
@@ -153,6 +161,66 @@ def _check_allowed_bash(entries: list[str]) -> list[str]:
     return checked
 
 
+def _check_levels(raw: object) -> dict:
+    """[levels]: `default_level` (a level name) and tables `[levels.<name>]`."""
+    where = f"{PROJECT_FILE}: [levels]"
+    if not isinstance(raw, dict):
+        raise ProjectError(f"{where} должен быть разделом")
+    default = raw.get("default_level")
+    levels = {name: body for name, body in raw.items() if name != "default_level"}
+    if "default_level" in raw and not isinstance(default, str):
+        raise ProjectError(f"{where} default_level: нужно имя уровня (непустая строка)")
+    for name, body in levels.items():
+        label = f"{where.rstrip(']')}.{name}]"
+        if not LEVEL_NAME_RE.match(name):
+            raise ProjectError(f"{label}: имя уровня только из букв, цифр, _ и -")
+        if not isinstance(body, dict):
+            raise ProjectError(f"{where}: {name!r} должен быть таблицей [levels.{name}]")
+        extra = sorted(set(body) - set(_LEVEL_KEYS))
+        if extra:
+            raise ProjectError(
+                f"{label}: неизвестный ключ(и) {', '.join(extra)}; допустимы: "
+                f"{', '.join(_LEVEL_KEYS)}. Уровни поддерживают только claude и codex; "
+                "другой бэкенд карточке задают полем agent_kind"
+            )
+        for backend in ("claude", "codex"):
+            part = body.get(backend, {})
+            if not isinstance(part, dict):
+                raise ProjectError(f"{label}: {backend} должен быть таблицей [levels.{name}.{backend}]")
+            extra = sorted(set(part) - set(_BACKEND_KEYS))
+            if extra:
+                raise ProjectError(
+                    f"{label}: неизвестный ключ(и) в {backend}: {', '.join(extra)}; "
+                    f"допустимы: {', '.join(_BACKEND_KEYS)}"
+                )
+            for key, value in part.items():
+                _check_value(f"{label} {backend}.{key}", value, str)
+            if backend == "claude" and part.get("effort", "low") not in CLAUDE_EFFORTS:
+                raise ProjectError(
+                    f"{label}: claude.effort {part['effort']!r}; допустимо: {', '.join(CLAUDE_EFFORTS)}"
+                )
+            if "model" in part and not MODEL_RE.match(part["model"]):
+                raise ProjectError(
+                    f"{label}: {backend}.model {part['model']!r}: "
+                    "только буквы, цифры и . _ : [ ] - (например haiku)"
+                )
+        for key in ("max_turns", "max_state_turns"):
+            if key in body:
+                _check_value(f"{label} {key}", body[key], int)
+        if body.get("max_turns", ACTIVE_STATE_COUNT) < ACTIVE_STATE_COUNT:
+            raise ProjectError(
+                f"{label}: max_turns не меньше {ACTIVE_STATE_COUNT} "
+                "(число активных состояний; иначе ядро не примет WORKFLOW.md)"
+            )
+    if "default_level" in raw:
+        _check_value(f"{where} default_level", default, str)
+        if default not in levels:
+            raise ProjectError(
+                f"{where} default_level {default!r}: такого уровня нет; есть: {', '.join(levels) or 'ни одного'}"
+            )
+    return {"default_level": default, "levels": levels}
+
+
 def agent_bash_rules(board: Path, allowed_bash: Iterable[str]) -> list[str]:
     """`--allowedTools` rules: the built-in base, then the project's own."""
     base = [f"/bin/bash {board.resolve() / 'test.sh'}", *BASE_ALLOWED_BASH]
@@ -176,7 +244,7 @@ def stall_timeout_ms(tests_s: int) -> int:
 
 def validate_project(data: dict) -> dict:
     """Validate parsed project.toml; fill [checks] and [timeouts] defaults."""
-    unknown = sorted(set(data) - set(_SCHEMA))
+    unknown = sorted(set(data) - set(_SCHEMA) - {"levels"})
     if unknown:
         raise ProjectError(f"{PROJECT_FILE}: неизвестный раздел(ы) {', '.join(unknown)}")
     out: dict[str, dict] = {}
@@ -221,6 +289,9 @@ def validate_project(data: dict) -> dict:
     )):
         if not Path(path).is_absolute():
             raise ProjectError(f"{PROJECT_FILE}: {where} должен быть абсолютным путём")
+    out["levels"] = _check_levels(data["levels"]) if "levels" in data else {
+        "default_level": None, "levels": {},
+    }
     out["agent"]["allowed_bash"] = _check_allowed_bash(out["agent"].get("allowed_bash", []))
     if "model" in out["service"] and not MODEL_RE.match(out["service"]["model"]):
         raise ProjectError(
@@ -417,7 +488,30 @@ def ensure_state_dir(board: Path) -> Path:
 # WORKFLOW.md rendering
 # ---------------------------------------------------------------------------
 
-_PLACEHOLDER = re.compile(r"\{\{(yaml|sh|int):([a-z_]+)\}\}")
+_PLACEHOLDER = re.compile(r"\{\{(yaml|sh|int|raw):([a-z_]+)\}\}")
+
+
+def levels_yaml(project: dict) -> str:
+    """The workflow `levels:` block ("" without [levels]); strings as JSON scalars."""
+    levels = project["levels"]["levels"]
+    if not levels:
+        return ""
+    q = json.dumps
+    lines = ["levels:"]
+    for name, body in levels.items():
+        if not body:
+            lines.append(f"  {name}: {{}}")
+            continue
+        lines.append(f"  {name}:")
+        for backend in ("claude", "codex"):
+            part = body.get(backend)
+            if part:
+                lines.append(f"    {backend}:")
+                lines.extend(f"      {k}: {q(v, ensure_ascii=False)}" for k, v in part.items())
+        for key in ("max_turns", "max_state_turns"):
+            if key in body:
+                lines.append(f"    {key}: {body[key]}")
+    return "\n".join(lines) + "\n"
 
 
 def template_values(board: Path, project: dict) -> dict[str, object]:
@@ -448,6 +542,11 @@ def template_values(board: Path, project: dict) -> dict[str, object]:
         "max_turns": limits["max_turns"],
         "max_total_turns": limits["max_total_turns"],
         "max_attempts": limits["max_attempts"],
+        "max_state_turns": limits["max_state_turns"],
+        "levels_block": levels_yaml(project),
+        "default_level_line": (
+            f"default_level: {json.dumps(default)}\n  " if (default := project["levels"]["default_level"]) else ""
+        ),
         "prompt_base": str(PROMPTS_DIR / "base.md"),
     }
     for stage in ("todo", "in-progress", "verify", "document", "done"):
@@ -463,6 +562,8 @@ def render_workflow(board: Path, project: dict, template: Path = TEMPLATE) -> st
         if key not in values:
             raise ProjectError(f"шаблон {template}: неизвестная подстановка {match.group(0)}")
         value = values[key]
+        if kind == "raw":
+            return str(value)
         if kind == "int":
             if not isinstance(value, int):
                 raise ProjectError(f"шаблон: {key} не число")
