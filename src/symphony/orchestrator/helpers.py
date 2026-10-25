@@ -25,6 +25,7 @@ from ..logging import get_logger
 from ..notifications import NotificationEvent, dispatch_notification
 from ..ticket_markdown import parse_body_dependency_ids
 from ..workflow import ServiceConfig, selectable_agent_kinds
+from ..workflow.levels import apply_level
 from .constants import (
     _AUTO_TRIAGE_ACCEPTANCE_RE,
     _AUTO_TRIAGE_TRIAGE_RE,
@@ -206,7 +207,8 @@ def _config_for_issue_agent(cfg: ServiceConfig, issue: Issue) -> ServiceConfig:
     """Return a per-worker config with the ticket's backend override applied.
 
     Precedence: per-ticket `agent_kind` pin > `agent.stage_kinds` entry for
-    the ticket's current state > workflow-level `agent.kind`.
+    the ticket's current state > workflow-level `agent.kind`. The ticket's
+    `level` (else `agent.default_level`) also sets model, effort and limits.
     """
     pin = _requested_agent_kind(issue)
     kinds = selectable_agent_kinds(cfg.agent.profiles)
@@ -217,6 +219,7 @@ def _config_for_issue_agent(cfg: ServiceConfig, issue: Issue) -> ServiceConfig:
             issue=issue.identifier,
         )
     kind = cfg.agent.kind_for_state(issue.state, pin)
+    cfg = apply_level(cfg, issue, kind)
     if kind == cfg.agent.kind:
         return cfg
     return replace(cfg, agent=replace(cfg.agent, kind=kind))

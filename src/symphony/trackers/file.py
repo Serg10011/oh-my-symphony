@@ -89,6 +89,7 @@ _CANONICAL_FRONT_MATTER_KEYS = {
     "agent",
     "agent_kind",
     "last_agent_kind",
+    "level",
     "skills",
     "created_at",
     "updated_at",
@@ -375,6 +376,7 @@ def issue_from_file(path: Path) -> Issue | None:
         or None,
         skills=normalize_skill_names(front.get("skills")),
         request=str(front.get("request") or "").strip() or None,
+        level=str(front.get("level") or "").strip() or None,
         planning_ref=_parse_planning_ref(front.get("symphony_pm")),
         planning_ref_state=(
             "absent"
@@ -798,6 +800,7 @@ class FileBoardTracker:
                         priority=None,
                         state=issue.state,
                         agent_kind=issue.agent_kind,
+                        level=issue.level,
                     )
                 )
         return out

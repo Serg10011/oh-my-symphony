@@ -24,6 +24,7 @@ from ..factory.wayfinder import factory_proof_commands
 from ..issue import BlockerRef, Issue, normalize_state
 from ..skills import render_skill_block, select_skills_for_stage
 from ..workflow import ServiceConfig, selectable_agent_kinds
+from ..workflow.levels import LevelError
 from ..workspace import WorkspaceManager
 from .constants import ARCHIVE_SWEEP_INTERVAL_SEC, WAIT_AGE_BUMP_MIN, _TOKEN_EMA_ALPHA
 from .factory_contracts import factory_browser_required, factory_verification_text
@@ -34,7 +35,9 @@ from .helpers import (
     _canonical_state_label,
     _from_monotonic_to_iso,
     _is_rewind_transition,
+    _config_for_issue_agent,
     _requested_agent_kind,
+    _rewind_budget_target_state,
     _utc_iso_z,
 )
 from .parsing import _parse_findings_rows, _parse_touched_files
@@ -399,6 +402,15 @@ async def _on_tick(self: Orchestrator) -> None:
             )
             continue
 
+        if await _hold_ticket_with_bad_level(self, issue, cfg):
+            entry.update(
+                status="needs_action",
+                code="level_rejected",
+                reason="ticket level is not usable; ticket was blocked",
+                dispatch_outcome="blocked",
+            )
+            continue
+
         # C1 — this final pre-dispatch check can still invalidate a
         # forecast because touched-file ownership changes with live runs.
         conflict = self._conflict_blocker(issue)
@@ -513,6 +525,8 @@ async def _dispatch_fifo_without_schedule_projection(
         if not self._should_dispatch(issue, cfg):
             continue
         if await self._hold_reopened_ticket_over_budget(issue, cfg):
+            continue
+        if await _hold_ticket_with_bad_level(self, issue, cfg):
             continue
         conflict = self._conflict_blocker(issue)
         if conflict is not None:
@@ -919,6 +933,46 @@ async def _block_ticket_for_conflict(
         other=other_identifier,
         overlap=sorted_overlap,
     )
+
+
+async def _hold_ticket_with_bad_level(
+    self: Orchestrator, issue: Issue, cfg: ServiceConfig
+) -> bool:
+    """Block a ticket whose `level` cannot be applied, before any turn runs.
+
+    An unknown level must not silently fall back to the default model. The
+    ticket goes to the Blocked lane with a `## Level` note naming the reason;
+    fixing the level and moving the card back to its lane re-dispatches it.
+    Returns True when the ticket must not be dispatched.
+    """
+    try:
+        _config_for_issue_agent(cfg, issue)
+    except LevelError as exc:
+        reason = exc.message
+    else:
+        return False
+    target = _rewind_budget_target_state(cfg)
+    log.warning(
+        "level_rejected",
+        issue_id=issue.id,
+        identifier=issue.identifier,
+        task_level=issue.level,
+        target_state=target or "(none)",
+        reason=reason,
+    )
+    if not target:
+        return True
+    try:
+        await asyncio.to_thread(self._tracker_call_update_state, cfg, issue, target)
+        await asyncio.to_thread(
+            self._tracker_call_append_note, cfg, issue, "Level", reason
+        )
+    except Exception as exc:
+        log.warning(
+            "level_hold_failed", identifier=issue.identifier, error=str(exc)
+        )
+        self._record_tracker_error(issue.id, exc)
+    return True
 
 
 # ------------------------------------------------------------------

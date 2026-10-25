@@ -48,6 +48,9 @@ class Issue:
     last_agent_kind: str | None = None
     planning_ref: PlanningRef | None = None
     planning_ref_state: str = "absent"
+    # Task level (`level:` frontmatter): picks model/effort/limits from the
+    # workflow `levels` block. None = use `agent.default_level`.
+    level: str | None = None
 
     def to_template_dict(self) -> dict[str, Any]:
         """§12.2 — convert keys to strings, preserve nested arrays/maps."""
