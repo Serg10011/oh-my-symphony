@@ -101,7 +101,9 @@ _ALLOWED_FIELDS: dict[str, tuple[str, ...]] = {
     "run_acquired": ("attempt", "attempt_kind", "agent_kind", "state"),
     "run_started": ("state",),
     "session_started": (),
-    "turn_started": ("turn", "state", "continuation"),
+    "turn_started": (
+        "turn", "state", "continuation", "task_level", "model", "effort",
+    ),
     "turn_completed": (
         "turn",
         "input_tokens",

@@ -75,6 +75,7 @@ from ..logging import get_logger
 from ..prompt import build_continuation_prompt, build_first_turn_prompt
 from ..utils import git_inspect
 from ..workflow import ServiceConfig
+from ..workflow.levels import turn_fields
 from ..workspace import Workspace, WorkspaceManager
 from .entries import RunningEntry, _IssueDebug
 from .helpers import (
@@ -828,6 +829,8 @@ async def _run_turn(
     # turn-start so multi-turn runs (especially slow ones
     # like gemini -p where a single turn can take 60-90s)
     # don't look stuck between turns.
+    # Level/model/effort per turn: with the turn's cost this prices tasks by level.
+    level_fields = turn_fields(st.cfg, running.issue)
     log.info(
         "worker_turn_started",
         issue_id=st.running_issue_id,
@@ -835,6 +838,7 @@ async def _run_turn(
         turn=st.turn_number,
         max_turns=st.cfg.agent.max_turns,
         is_continuation=is_continuation,
+        **level_fields,
     )
     orch._append_run_event(
         running,
@@ -843,6 +847,7 @@ async def _run_turn(
             "turn": st.turn_number,
             "state": running.issue.state,
             "continuation": is_continuation,
+            **level_fields,
         },
     )
     if st.turn_number > 1:

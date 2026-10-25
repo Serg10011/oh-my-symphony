@@ -33,6 +33,7 @@ from .coercion import (
     expand_path_value,
     resolve_var_indirection,
 )
+from .levels import parse_default_level, parse_levels
 from .config import (
     AgentProfileConfig,
     AgentConfig,
@@ -336,6 +337,8 @@ def build_service_config(
         active_states=tracker.active_states,
         terminal_states=tracker.terminal_states,
     )
+    levels = parse_levels(cfg.get("levels"), active_states=tracker.active_states)
+    default_level = parse_default_level(agent_raw.get("default_level"), levels)
     agent_profiles = _validated_agent_profiles(agent_raw.get("profiles"))
     selectable_kinds = selectable_agent_kinds(agent_profiles)
     agent_kind = _canonical_agent_kind(
@@ -477,6 +480,7 @@ def build_service_config(
             terminal_states=tracker.terminal_states,
         ),
         profiles=agent_profiles,
+        default_level=default_level,
     )
 
     codex_raw = cfg.get("codex") or {}
@@ -1027,6 +1031,7 @@ def build_service_config(
         artifacts=artifacts,
         pm=pm,
         code_repo=code_repo,
+        levels=levels,
     )
 
 

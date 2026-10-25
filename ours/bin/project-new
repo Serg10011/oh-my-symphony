@@ -100,6 +100,29 @@ echo "test.sh не настроен: заполни {board}/test.sh" >&2
 exit 1
 """
 
+CARD_TEMPLATE = """\
+---
+# Образец карточки (TASK-K14). Сюда ничего не попадает само: скопируй текст в
+# новую карточку на доске ({board}/kanban/<ID>.md или `symphony board new`).
+id: {prefix}-N
+title: Короткое название задачи
+state: Todo
+# Уровень задачи: какая модель и с каким усилием её выполнит (раздел [levels] в
+# project.toml). Назначает тот, кто нарезает задачу. Не знаешь — убери строку, тогда
+# действует default_level. Неизвестный уровень отправит карточку в Blocked.
+level: L1
+---
+
+Уровень: L1 — почему такой (одна фраза: чем задача проста или сложна для модели)
+
+Что сделать: ...
+
+Критерии приёмки:
+- AC1: ...
+
+Тесты только через `/bin/bash {board}/test.sh`, по одной команде на вызов Bash, без `&&`, `;`, `|`.
+"""
+
 PROJECT_TOML = """\
 # Настройки проекта для конвейера (TASK-K08a, K08b). Единственный файл настроек:
 # WORKFLOW.md строится из него командой ours/bin/project-render.
@@ -123,7 +146,8 @@ claude = {claude}
 # test_globs = ["tests/**"]    # ЗАМЕНЯЮТ встроенный список
 # allow_modified_tests = []
 # required_sections = ["## Wiki Updates", "## As-Is -> To-Be Report"]
-# max_check_failures = 3       # откатов check.py до needs_human
+max_check_failures = 2         # провалов проверки check.py до needs_human: второй
+#                              # провал (откат из Human Review в In Progress) — стоп
 
 [agent]                  # права агента (K13)
 # Дополнительные разрешения для Bash агента к встроенной базе (/bin/bash <доска>/test.sh,
@@ -145,22 +169,67 @@ claude = {claude}
 #                              # max(300 с, tests_s + 120 с)
 # fixed = true                 # project-doctor не перезаписывает, только советует
 
-[limits]                 # лимиты ядра, раздел agent в WORKFLOW.md
-# Счётчики ядра живут в памяти службы: перезапуск службы их обнуляет.
-# max_turns = 30               # ходов за один запуск агента по карточке (от
-#                              # выдачи карточки до выхода воркера). Исчерпан, а
-#                              # карточка не дошла до конечного состояния — она
-#                              # уходит в needs_human и сама не продолжается.
-#                              # Не меньше 4 (число активных состояний).
-# max_total_turns = 60         # ходов по карточке за всё время работы службы,
-#                              # по всем запускам (откат check.py начинает новый
-#                              # запуск, счёт продолжается). Исчерпан — needs_human.
-# max_attempts = 3             # возвратов назад по активным состояниям (Verify ->
-#                              # In Progress и т.п.), в том числе принудительных:
-#                              # этап не выполнил свой контракт. Возврат номер
-#                              # max_attempts + 1 переводит карточку в Blocked.
-#                              # Откаты check.py сюда не входят: их считает
-#                              # [checks] max_check_failures.
+[levels]                 # уровни задач (TASK-K14): модель и усилие агента на карточку
+# Карточка выбирает уровень строкой `level: L2` во frontmatter; без неё действует
+# default_level. Уровень назначает тот, кто нарезает задачу, и пишет в карточке,
+# почему такой. Неизвестный уровень в карточке — карточка уходит в Blocked с
+# пояснением, на модель по умолчанию она не откатывается. Значения стартовые,
+# уточняются по статистике (журнал службы пишет уровень, модель и усилие каждого хода).
+# Усилие claude: low, medium, high, xhigh, max. Имена моделей проверяет сам claude.
+# Модель из уровня (--model) важнее ключа model из раздела service; тот остаётся
+# запасным для карточек без уровня (когда default_level не задан).
+default_level = "L1"
+
+[levels.L1]              # дешёвый работник, простые задачи
+[levels.L1.claude]
+model = "haiku"
+effort = "medium"
+
+[levels.L2]              # тот же работник, усилие выше
+[levels.L2.claude]
+model = "haiku"
+effort = "high"
+
+[levels.S1]              # руководитель / пограничные и сложные задачи
+[levels.S1.claude]
+model = "sonnet"
+effort = "high"
+
+[levels.S2]              # самые трудные задачи
+[levels.S2.claude]
+model = "sonnet"
+effort = "max"
+
+# Свои лимиты ходов у уровня (необязательно; подменяют max_turns и max_state_turns
+# из раздела limits для карточек этого уровня; max_total_turns и max_attempts общие).
+# Пример для будущей локальной модели: она бесплатная, её ограничивает только
+# время, поэтому лимиты щедрее облачных:
+# [levels.LOCAL]
+# max_turns = 40               # не меньше 4 (число активных состояний)
+# max_state_turns = 6
+
+[limits]                 # лимиты ходов; строгие, для облачных моделей (раздел agent в WORKFLOW.md)
+# Ход — один запуск агента с заданием этапа (внутри хода агент делает много
+# действий). Нормальной карточке нужен примерно 1 ход на этап. Заход — период от
+# выдачи карточки агенту до выхода воркера. Счётчики живут в памяти службы:
+# перезапуск службы их обнуляет (флаг остановки budget_exhausted хранится в базе).
+max_state_turns = 2      # ходов подряд на одном этапе без продвижения. После
+                         # второго такого хода карточка уходит в needs_human и
+                         # встаёт на паузу (снимается POST /api/v1/<ID>/resume);
+                         # третьего хода нет. Счётчик не сбрасывается при повторном
+                         # входе в тот же этап: после resume карточка получит один ход.
+max_turns = 8            # ходов за один заход: 4 этапа по 2 хода. Исчерпан без
+                         # конца работы — карточка в needs_human, флаг
+                         # budget_exhausted: сама не продолжится, штатного сброса нет
+                         # (новая карточка). Не меньше 4 (число активных состояний).
+max_total_turns = 20     # ходов по карточке за всё время работы службы, по всем
+                         # заходам (откат check.py начинает новый заход, счёт
+                         # продолжается). Исчерпан — то же, что у max_turns.
+max_attempts = 2         # возвратов назад по активным состояниям (Verify ->
+                         # In Progress и т.п.), в том числе когда этап не выполнил
+                         # контракт. Возврат номер max_attempts + 1 переводит
+                         # карточку в Blocked. Откаты check.py сюда не входят:
+                         # их считает [checks] max_check_failures.
 """
 
 
@@ -278,6 +347,8 @@ def create(board: Path, args, repo: Path, python: Path, symphony: Path, claude: 
         summarize = shlex.quote(str(pc.OURS_DIR / "hooks" / "summarize.py"))
         script.write_text(text.format(board=board, summarize=summarize), encoding="utf-8")
         script.chmod(0o755)
+    (board / "card-template.md").write_text(
+        CARD_TEMPLATE.format(board=board, prefix=args.prefix), encoding="utf-8")
     (board / pc.PROJECT_FILE).write_text(PROJECT_TOML.format(
         name=toml_str(args.name), repo=toml_str(str(repo)), base=toml_str(args.base),
         prefix=toml_str(args.prefix), prefix_raw=args.prefix, port=args.port,

@@ -7,7 +7,9 @@ the board folder) and wiki, moves the state, prints stream-json frames.
 E2E_BREAK_TEST=1 also weakens an existing test; E2E_SKIP_WORK=1 skips the
 work notes the In Progress contract requires; E2E_DROP_TEST=1 drops the
 existing tests from the run through a runner config (pytest.ini), without
-touching any test file. `--version` (project-doctor) prints a version.
+touching any test file; E2E_NO_PROGRESS=1 never moves the card (the
+max_state_turns watchdog must stop it). `--version` (project-doctor) prints a
+version. Every call logs its arguments to claude-calls.jsonl.
 """
 
 import json
@@ -41,6 +43,8 @@ def move(new_state, sections):
     card.write_text(text)
 
 s = state.lower()
+if os.environ.get("E2E_NO_PROGRESS"):
+    s = "no-progress"  # no branch below matches: the card stays where it is
 if s == "todo":
     move("In Progress", "## Triage\n\nticket is actionable; routing to In Progress because it has acceptance criteria")
 elif s == "in progress":

@@ -288,7 +288,7 @@ def test_doctor_refuses_a_taken_port_and_a_broken_tool(doc: Doc) -> None:
 def test_doctor_refuses_the_old_test_timeout_key(doc: Doc) -> None:
     doc.ready()
     doc.toml.write_text(doc.toml.read_text().replace(
-        "# max_check_failures = 3", "test_timeout_s = 900"))
+        "max_check_failures = 2 ", "test_timeout_s = 900 "))
     result = doc.doctor()
     assert result.returncode == 1
     assert "[checks] test_timeout_s убран" in result.stdout
@@ -328,13 +328,15 @@ def test_limits_reach_the_core_config(doc: Doc) -> None:
 
     doc.new()
     cfg = build_service_config(load_workflow(doc.board / "WORKFLOW.md"))
-    assert (cfg.agent.max_turns, cfg.agent.max_total_turns, cfg.agent.max_attempts) == (30, 60, 3)
-    doc.toml.write_text(doc.toml.read_text().replace("# max_turns = 30 ", "max_turns = 12   ")
-                        .replace("# max_attempts = 3 ", "max_attempts = 1   "))
+    # Strict defaults of the project-new stub (TASK-K14).
+    assert (cfg.agent.max_turns, cfg.agent.max_total_turns, cfg.agent.max_attempts) == (8, 20, 2)
+    assert cfg.agent.max_state_turns == 2
+    doc.toml.write_text(doc.toml.read_text().replace("max_turns = 8 ", "max_turns = 12")
+                        .replace("max_attempts = 2 ", "max_attempts = 1"))
     project = pc.load_project(doc.board)
     (doc.board / "WORKFLOW.md").write_text(pc.render_workflow(doc.board, project))
     cfg = build_service_config(load_workflow(doc.board / "WORKFLOW.md"))
-    assert (cfg.agent.max_turns, cfg.agent.max_total_turns, cfg.agent.max_attempts) == (12, 60, 1)
+    assert (cfg.agent.max_turns, cfg.agent.max_total_turns, cfg.agent.max_attempts) == (12, 20, 1)
 
 
 @pytest.mark.parametrize(

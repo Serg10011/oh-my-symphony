@@ -512,6 +512,29 @@ Progress → Verify → Document gets each lane's configured backend.
 so a quota-exhausted backend hands the ticket to the next one instead of
 pausing for an operator.
 
+**Task levels (model, effort, limits per ticket).** A top-level `levels` block
+maps a level name (`[A-Za-z0-9_-]+`) to optional settings: `claude: {model,
+effort}`, `codex: {model, effort}`, `max_turns` and `max_state_turns`. A
+ticket picks one with `level: L1` in its frontmatter; `agent.default_level`
+covers tickets without one. Parsing is strict: unknown keys, empty strings,
+other backend kinds, a claude `effort` outside `low|medium|high|xhigh|max`,
+`max_state_turns < 1`, `max_turns` below the number of active states, and a
+`default_level` that is not defined are config errors. Model names are not
+checked here; the CLI does that. At every dispatch and lane change
+`_config_for_issue_agent` applies the level: for `claude` it puts `--model` /
+`--effort` right after the program word of `claude.command` (the program may
+be `claude` or a path ending in `/claude`; existing flags are replaced, not
+duplicated; a wrapper script is a `LevelError`), for `codex` it sets
+`codex.model` / `codex.reasoning_effort`, and level limits replace
+`agent.max_turns` / `agent.max_state_turns` for that ticket
+(`max_state_turns_by_state` still wins for a lane). Precedence: ticket level >
+`agent.default_level` > unchanged. A ticket level that is not defined is not
+silently run on the default model: before dispatch the ticket is moved to the
+`Blocked` lane with a `## Level` note and a `level_rejected` log line. Every
+turn logs `task_level`, `model` and `effort` (`worker_turn_started`; the same
+fields are in the run's `turn_started` event) so cost per level can be
+computed next to `cost_usd`. Nothing raises or lowers a level automatically.
+
 **Heavy stages.** The stall detector cancels a worker that produced no
 progress event within its backend's `stall_timeout_ms`. Widening that value
 widens it for every lane; `agent.stall_timeout_ms_by_state` widens only the

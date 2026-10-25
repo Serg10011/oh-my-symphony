@@ -51,6 +51,7 @@ from .constants import (
     SUPPORTED_CI_MODES,
     selectable_agent_kinds,
 )
+from .levels import LevelConfig
 from .presets import board_uses_shipped_contracts
 
 
@@ -324,6 +325,9 @@ class AgentConfig:
     # lowercased name that `kind` / `stage_kinds` select. Names never shadow
     # a built-in kind; the builder rejects that.
     profiles: dict[str, AgentProfileConfig] = field(default_factory=dict)
+    # Level applied to tickets without a `level:` frontmatter key; must be a
+    # key of `ServiceConfig.levels`. Empty = no default (behaviour unchanged).
+    default_level: str = ""
 
     def stage_contracts_enabled(self, active_states: "tuple[str, ...]") -> bool:
         """Resolve `agent.stage_contracts` against the board's lanes."""
@@ -759,6 +763,8 @@ class ServiceConfig:
     # workspace.code_repo: git repo the read-only web git routes inspect when
     # the board dir is not the code repo. None = use the WORKFLOW.md dir.
     code_repo: Path | None = None
+    # `levels` block: level name -> model/effort/turn limits (see levels.py).
+    levels: dict[str, LevelConfig] = field(default_factory=dict)
 
     def prompt_template_for_state(self, state: str) -> str:
         """Return the runtime prompt template for one tracker state."""

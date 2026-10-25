@@ -21,11 +21,11 @@
 
 ## Этап 3 — основные доработки
 
-- [ ] Модель и усилие на уровне задачи (по итогам отчёта).
+- [x] Модель и усилие на уровне задачи (по итогам отчёта). — K14 (REPORT-16): `levels` и `level` в ядре, лимиты уровня, учёт модели хода; настоящий `claude` на Mac не проверялся; повышение уровня — лестница (этап 4)
 - [x] Хук механических проверок `ours/hooks/` (тесты, запрещённые пути, неизменённые тесты). — скрипт и тесты готовы (K05); подключён в шаблоне `WORKFLOW.md` и пройден сквозным прогоном с поддельным `claude` (K08a); проба на настоящем `claude` и Mac осталась
 - [x] Правка ядра: `agent.done_gate_command` — внешняя команда-шлюз при приёмке Done, закрытый по умолчанию (в `_auto_merge_done_gate_or_block`, ≈100 строк + тесты `tests/test_done_gate.py`).
 - [x] Правка ядра: выключатель автопереноса Human Review → Done (`agent.normalize_legacy_human_review: false`, ≈6 строк + тесты).
-- [x] Рабочая конфигурация `WORKFLOW.md`: `needs_human` в `terminal_states` (порядок `[Human Review, needs_human, Done, Blocked, Archive]`), `budget_exhausted_state: needs_human`, `auto_recover_blocked: false`, `auto_merge_on_done: false` и `auto_merge_push_target: false`, явная `feature_base_branch`, полные пути к `python`, `symphony`, `claude`; видимость `needs_human` и `Blocked` для утреннего разбора. — шаблон K08a; видимость needs_human и Blocked — отдельной задачей (лимиты ходов из `[limits]` — K08b; настоящий `claude` не проверялся)
+- [x] Рабочая конфигурация `WORKFLOW.md`: `needs_human` в `terminal_states` (порядок `[Human Review, needs_human, Done, Blocked, Archive]`), `budget_exhausted_state: needs_human`, `auto_recover_blocked: false`, `auto_merge_on_done: false` и `auto_merge_push_target: false`, явная `feature_base_branch`, полные пути к `python`, `symphony`, `claude`. — шаблон K08a (лимиты ходов из `[limits]` — K08b; уровни и строгие лимиты — K14; настоящий `claude` не проверялся); видимость `needs_human` и `Blocked` для утреннего разбора перенесена в этап 6
 - [x] Хук `after_run` с откатом Done: вызов первой строкой блока, прототип — `scripts/gate-probe.sh` из локальной пробы; внешний скрипт чистого старта. — `check.py hook` первой строкой `after_run` в шаблоне, откат в In Progress и `needs_human` проверен сквозным прогоном (K08a); сверка не убивает воркера в долгом хуке (K09); настоящий `claude` и Mac не проверялись
 - [x] Правка №4 из REPORT-01: внешний скрипт чистого старта ветки. — `ours/hooks/worktree.py` (K08a): старая ветка переименовывается в `attempts/<ID>-<UTC>`; проверено тестами и сквозным прогоном; Mac не проверялся
 - [x] Правка №7 из REPORT-01: лимиты `claude` в `/api/v1/state` (формат кадра `rate_limit_event` проверен, DECISIONS.md, 2026-10-24). — в облаке (K04)
@@ -45,6 +45,7 @@
 
 - [ ] VPN до дома, веб-панель и терминальная доска.
 - [ ] Уведомления; Telegram-бот — по желанию.
+- [ ] Видимость `needs_human` и `Blocked` для утреннего разбора: что остановилось за ночь и почему — вместе с уведомлениями (перенесено из этапа 3).
 
 ## Этап 7 — рабочие проекты
 
