@@ -39,6 +39,14 @@ SETUP_SH = """\
 #   npm ci
 # Пример для Python:
 #   /полный/путь/python3 -m venv .venv && .venv/bin/pip install -e .
+#
+# ОКРУЖЕНИЕ СЛУЖБЫ БЕДНОЕ (замер на Mac, K13): PATH короткий, LANG и LC_ALL не
+# заданы, TMPDIR выдаёт launchd; у агента и хуков в окружении лежат лишние
+# переменные SYMPHONY_* службы. Если тесты проекта на них реагируют, в начале
+# скрипта очисти их (оставь SYMPHONY_PYTHON и SYMPHONY_WORKFLOW_DIR) и при
+# необходимости задай нужные переменные сам.
+# Лимит открытых файлов (macOS даёт 256) для установки обычно не важен; если
+# важен — `ulimit -n 10240` в начале скрипта.
 # Код 0 = готово; любой другой код — рабочая копия и новая ветка убираются.
 echo "setup.sh не настроен: заполни {board}/setup.sh" >&2
 exit 1
@@ -59,6 +67,20 @@ TEST_SH = """\
 # Первой строкой задай PATH и проверь версию, чтобы ошибка была видна сразу:
 #   export PATH="/полный/путь/к/node/bin:$PATH"; node --version || exit 1
 #
+# ОКРУЖЕНИЕ СЛУЖБЫ БЕДНОЕ (замер на Mac, K13): PATH короткий, LANG и LC_ALL не
+# заданы, TMPDIR выдаёт launchd; у агента и хуков в окружении лежат лишние
+# переменные SYMPHONY_* службы. Если тесты проекта на них реагируют, в начале
+# скрипта очисти их (оставь SYMPHONY_PYTHON и SYMPHONY_WORKFLOW_DIR) и при
+# необходимости задай нужные переменные сам.
+# ЛИМИТ ОТКРЫТЫХ ФАЙЛОВ: macOS даёт 256 по умолчанию, большому набору тестов
+# этого мало (на пробе были массовые падения и «unable to open database file»).
+# Если так — подними лимит в начале скрипта: ulimit -n 10240
+#
+# ТЕСТЫ С ТАЙМИНГОМ (проверяют время) под нагрузкой флейкают. Если такие есть,
+# запусти их отдельным последовательным проходом после основного (свой отчёт
+# JUnit, оба отчёта — в summarize.py одним вызовом: он сложит счётчики).
+# Агент должен гонять только этот test.sh, не раннер напрямую.
+#
 # Код 0 = зелено. В конце обязательна строка итогов (считается последняя):
 #   PIPELINE_TESTS passed=<n> skipped=<n> failed=<n>
 # Её печатает summarize.py по отчёту JUnit XML. Отчёт — во временный файл вне
@@ -72,6 +94,8 @@ TEST_SH = """\
 # rc=$?
 # "$SYMPHONY_PYTHON" {summarize} "$report" || exit $(( rc ? rc : 1 ))
 # exit $rc
+# Несколько проходов: два отчёта, одна строка итогов, код — первый ненулевой:
+# "$SYMPHONY_PYTHON" {summarize} "$report" "$report_timing" || exit $(( rc ? rc : 1 ))
 echo "test.sh не настроен: заполни {board}/test.sh" >&2
 exit 1
 """
@@ -101,10 +125,24 @@ claude = {claude}
 # required_sections = ["## Wiki Updates", "## As-Is -> To-Be Report"]
 # max_check_failures = 3       # откатов check.py до needs_human
 
+[agent]                  # права агента (K13)
+# Дополнительные разрешения для Bash агента к встроенной базе (/bin/bash <доска>/test.sh,
+# git merge-tree, test, echo, cat, wc, head, tail). Команда без обёртки Bash(...),
+# совпадение по началу. Без этого `claude -p` отклоняет всё, что вне списка, и агент
+# крутится до max_turns. Составные команды (&&, ;, |) проходят, только если разрешена
+# каждая часть. Нельзя: пустые записи, одиночный *, Bash(*), bash/sh/env и всё, что
+# похоже на отключение проверок разрешений.
+# allowed_bash = [".venv/bin/python -m ruff"]
+
+[service]                # служба под launchd (ours/bin/project-launchd)
+# model = "haiku"              # переменная ANTHROPIC_MODEL службы; без ключа не задаётся
+
 [timeouts]               # заполняет project-doctor по замеру; пока — умолчания
 # tests_s = 900                # таймаут test.sh (check.py hook и gate)
 # gate_ms = 960000             # agent.done_gate_timeout_ms = (tests_s + 60) * 1000
 # hooks_ms = 1200000           # hooks.timeout_ms: setup.sh и after_run
+#                              # stall_timeout_ms (сторож зависания) считает шаблон:
+#                              # max(300 с, tests_s + 120 с)
 # fixed = true                 # project-doctor не перезаписывает, только советует
 
 [limits]                 # лимиты ядра, раздел agent в WORKFLOW.md

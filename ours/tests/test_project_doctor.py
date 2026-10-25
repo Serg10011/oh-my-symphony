@@ -436,3 +436,24 @@ def test_run_script_reports_a_timeout_not_exit_minus_nine(
         script, tmp_path, {"PATH": "/usr/bin:/bin"}, 0.3)
     assert code is None  # not -9
     assert elapsed < 30
+
+
+# ---------------------------------------------------------------------------
+# stall watchdog follows [timeouts] tests_s (TASK-K13)
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_recomputes_the_stall_watchdog_with_the_timeouts(doc: Doc) -> None:
+    doc.ready()
+    result = doc.doctor()
+    assert result.returncode == 0, result.stdout + result.stderr
+    # tests_s = 300 was just measured -> max(300 s, 300 + 120 s) = 420 s
+    assert "PASS  stall_timeout_ms = 420000 (max(300 с, tests_s 300 + 120 с))" in result.stdout
+    assert "stall_timeout_ms: 420000\n" in (doc.board / "WORKFLOW.md").read_text()
+    # A fixed, larger tests_s is not overwritten and the watchdog follows it.
+    doc.toml.write_text(doc.toml.read_text().replace("tests_s = 300", "tests_s = 900")
+                        .replace("[timeouts]", "[timeouts]\nfixed = true", 1))
+    again = doc.doctor()
+    assert again.returncode == 0, again.stdout + again.stderr
+    assert "PASS  stall_timeout_ms = 1020000" in again.stdout
+    assert "stall_timeout_ms: 1020000\n" in (doc.board / "WORKFLOW.md").read_text()

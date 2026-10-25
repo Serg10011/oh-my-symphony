@@ -405,7 +405,16 @@ def main(argv: list[str] | None = None) -> int:
     else:
         report.add("SKIP", "пробный прогон setup.sh и test.sh: сначала исправь FAIL выше")
 
-    if render(report, args.name, root) and tools_ok:
+    rendered = render(report, args.name, root)
+    if rendered:
+        # tests_s may have just changed: the stall watchdog follows it (K13).
+        try:
+            tests_s = pc.load_project(board)["timeouts"]["tests_s"]
+            report.add("PASS", f"stall_timeout_ms = {pc.stall_timeout_ms(tests_s)} "
+                       f"(max(300 с, tests_s {tests_s} + {pc.STALL_MARGIN_S} с))")
+        except pc.ProjectError as exc:  # pragma: no cover - render just read the same file
+            report.add("FAIL", f"{pc.PROJECT_FILE}: {exc}")
+    if rendered and tools_ok:
         core_doctor(report, board, project["tools"]["symphony"])
 
     verdict = "готов" if report.fails == 0 else "НЕ готов"
