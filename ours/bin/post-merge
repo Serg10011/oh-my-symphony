@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+"""Update the fork and its projects after a PR merge (TASK-S4-01).
+
+    post-merge [--project NAME ...] [--dry-run] [--root DIR] [--main DIR] [--state FILE]
+
+Exit codes: 0 done or nothing to do, 1 refusal or error, 2 some actions
+deferred because cards are in work. The logic lives in ours/hooks/post_merge.py.
+"""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+
+import post_merge  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(post_merge.run())
