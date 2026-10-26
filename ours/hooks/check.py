@@ -61,6 +61,14 @@ DEFAULT_FORBIDDEN_PATHS = (
     "**/*.pem",
     "**/*.key",
 )
+# `ours/**` is the only default pattern that [checks] allow_paths can lift.
+OURS_PATTERN = "ours/**"
+# Files that check the agent's work or set its rights. Forbidden always, even
+# when allow_paths matches them: only a human-run task changes these.
+CONTROL_CONTOUR = ("ours/hooks/**", "ours/bin/**", "ours/templates/**")
+# The default `.env` patterns are anchored at the repository root; inside the
+# zone that allow_paths can open, secret files stay forbidden at any depth.
+OURS_SECRET_PATTERNS = ("ours/**/.env", "ours/**/.env.*")
 DEFAULT_TEST_GLOBS = (
     "tests/**",
     "**/test_*.py",
@@ -117,6 +125,7 @@ class Config:
     test_timeout_s: int = pc.DEFAULT_TIMEOUTS["tests_s"]  # [timeouts] tests_s
     gate_timeout_s: int = pc.DEFAULT_TIMEOUTS["gate_ms"] // 1000
     forbidden_paths: tuple[str, ...] = DEFAULT_FORBIDDEN_PATHS
+    allow_paths: tuple[str, ...] = ()
     test_globs: tuple[str, ...] = DEFAULT_TEST_GLOBS
     allow_modified_tests: tuple[str, ...] = ()
     required_sections: tuple[str, ...] = DEFAULT_REQUIRED_SECTIONS
@@ -134,18 +143,23 @@ def load_config(board: Path) -> Config:
     for heading in sections:
         if not re.match(r"^##\s+\S", heading):
             raise CheckError(f"config: required section {heading!r} must start with '## '")
+    allow_paths = tuple(checks.get("allow_paths", ()))
+    for pattern in allow_paths:
+        if not pattern.strip().startswith("ours/"):
+            raise CheckError(f"config: allow_paths {pattern!r} must start with 'ours/'")
     cfg = Config(
         base_branch=project["project"]["base_branch"],
         symphony_bin=project["tools"]["symphony"],
         test_timeout_s=project["timeouts"]["tests_s"],
         gate_timeout_s=project["timeouts"]["gate_ms"] // 1000,
         forbidden_paths=DEFAULT_FORBIDDEN_PATHS + tuple(checks.get("forbidden_paths", ())),
+        allow_paths=allow_paths,
         test_globs=tuple(checks.get("test_globs", DEFAULT_TEST_GLOBS)),
         allow_modified_tests=tuple(checks.get("allow_modified_tests", ())),
         required_sections=sections,
         max_check_failures=checks.get("max_check_failures", DEFAULT_MAX_CHECK_FAILURES),
     )
-    for pattern in (*cfg.forbidden_paths, *cfg.test_globs, *cfg.allow_modified_tests):
+    for pattern in (*cfg.forbidden_paths, *cfg.allow_paths, *cfg.test_globs, *cfg.allow_modified_tests):
         compile_glob(pattern)
     return cfg
 
@@ -368,8 +382,18 @@ def _under(path: str, directory: str) -> bool:
 
 
 def forbidden_violations(changed: set[str], cfg: Config) -> list[str]:
-    is_forbidden = _matcher(cfg.forbidden_paths)
-    return [f"forbidden path changed: {_clean(p)}" for p in sorted(changed) if is_forbidden(p)]
+    in_contour = _matcher(CONTROL_CONTOUR)
+    others = tuple(p for p in cfg.forbidden_paths if p != OURS_PATTERN)
+    in_other = _matcher(others + OURS_SECRET_PATTERNS)
+    in_ours = _matcher((OURS_PATTERN,))
+    is_allowed = _matcher(cfg.allow_paths)
+    problems = []
+    for path in sorted(changed):
+        if in_contour(path):
+            problems.append(f"forbidden path changed: {_clean(path)} (control contour)")
+        elif in_other(path) or (in_ours(path) and not is_allowed(path)):
+            problems.append(f"forbidden path changed: {_clean(path)}")
+    return problems
 
 
 def test_violations(repo: Path, base: str, cfg: Config) -> list[str]:

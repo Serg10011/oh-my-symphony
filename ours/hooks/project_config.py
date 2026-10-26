@@ -80,6 +80,7 @@ _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
     "tools": {"python": (str, True), "symphony": (str, True), "claude": (str, True)},
     "checks": {
         "forbidden_paths": (list, False),
+        "allow_paths": (list, False),
         "test_globs": (list, False),
         "allow_modified_tests": (list, False),
         "required_sections": (list, False),
