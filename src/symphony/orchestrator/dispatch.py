@@ -951,6 +951,17 @@ async def _hold_ticket_with_bad_level(
         reason = exc.message
     else:
         return False
+    await _block_ticket_for_bad_level(self, issue, cfg, reason)
+    return True
+
+
+async def _block_ticket_for_bad_level(
+    self: Orchestrator, issue: Issue, cfg: ServiceConfig, reason: str
+) -> None:
+    """Log `level_rejected`, move the ticket to the Blocked lane, add `## Level`.
+
+    Shared by the start-of-run check and the mid-run phase transition.
+    """
     target = _rewind_budget_target_state(cfg)
     log.warning(
         "level_rejected",
@@ -961,7 +972,7 @@ async def _hold_ticket_with_bad_level(
         reason=reason,
     )
     if not target:
-        return True
+        return
     try:
         await asyncio.to_thread(self._tracker_call_update_state, cfg, issue, target)
         await asyncio.to_thread(
@@ -972,7 +983,6 @@ async def _hold_ticket_with_bad_level(
             "level_hold_failed", identifier=issue.identifier, error=str(exc)
         )
         self._record_tracker_error(issue.id, exc)
-    return True
 
 
 # ------------------------------------------------------------------

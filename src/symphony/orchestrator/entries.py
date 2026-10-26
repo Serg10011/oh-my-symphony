@@ -100,6 +100,9 @@ class RunningEntry:
     cost_usd: float | None = None
     cost_session_id: str | None = None
     cost_session_last: float | None = None
+    # Set once `level_unusable_for_stall` is logged, so the reconcile tick
+    # does not repeat it for the rest of the run.
+    level_stall_warned: bool = False
     # Cumulative state-local total tokens at the close of the previous
     # turn — used by the EMA updater to derive per-turn deltas. Reset to
     # 0 alongside `codex_state_total_tokens` on phase transitions so the

@@ -909,7 +909,10 @@ skipped. The per-turn increment (`turn_cost_usd`), the run total so far
 the final `cost_usd`. A crash-continuation run counts from the predecessor's
 last recorded session value, so each run row holds only its own spend. The
 amount is claude's list-price figure (`costBasis: "list"`); on a subscription
-it is notional, not billed money. Per-model `modelUsage` is not stored.
+it is notional, not billed money. The `turn_completed` event also carries
+`model_used`: the name of the main model of the turn (largest `costUSD` in
+`model_usage_since_last_result`, else `modelUsage`), and it is absent when
+the frame has no usable data. The per-model breakdown itself is not stored.
 
 **TUI vs web app.** The web app is the full browser editor for file boards; it
 uses the same tracker/workflow modules as the CLI. The TUI is keyboard-first:

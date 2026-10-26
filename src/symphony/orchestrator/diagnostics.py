@@ -113,6 +113,7 @@ _ALLOWED_FIELDS: dict[str, tuple[str, ...]] = {
         "turn_cost_usd",
         "cost_usd",
         "session_cost_usd",
+        "model_used",
         "commit_sha",
     ),
     "turn_failed": ("turn", "reason", "stderr_lines"),

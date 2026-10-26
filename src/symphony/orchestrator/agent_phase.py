@@ -34,6 +34,7 @@ from ..issue import Issue, normalize_state
 from ..prompt import build_first_turn_prompt
 from ..stats import board_health_summary
 from ..workflow import ServiceConfig
+from ..workflow.levels import LevelError
 from ..workflow.presets import guess_lane_preset
 from .constants import EMPTY_TURN_LOOP_THRESHOLD
 from .contracts import _build_result, contract_producing_states, evaluate_contract
@@ -55,6 +56,7 @@ from .parsing import _parse_findings_rows
 from . import attempt as agent_attempt
 from .core_support import _has_app_release_label, _normalize_agent_pid
 from .diagnostics import nonnegative_usd
+from .dispatch import _block_ticket_for_bad_level
 from ..logging import get_logger
 
 if TYPE_CHECKING:
@@ -215,7 +217,17 @@ async def _transition_agent_phase(
     # walks several states inside one dispatch, so the
     # kind must be re-resolved from the unrouted config
     # here — not reused from the lane we started in.
-    phase_cfg = _config_for_issue_agent(base_cfg, issue)
+    try:
+        phase_cfg = _config_for_issue_agent(base_cfg, issue)
+    except LevelError as exc:
+        # The card's level was broken mid-run: block it like an exhausted
+        # rewind budget instead of failing the worker with an error.
+        await _block_ticket_for_bad_level(self, issue, base_cfg, exc.message)
+        if running_entry is not None:
+            running_entry.issue = replace(
+                issue, state=_rewind_budget_target_state(base_cfg) or issue.state
+            )
+        return None
     if phase_cfg.agent.kind != cfg.agent.kind:
         log.info(
             "stage_backend_rerouted",
@@ -1099,20 +1111,20 @@ async def _on_codex_event(self: Orchestrator, issue_id: str, event: dict[str, An
             cost_usd=entry.cost_usd,
             last_message=(entry.last_codex_message or "")[:160],
         )
-        self._append_run_event(
-            entry,
-            "turn_completed",
-            {
-                "turn": entry.turn_count,
-                "input_tokens": entry.codex_input_tokens,
-                "cache_input_tokens": entry.codex_cache_input_tokens,
-                "output_tokens": entry.codex_output_tokens,
-                "total_tokens": entry.codex_total_tokens,
-                "turn_cost_usd": turn_cost_usd,
-                "cost_usd": entry.cost_usd,
-                "session_cost_usd": entry.cost_session_last,
-            },
-        )
+        turn_event: dict[str, Any] = {
+            "turn": entry.turn_count,
+            "input_tokens": entry.codex_input_tokens,
+            "cache_input_tokens": entry.codex_cache_input_tokens,
+            "output_tokens": entry.codex_output_tokens,
+            "total_tokens": entry.codex_total_tokens,
+            "turn_cost_usd": turn_cost_usd,
+            "cost_usd": entry.cost_usd,
+            "session_cost_usd": entry.cost_session_last,
+        }
+        model_used = _model_used(payload) if isinstance(payload, dict) else None
+        if model_used is not None:
+            turn_event["model_used"] = model_used
+        self._append_run_event(entry, "turn_completed", turn_event)
         self._record_token_attention_for_turn(entry, cfg)
         self._record_stats_turn(entry)
         # C3 — adaptive token budget. Sample = per-turn state-local
@@ -1247,6 +1259,33 @@ async def _on_codex_event(self: Orchestrator, issue_id: str, event: dict[str, An
     )
     if len(debug.recent_events) > 50:
         debug.recent_events = debug.recent_events[-50:]
+
+
+def _model_used(payload: dict[str, Any]) -> str | None:
+    """Name of the model that answered the turn, from a `result` frame.
+
+    Prefers `model_usage_since_last_result` (the last turn) over the
+    session-cumulative `modelUsage`; picks the model with the largest
+    `costUSD` (first one on ties or missing cost). None when unusable.
+    """
+    usage = payload.get("model_usage_since_last_result")
+    if not isinstance(usage, dict) or not usage:
+        usage = payload.get("modelUsage")
+    if not isinstance(usage, dict):
+        return None
+    best: str | None = None
+    best_cost = -1.0
+    for name, info in usage.items():
+        if not isinstance(name, str) or not name or len(name) > 100:
+            continue
+        cost = 0.0
+        if isinstance(info, dict):
+            raw = info.get("costUSD")
+            if isinstance(raw, (int, float)) and not isinstance(raw, bool):
+                cost = float(raw)
+        if cost > best_cost:
+            best, best_cost = name, cost
+    return best
 
 
 def _apply_cost_usd(
