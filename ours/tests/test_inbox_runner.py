@@ -611,6 +611,19 @@ def test_internal_error_does_not_crash_pass(env: Env) -> None:
     assert "ВНУТРЕННЯЯ ОШИБКА" in env.log("S4-03.run.log")
 
 
+def test_internal_error_report_has_traceback(env: Env) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run")
+
+    def boom(argv):
+        raise RuntimeError("boom-marker")
+    env.fake.on_call = boom
+    env.pass_()
+    log = env.log("S4-03.run.log")
+    assert "ВНУТРЕННЯЯ ОШИБКА" in log
+    assert "Traceback (most recent call last)" in log and "boom-marker" in log
+
+
 def test_files_and_dirs_are_owner_only(env: Env) -> None:
     env.task("S4-03")
     env.put("S4-03.run")
@@ -865,6 +878,54 @@ def test_run_process_stdin_closed_and_output_merged() -> None:
 def test_run_process_missing_binary_is_clean_error() -> None:
     done = ir.run_process(["/nonexistent/gh", "x"])
     assert done.rc == 127 and "не удалось запустить" in done.out
+
+
+SLOW_ECHO = "import sys, time; data = sys.stdin.read(); time.sleep(1.5); print('got:' + data)"
+
+
+def test_run_process_slow_child_gets_stdin_once() -> None:
+    # the child outlives the 0.5 s poll, so communicate() is called again: it must not get input twice
+    done = ir.run_process([sys.executable, "-c", SLOW_ECHO], timeout=20, stdin_text="hello-stdin")
+    assert done.rc == 0 and "got:hello-stdin" in done.out
+
+
+def test_open_terminal_slow_osascript(tmp_path: Path) -> None:
+    out = tmp_path / "args.txt"
+    stub = tmp_path / "osascript"
+    stub.write_text(f"#!{sys.executable}\nimport sys, time, pathlib\ntime.sleep(1.5)\n"
+                    f"pathlib.Path({str(out)!r}).write_text(repr(sys.argv[1:]) + '\\n' + sys.stdin.read())\n")
+    stub.chmod(0o755)
+    ok, _ = ir.open_terminal(str(stub), "the-command")
+    assert ok
+    argv_line, script = out.read_text().split("\n", 1)
+    assert argv_line == repr(["-", "the-command"]) and script == ir.TERMINAL_SCRIPT
+
+
+def test_run_process_exception_while_waiting_kills_child(monkeypatch) -> None:
+    started: list[subprocess.Popen] = []
+
+    class Flaky(subprocess.Popen):
+        calls = 0
+
+        def communicate(self, *args, **kwargs):
+            Flaky.calls += 1
+            if Flaky.calls == 1:
+                raise subprocess.TimeoutExpired(self.args, 0.5)
+            if Flaky.calls == 2:
+                raise RuntimeError("wait broke")
+            return super().communicate(*args, **kwargs)
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            started.append(self)
+
+    monkeypatch.setattr(ir.subprocess, "Popen", Flaky)
+    with pytest.raises(RuntimeError, match="wait broke"):
+        ir.run_process([sys.executable, "-c", "import time; time.sleep(60)"], timeout=60)
+    (proc,) = started
+    assert proc.poll() is not None  # killed and reaped, not left running
+    with pytest.raises(ProcessLookupError):
+        os.kill(proc.pid, 0)
 
 
 def test_run_process_stop_interrupts() -> None:

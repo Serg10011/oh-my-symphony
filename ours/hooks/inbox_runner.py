@@ -29,6 +29,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -200,6 +201,11 @@ class Proc:
     interrupted: bool = False
 
 
+def kill_group(proc: subprocess.Popen) -> None:
+    with contextlib.suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, signal.SIGKILL)
+
+
 def run_process(
     argv: list[str],
     cwd: Path | None = None,
@@ -218,24 +224,32 @@ def run_process(
         return Proc(127, f"не удалось запустить {argv[0]}: {exc.strerror or exc}")
     deadline = time.monotonic() + timeout
     timed_out = interrupted = False
-    while True:
-        try:
-            out, _ = proc.communicate(input=stdin_text, timeout=0.5)
-            break
-        except subprocess.TimeoutExpired:
-            if STOP.is_set():
-                interrupted = True
-            elif time.monotonic() >= deadline:
-                timed_out = True
-            else:
-                continue
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(proc.pid, signal.SIGKILL)
+    pending_input = stdin_text  # only the first communicate() call may get input
+    try:
+        while True:
             try:
-                out, _ = proc.communicate(timeout=10)
+                out, _ = proc.communicate(input=pending_input, timeout=0.5)
+                break
             except subprocess.TimeoutExpired:
-                out = ""
-            break
+                pending_input = None
+                if STOP.is_set():
+                    interrupted = True
+                elif time.monotonic() >= deadline:
+                    timed_out = True
+                else:
+                    continue
+                kill_group(proc)
+                try:
+                    out, _ = proc.communicate(timeout=10)
+                except subprocess.TimeoutExpired:
+                    out = ""
+                break
+    except BaseException:
+        # any unexpected error: never leave the child (or its group) running unattended
+        kill_group(proc)
+        with contextlib.suppress(Exception):
+            proc.communicate(timeout=10)
+        raise
     return Proc(proc.returncode if proc.returncode is not None else -9, out or "", timed_out, interrupted)
 
 
@@ -481,7 +495,7 @@ class Runner:
             try:
                 handled = self.handle(name)
             except Exception as exc:  # noqa: BLE001 - the service must not die on one bad file
-                self.skip(name, f"внутренняя ошибка: {exc!r}")
+                self.skip(name, f"внутренняя ошибка: {exc!r}\n{traceback.format_exc()}")
                 handled = None
             if handled == "merge" and self.ops.code_hash() != self.start_hash:
                 return True
@@ -541,6 +555,7 @@ class Runner:
                 self.do_test(report, code)
         except Exception as exc:  # noqa: BLE001
             report.line(f"ВНУТРЕННЯЯ ОШИБКА: {exc!r}")
+            report.output(traceback.format_exc())
         finally:
             report.line("Конец.")
             report.close()
