@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, cast
 from ..errors import SymphonyError
 from ..issue import Issue, normalize_state
 from ..workflow import ServiceConfig, SYMPHONY_BRANCH_PREFIX
+from ..workflow.levels import LevelError
 from ..utils.auto_merge import AutoMergeResult
 from ..workspace import COMMIT_FAILED, CommitOutcome
 from .constants import (
@@ -654,7 +655,21 @@ def _stall_timeout_ms_for_entry(
         for 900 s died at codex's 300 s. Resolve per entry, then let
         `agent.stall_timeout_ms_by_state` widen it for heavy lanes.
         """
-    entry_cfg = _config_for_issue_agent(cfg, entry.issue)
+    try:
+        entry_cfg = _config_for_issue_agent(cfg, entry.issue)
+    except LevelError as exc:
+        # The card was edited mid-run: keep the stall watchdog alive on the
+        # base config (as for a card without a level), log once per run.
+        if not entry.level_stall_warned:
+            entry.level_stall_warned = True
+            log.warning(
+                "level_unusable_for_stall",
+                issue_id=entry.issue.id,
+                identifier=entry.issue.identifier,
+                task_level=entry.issue.level,
+                reason=exc.message,
+            )
+        entry_cfg = cfg
     kind = entry.agent_kind or entry_cfg.agent.kind
     if kind != entry_cfg.agent.kind:
         entry_cfg = replace(entry_cfg, agent=replace(entry_cfg.agent, kind=kind))
