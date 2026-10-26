@@ -674,15 +674,13 @@ def test_the_hook_does_nothing_when_integration_is_off(henv: Env, monkeypatch: p
     assert "## Integration" not in card_body(henv, "OMS-12")
 
 
-@pytest.mark.parametrize("case", ["in-progress", "no-label", "no-request", "null-task"])
+@pytest.mark.parametrize("case", ["no-label", "no-request", "null-task"])
 def test_the_hook_skips_what_is_not_a_finished_subtask(
     henv: Env, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
     subtask(henv, "OMS-12", monkeypatch, {"a.txt": "a\n"})
     tip = git(henv.code, "rev-parse", BRANCH)
-    if case == "in-progress":
-        review_card(henv, "OMS-12", state="In Progress")
-    elif case == "no-label":
+    if case == "no-label":
         review_card(henv, "OMS-12", labels="[backend]")
     elif case == "no-request":
         review_card(henv, "OMS-12", request=None)
@@ -948,3 +946,71 @@ def test_after_run_commits_and_then_calls_integrate(tmp_path: Path) -> None:
     assert [c.rsplit("/", 1)[-1] for c in calls] == ["check.py hook", "integrate.py hook"]
     assert "wip: turn " in git(ws, "log", "-1", "--format=%s")  # maybe after a [no-test] marker
     assert git(ws, "status", "--porcelain") == ""
+
+
+# ---------------------------------------------------------------------------
+# the merged record and two small things (S4-13)
+# ---------------------------------------------------------------------------
+
+
+def merged_record_path(env: Env, ident: str) -> Path:
+    return env.board / ".ours-state" / f"{ident}.merged.json"
+
+
+def test_done_leaves_the_merged_record_with_the_tree(henv: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    sub = subtask(henv, "OMS-12", monkeypatch, {"a.txt": "a\n"})
+    assert run_hook(henv, "OMS-12", monkeypatch) == 0
+    new = git(henv.code, "rev-parse", BRANCH)
+    record = json.loads(merged_record_path(henv, "OMS-12").read_text(encoding="utf-8"))
+    assert set(record) == {"tree", "commit", "task", "branch", "source", "at"}
+    assert record["tree"] == git(henv.ws("OMS-12"), "rev-parse", "HEAD^{tree}")
+    assert record["commit"] == new
+    assert (record["task"], record["branch"], record["source"]) == (TASK, BRANCH, f"symphony/OMS-12@{sub}")
+    (event,) = events(henv)
+    assert event["outcome"] == "done" and event["merged_record"] == "written"
+
+
+def test_a_merge_without_changes_leaves_the_record_too(henv: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    subtask(henv, "OMS-12", monkeypatch)  # no files
+    assert run_hook(henv, "OMS-12", monkeypatch) == 0
+    record = json.loads(merged_record_path(henv, "OMS-12").read_text(encoding="utf-8"))
+    assert record["commit"] is None
+    assert record["tree"] == git(henv.ws("OMS-12"), "rev-parse", "HEAD^{tree}")
+
+
+def test_no_record_when_the_card_does_not_become_done(henv: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    point_to_symphony(henv, NOOP_SYMPHONY)
+    subtask(henv, "OMS-12", monkeypatch, {"a.txt": "a\n"})
+    assert run_hook(henv, "OMS-12", monkeypatch) == 0
+    assert card_state(henv, "OMS-12") == "Human Review"
+    assert not merged_record_path(henv, "OMS-12").exists()
+    assert events(henv)[0]["merged_record"] == "not written"
+
+
+def test_no_record_after_a_skip(henv: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    subtask(henv, "OMS-12", monkeypatch, {"a.txt": "a\n"}, mark=False)
+    assert run_hook(henv, "OMS-12", monkeypatch) == 0
+    assert [e["outcome"] for e in events(henv)] == ["skipped"]
+    assert not merged_record_path(henv, "OMS-12").exists()
+
+
+def test_an_untouched_file_in_symphony_is_not_dirt(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path / "repo")
+    write(repo / ".symphony" / "state.json", "{}\n")
+    write(repo / "kanban" / "card.md", "card\n")
+    # Both are outside the pathspec of the standard block: neither counts.
+    assert integrate._dirty_files(repo) == []
+    write(repo / "root.txt", "x\n")
+    assert integrate._dirty_files(repo) == ["root.txt"]
+
+
+def test_a_card_outside_human_review_is_passed_over_silently(
+    henv: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    subtask(henv, "OMS-12", monkeypatch, {"a.txt": "a\n"})
+    tip = git(henv.code, "rev-parse", BRANCH)
+    review_card(henv, "OMS-12", state="In Progress")
+    assert run_hook(henv, "OMS-12", monkeypatch) == 0
+    assert events(henv) == []
+    assert git(henv.code, "rev-parse", BRANCH) == tip
+    assert not merged_record_path(henv, "OMS-12").exists()
