@@ -93,6 +93,8 @@ _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
         "test_globs": (list, False),
         "allow_modified_tests": (list, False),
         "required_sections": (list, False),
+        "worker_required_sections": (list, False),
+        "doc_paths": (list, False),
         "max_check_failures": (int, False),
     },
     "timeouts": {

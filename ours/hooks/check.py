@@ -19,12 +19,16 @@ collected), the project tests last and only when the fast checks passed:
                 when the worktree was created; must be an ancestor of HEAD
     3. forbidden paths changed relative to the base
     4. existing tests changed relative to the base
-    5. card shape: required sections present and non-empty
+    5. card shape: required sections present and non-empty (a subtask,
+       see integrate.is_subtask, needs [checks] worker_required_sections:
+       Verify writes those, its card has no Document stage)
     6. project tests: `/bin/bash <board>/test.sh`, own process group; exit 0
        and the last `PIPELINE_TESTS passed=.. skipped=.. failed=..` line:
-       failed = 0, passed >= baseline, skipped <= baseline. The gate skips
-       this one check when the tree of the working copy is the tree that
-       passed `hook` and was merged by integrate.py (<ID>.merged.json).
+       failed = 0, passed >= baseline, skipped <= baseline. This one check is
+       skipped (S4-13) when the tree of the working copy is the tree that
+       passed `hook` and was merged by integrate.py (<ID>.merged.json), and
+       (S4-16) when every changed path matches [checks] doc_paths (a
+       non-empty change set; checks 1-5 always run).
 
 One check per card at a time (<board>/.ours-state/<ID>.lock): a second hook
 skips, the gate waits within its timeout.
@@ -81,6 +85,8 @@ DEFAULT_TEST_GLOBS = (
     "**/*.spec.*",
 )
 DEFAULT_REQUIRED_SECTIONS = ("## Wiki Updates", "## As-Is -> To-Be Report")
+# A subtask has no Document stage: Verify writes these two.
+DEFAULT_WORKER_REQUIRED_SECTIONS = ("## QA Evidence", "## Merge Status")
 DEFAULT_MAX_CHECK_FAILURES = 3
 
 BOARD_DIR = pc.BOARD_DIR
@@ -138,6 +144,10 @@ class Config:
     test_globs: tuple[str, ...] = DEFAULT_TEST_GLOBS
     allow_modified_tests: tuple[str, ...] = ()
     required_sections: tuple[str, ...] = DEFAULT_REQUIRED_SECTIONS
+    worker_required_sections: tuple[str, ...] = DEFAULT_WORKER_REQUIRED_SECTIONS
+    doc_paths: tuple[str, ...] = ()  # changes only here: the full test run is skipped
+    integration: bool = False  # [integration] enabled: who is a subtask
+    worker_label: str = pc.DEFAULT_INTEGRATION["worker_label"]
     max_check_failures: int = DEFAULT_MAX_CHECK_FAILURES
 
 
@@ -149,7 +159,10 @@ def load_config(board: Path) -> Config:
         raise CheckError(f"config: {exc}") from None
     checks = project["checks"]
     sections = tuple(checks.get("required_sections", DEFAULT_REQUIRED_SECTIONS))
-    for heading in sections:
+    worker_sections = tuple(
+        checks.get("worker_required_sections", DEFAULT_WORKER_REQUIRED_SECTIONS)
+    )
+    for heading in (*sections, *worker_sections):
         if not re.match(r"^##\s+\S", heading):
             raise CheckError(f"config: required section {heading!r} must start with '## '")
     allow_paths = tuple(checks.get("allow_paths", ()))
@@ -166,9 +179,16 @@ def load_config(board: Path) -> Config:
         test_globs=tuple(checks.get("test_globs", DEFAULT_TEST_GLOBS)),
         allow_modified_tests=tuple(checks.get("allow_modified_tests", ())),
         required_sections=sections,
+        worker_required_sections=worker_sections,
+        doc_paths=tuple(checks.get("doc_paths", ())),
+        integration=project["integration"]["enabled"],
+        worker_label=project["integration"]["worker_label"],
         max_check_failures=checks.get("max_check_failures", DEFAULT_MAX_CHECK_FAILURES),
     )
-    for pattern in (*cfg.forbidden_paths, *cfg.allow_paths, *cfg.test_globs, *cfg.allow_modified_tests):
+    for pattern in (
+        *cfg.forbidden_paths, *cfg.allow_paths, *cfg.test_globs, *cfg.allow_modified_tests,
+        *cfg.doc_paths,
+    ):
         compile_glob(pattern)
     return cfg
 
@@ -515,6 +535,20 @@ def section_nonempty(body: str, heading: str) -> bool:
     return bool(inline.strip() or section.strip())
 
 
+def is_subtask_card(card: Path, cfg: Config) -> bool:
+    """Same definition as integrate.py (integrate.is_subtask); a card whose
+    front matter cannot be read is an ordinary card (the stricter sections)."""
+    if not cfg.integration:
+        return False
+    import integrate  # lazy: integrate.py imports this module
+
+    try:
+        front = integrate.read_card_front(card)
+    except integrate.IntegrateError:
+        return False
+    return integrate.is_subtask(front, {"enabled": True, "worker_label": cfg.worker_label})
+
+
 def card_violations(card: Path, cfg: Config) -> list[str]:
     try:
         text = card.read_text(encoding="utf-8")
@@ -523,9 +557,10 @@ def card_violations(card: Path, cfg: Config) -> list[str]:
     except (OSError, UnicodeDecodeError) as exc:
         return [f"card unreadable: {BOARD_DIR}/{card.name}: {exc}"]
     _, body = split_card(text)
+    required = cfg.worker_required_sections if is_subtask_card(card, cfg) else cfg.required_sections
     return [
         f"card section missing or empty: {heading}"
-        for heading in cfg.required_sections
+        for heading in required
         if not section_nonempty(body, heading)
     ]
 
@@ -644,9 +679,9 @@ class Result:
     reasons: list[str] = field(default_factory=list)
     tail: str = ""
     cfg: Config | None = None
-    tests_skipped: bool = False  # gate only: the merged tree, tests not run again
+    tests_skipped: bool = False  # tests not run: the merged tree (gate) or only doc paths changed
     note: str = ""  # one line for the report and the log when tests were skipped
-    tests: str = ""  # "skipped" | "full" for a gate that met a merged record
+    tests: str = ""  # "skipped" | "full" for a gate that met a merged record; "skipped-docs"
     tests_reason: str = ""  # why the record could not skip the tests
 
 
@@ -748,12 +783,23 @@ def _merged_skip(ctx: Context, merged: dict) -> tuple[str | None, str]:
     )
 
 
+def _docs_only(changed: set[str], cfg: Config) -> str | None:
+    """The skip note when the change set is non-empty and every path is in doc_paths."""
+    if not cfg.doc_paths or not changed:
+        return None
+    in_docs = _matcher(cfg.doc_paths)
+    if not all(in_docs(path) for path in changed):
+        return None
+    return f"tests skipped: only doc paths changed ({len(changed)} files)"
+
+
 def run_checks(ctx: Context, cfg: Config | None = None) -> Result:
     cfg = cfg or load_config(ctx.workflow_dir)
     # Only the gate reads the record, and it is used up here, passed or not.
     merged = _take_merged(ctx) if ctx.mode == "gate" else None
     reasons: list[str] = []
     baseline: dict = {}
+    changed: set[str] = set()
     try:
         baseline = load_baseline(ctx.workflow_dir, cfg)
     except CheckError as exc:
@@ -764,7 +810,8 @@ def run_checks(ctx: Context, cfg: Config | None = None) -> Result:
         reasons.append(str(exc))
     else:
         board_dir = os.environ.get("SYMPHONY_BOARD_ROOT_NAME") or BOARD_DIR
-        reasons += forbidden_violations(changed_paths(repo, base, board_dir), cfg)
+        changed = changed_paths(repo, base, board_dir)
+        reasons += forbidden_violations(changed, cfg)
         reasons += test_violations(repo, base, cfg)
     reasons += card_violations(ctx.card, cfg)
     if reasons:
@@ -775,6 +822,10 @@ def run_checks(ctx: Context, cfg: Config | None = None) -> Result:
         if note is not None:
             return Result(True, [], "", cfg, tests_skipped=True, note=note, tests="skipped")
         mark = {"tests": "full", "tests_reason": why}
+    note = _docs_only(changed, cfg)
+    if note is not None:
+        mark["tests"] = "skipped-docs"
+        return Result(True, [], "", cfg, tests_skipped=True, note=note, **mark)
     failure, tail, summary = run_tests(
         ctx.workspace, ctx.workflow_dir / TEST_SCRIPT, cfg, ctx.parent_pid
     )
@@ -1124,7 +1175,9 @@ def _hook_checked(ctx: Context) -> int:
                 _write_pass_mark(ctx, tree, head)
             except OSError as exc:
                 log_event(ctx, ctx.issue_id, "hook", "error", f"cannot write the pass mark: {exc}")
-        log_event(ctx, ctx.issue_id, "hook", "pass", "")
+        extra = {"tests": result.tests} if result.tests else {}
+        reason = result.note if result.tests_skipped else ""
+        log_event(ctx, ctx.issue_id, "hook", "pass", reason, **extra)
         _emit(_format_report("hook", ctx.issue_id, result))
         return 0
     if os.getppid() != ctx.parent_pid:

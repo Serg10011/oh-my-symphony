@@ -28,8 +28,8 @@ The branch is NOT called symphony/<TASK>: the task's own manager card is run
 by an agent in a worktree on that very name, and worktree.py renames it on a
 clean start, which would destroy the integration branch.
 
-As a library (worktree.py): read_card_front, task_of, integration_branch,
-ensure_integration_branch. ensure_integration_branch takes no lock; the caller
+As a library (worktree.py, check.py): read_card_front, is_subtask, task_of,
+integration_branch, ensure_integration_branch. ensure_integration_branch takes no lock; the caller
 holds the shared worktree lock (the CLI does).
 
 Standard library only, Python >= 3.11, POSIX.
@@ -151,6 +151,17 @@ def check_task_id(task: str, project: dict, card_id: str | None = None) -> str:
     return task
 
 
+def is_subtask(front: dict, integration: dict) -> bool:
+    """A card is a subtask when [integration] is on, it carries the worker label
+    and has a `request`. The one definition: worktree.py, the hook and check.py
+    (card sections) all use it; the `request` value itself is checked by task_of."""
+    return bool(
+        integration["enabled"]
+        and integration["worker_label"].lower() in front["labels"]
+        and front["request"] is not None
+    )
+
+
 def task_of(front: dict, project: dict, card_id: str | None = None) -> str | None:
     """The task a subtask belongs to, or None for an ordinary card.
 
@@ -158,15 +169,9 @@ def task_of(front: dict, project: dict, card_id: str | None = None) -> str | Non
     `request`. A `request` that is present but wrong stops the start: quietly
     starting from the base branch would hide a broken link.
     """
-    integration = project["integration"]
-    if not integration["enabled"]:
+    if not is_subtask(front, project["integration"]):
         return None
-    if integration["worker_label"].lower() not in front["labels"]:
-        return None
-    request = front["request"]
-    if request is None:
-        return None
-    return check_task_id(request, project, card_id)
+    return check_task_id(front["request"], project, card_id)
 
 
 def integration_branch(project: dict, task: str) -> str:
