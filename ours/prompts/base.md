@@ -56,13 +56,15 @@ Readers include non-developers. Start every non-trivial section except `## Triag
 헤더와 요약 줄은 한국어로 쓴다 (**무엇**/**왜**/**As-Is -> To-Be**); code spans (`path:line`, identifiers, commands)는 영어 그대로 둔다.
 {% endif %}
 
-Caps: `## Security Audit` exactly 7 rows; `## As-Is -> To-Be Report` <= 20 lines; `## Human Review` <= 18 lines; other sections <= 10 lines, overflow to `docs/{{ issue.identifier }}/<stage>/details.md` plus one link line. Cite <= 3 `path:line` anchors; one thing per bullet; show, do not tell (`200 passed` beats `all tests passed`).
+Caps: `## Security Audit` exactly 7 rows; `## As-Is -> To-Be Report` <= 20 lines; `## Human Review` <= 18 lines; `## Review Notes` and other sections <= 10 lines, overflow to `docs/{{ issue.identifier }}/<stage>/details.md` plus one link line. Cite <= 3 `path:line` anchors; one thing per bullet; show, do not tell (`200 passed` beats `all tests passed`).
 
 ## Hard rules
 
 - Never skip Verify. Never mark `Done` without `## QA Evidence`, `## Merge Status`, `## Wiki Updates`, and `## As-Is -> To-Be Report`.
 - Document ends in `Human Review`: that is the normal completion path of this pipeline. Never set `Done` yourself: only a human sets it, through Confirm done (`confirm_done`).
 - Never silence failing tests, hide errors, or add fake success paths. Fix the root cause or move the ticket to `Blocked`.
+- Test budget: how often tests may run is set by the stage prompt (`Test budget` in In Progress and Verify); the host runs the full suite once per pass.
+- Return policy: Verify and Document rewind a card only for a substantive violation or breakage, as the stage prompts define; minor remarks go to `## Review Notes`.
 - Touch only what the ticket requires; no drive-by refactors.
 - Every ticket artefact lives under `docs/{{ issue.identifier }}/`.
 {% if artifacts_dir %}- Board deliverables (screenshots, reports, exports a reviewer opens) also go in `{{ artifacts_dir }}/` at the workspace root; the host copies them onto the card after each turn. Optional `{{ artifacts_dir }}/manifest.json` (`{"artifacts": [{"file": "shot.png", "title": "…", "summary": "…"}]}`) titles them. This directory is untracked: evidence still belongs in `docs/{{ issue.identifier }}/`.

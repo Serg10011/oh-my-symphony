@@ -16,4 +16,10 @@ Write source, tests, `docs/{{ issue.identifier }}/work/`, and ticket comments; r
 7. Append `## Pipeline Route`: always route to `Verify` (note if the trivial non-runtime QA short path applies, but never skip Verify).
 8. Set state to `Verify`.
 
+Test budget: the host runs the full suite (`test.sh`) once per pass -- `check.py hook` after Document -- so do not duplicate it.
+- Docs/text-only change (`docs/`, `*.md`): do not run tests; run only the cheap checks named in `## Acceptance Tests` (grep, diff, heading count and the like).
+- Code change: run only what `## Acceptance Tests` names. If the only available command is the full `test.sh`, run it at most once, as the last step, and save its output under `docs/{{ issue.identifier }}/work/`.
+- After a rewind, if the fix is again text-only, do not run `test.sh` again.
+- State it in `## Acceptance Tests` too: `Full suite: run by the host hook after Document`.
+
 On rewind: `$SYMPHONY_REWIND_SCOPE` may contain JSON rows from `## Review Findings` or `## QA Failure`. Limit this turn to those rows unless a one-line `## Scope Expansion` explains why more files are required.

@@ -4,10 +4,12 @@ Read `docs/{{ issue.identifier }}/{work,qa}/`, prior sections, and `docs/llm-wik
 
 Write scope: `docs/llm-wiki/`, the user-facing docs this change touched (README / CHANGELOG / config and policy references), the vault under `docs/{{ issue.identifier }}/`, and ticket comments. Do not change behavior: no source or test edits. Do not create commits, tags, branches, or pushes -- the host gate owns delivery history -- and do not merge; a human merges after review.
 
+Document does not run tests and does not repeat Verify's proofs.
+
 1. Read `## Plan`, `## Implementation`, `## Self-Critique`, `## QA Evidence`, `## AC Scorecard`, and `## Merge Status`. Compare brief vs reality: assumptions that held or broke, constraints that surfaced, misleading wiki entries, evidence still `Not proven`.
 2. Update every user-facing doc the change touched: README, CHANGELOG, config references, policies. Cite the verification evidence; do not restate hope. Nothing touched -> say so in `## Wiki Updates`.
 3. Update `docs/llm-wiki/` (relative to your workspace; it is a link into the board folder and is not committed): append a Decision-log row or create/update `docs/llm-wiki/<topic-slug>.md`, then add/refresh its row in `INDEX.md`.
-4. Real defect found while comparing brief vs reality (the change does not do what the ticket promised, evidence contradicts a claim, a shipped doc is now wrong about behavior)? Append `## Document Defect` -- what is wrong, the evidence path, and the exact scope to fix -- set state to `In Progress`, and stop. Do not fix it here; this lane does not change behavior.
+4. Real defect found while comparing brief vs reality (the change does not do what the ticket promised, evidence contradicts a claim, a shipped doc is now wrong about behavior **in substance**)? Append `## Document Defect` -- what is wrong, the evidence path, and the exact scope to fix -- set state to `In Progress`, and stop. Do not fix it here; this lane does not change behavior. Only a defect in substance rewinds. Minor wording inaccuracies go to `## Review Notes` (item: what, where, how to fix) with no rewind; fix them yourself when the fix is text only inside this lane's write scope.
 5. Append `## Learnings` -- 3-4 bullets future work should not rediscover.
 6. Append `## Wiki Updates` -- paths created/modified/removed, one line each.
 7. Append `## As-Is -> To-Be Report` with subsections: `### Goal`, `### As-Is`, `### To-Be`, `### Reasoning`, `### Evidence` (commands/proofs with pass/fail, top evidence path), `### Not Covered`, `### How To Re-run`.
