@@ -55,15 +55,15 @@ def test_stub_has_config_b_levels_and_strict_limits(kit: Kit) -> None:
     assert kit.new().returncode == 0
     project = pc.load_project(kit.board)
     levels = project["levels"]
-    assert levels["default_level"] == "L1"
+    assert levels["default_level"] == "simple"
     assert levels["levels"] == {
-        "L1": {"claude": {"model": "haiku", "effort": "medium"}},
-        "L2": {"claude": {"model": "haiku", "effort": "high"}},
-        "S1": {"claude": {"model": "sonnet", "effort": "high"}},
-        "S2": {"claude": {"model": "sonnet", "effort": "max"}},
+        "simple": {"claude": {"model": "haiku", "effort": "medium"}},
+        "standard": {"claude": {"model": "haiku", "effort": "high"}},
+        "complex": {"claude": {"model": "sonnet", "effort": "high"}},
+        "critical": {"claude": {"model": "sonnet", "effort": "max"}},
     }
     assert project["limits"] == {
-        "max_state_turns": 2, "max_turns": 8, "max_total_turns": 20, "max_attempts": 2,
+        "max_state_turns": 2, "max_turns": 12, "max_total_turns": 20, "max_attempts": 2,
     }
     assert project["checks"]["max_check_failures"] == 2
 
@@ -77,10 +77,10 @@ def test_stub_levels_have_no_own_limits_of_their_own(kit: Kit) -> None:
 def test_stub_workflow_is_accepted_by_the_core(kit: Kit) -> None:
     assert kit.new().returncode == 0
     cfg = core_cfg(kit.board)
-    assert set(cfg.levels) == {"L1", "L2", "S1", "S2"}
-    assert cfg.levels["S2"].claude.effort == "max"
-    assert cfg.agent.default_level == "L1"
-    assert (cfg.agent.max_state_turns, cfg.agent.max_turns) == (2, 8)
+    assert set(cfg.levels) == {"simple", "standard", "complex", "critical"}
+    assert cfg.levels["critical"].claude.effort == "max"
+    assert cfg.agent.default_level == "simple"
+    assert (cfg.agent.max_state_turns, cfg.agent.max_turns) == (2, 12)
     assert (cfg.agent.max_total_turns, cfg.agent.max_attempts) == (20, 2)
 
 
@@ -95,7 +95,7 @@ def test_stub_card_level_reaches_the_claude_command(kit: Kit) -> None:
     card = Issue(id="K-1", identifier="K-1", title="t", description=None, priority=None,
                  state="Todo")
     program = str(kit.bin / "claude")
-    s1 = _config_for_issue_agent(cfg, replace(card, level="S1")).claude.command
+    s1 = _config_for_issue_agent(cfg, replace(card, level="complex")).claude.command
     assert s1.startswith(f"{program} --model sonnet --effort high -p ")
     default = _config_for_issue_agent(cfg, card).claude.command
     assert default.startswith(f"{program} --model haiku --effort medium -p ")
@@ -146,7 +146,7 @@ def test_levels_accept_every_documented_key() -> None:
     out = pc.validate_project(levels(
         default_level="A",
         A={"claude": {"model": "claude-haiku-5-5", "effort": "xhigh"},
-           "codex": {"model": "gpt-x", "effort": "low"}, "max_turns": 4, "max_state_turns": 1},
+           "codex": {"model": "gpt-x", "effort": "low"}, "max_turns": 16, "max_state_turns": 1},
         B={},
     ))["levels"]
     assert out["default_level"] == "A" and set(out["levels"]) == {"A", "B"}
@@ -232,12 +232,12 @@ def test_levels_block_is_valid_yaml_with_odd_values_quoted() -> None:
 
     project = pc.validate_project(levels(
         default_level="L-1",
-        **{"L-1": {"claude": {"model": "claude-x[1m]", "effort": "low"}, "max_turns": 9},
+        **{"L-1": {"claude": {"model": "claude-x[1m]", "effort": "low"}, "max_turns": 16},
            "E": {}},
     ))
     block = yaml.safe_load(pc.levels_yaml(project))
     assert block == {"levels": {
-        "L-1": {"claude": {"model": "claude-x[1m]", "effort": "low"}, "max_turns": 9},
+        "L-1": {"claude": {"model": "claude-x[1m]", "effort": "low"}, "max_turns": 16},
         "E": {},
     }}
 
@@ -246,7 +246,7 @@ def test_levels_with_own_limits_reach_the_core(kit: Kit) -> None:
     assert kit.new().returncode == 0
     toml = kit.board / "project.toml"
     toml.write_text(toml.read_text().replace(
-        "# [levels.LOCAL]\n# max_turns = 40               # не меньше 4 (число активных состояний)\n"
+        "# [levels.LOCAL]\n# max_turns = 40               # не меньше 4 × (1 + max_attempts), как у проекта в целом\n"
         "# max_state_turns = 6",
         "[levels.LOCAL]\nmax_turns = 40\nmax_state_turns = 6"))
     rerender(kit.board)
@@ -266,8 +266,8 @@ def test_project_new_writes_a_card_template_with_level_hints(kit: Kit) -> None:
     path = kit.board / "card-template.md"
     text = path.read_text()
     front = yaml.safe_load(text.split("---\n")[1])
-    assert front["level"] == "L1" and front["state"] == "Todo" and front["id"] == f"{PREFIX}-N"
-    assert "Уровень: L1 — почему такой" in text
+    assert front["level"] == "simple" and front["state"] == "Todo" and front["id"] == f"{PREFIX}-N"
+    assert "Уровень: simple — почему такой" in text
     assert f"/bin/bash {kit.board}/test.sh" in text
     # Outside kanban/: the service must never dispatch the sample.
     assert not list((kit.board / "kanban").glob("*.md"))

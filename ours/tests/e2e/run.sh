@@ -6,7 +6,7 @@
 # Scenarios (fake_claude.py): E2E_BREAK_TEST=1, E2E_SKIP_WORK=1, E2E_DROP_TEST=1.
 # Task levels (TASK-K14): the plain run checks that a card without `level` runs
 # with the default level (--model haiku --effort medium). E2E_LEVELS=1 adds KIT-2
-# (level: S1 -> --model sonnet --effort high) and KIT-3 (level: S9, unknown ->
+# (level: complex -> --model sonnet --effort high) and KIT-3 (level: S9, unknown ->
 # Blocked before any turn). E2E_NO_PROGRESS=1: the agent never advances the stage;
 # with max_state_turns = 2 the card stops after the second turn, no third turn.
 set -euo pipefail
@@ -55,12 +55,12 @@ if [ -n "${E2E_LEVELS:-}" ]; then
   done
   # level goes into the frontmatter of the finished card files (service not started yet);
   # awk, not sed -i: the same line must work with BSD sed on macOS.
-  for pair in "2 S1" "3 S9"; do
+  for pair in "2 complex" "3 S9"; do
     set -- $pair
     awk -v lvl="$2" '{ print } /^state: Todo$/ && !done { print "level: " lvl; done = 1 }' \
       "$B/kanban/KIT-$1.md" > "$B/kanban/KIT-$1.md.new" && mv "$B/kanban/KIT-$1.md.new" "$B/kanban/KIT-$1.md"
   done
-  grep -q '^level: S1$' "$B/kanban/KIT-2.md" && grep -q '^level: S9$' "$B/kanban/KIT-3.md" \
+  grep -q '^level: complex$' "$B/kanban/KIT-2.md" && grep -q '^level: S9$' "$B/kanban/KIT-3.md" \
     || { echo "FAIL: level not written into KIT-2/KIT-3"; exit 1; }
 fi
 cd "$B"
@@ -129,17 +129,17 @@ def expect(ident, model, effort):
 def state(ident):
     return re.search(r"(?m)^state:\s*(.*)$", (board / f"{ident}.md").read_text()).group(1).strip().strip("'\"")
 
-expect("KIT-1", "haiku", "medium")  # no `level:` -> default_level L1
+expect("KIT-1", "haiku", "medium")  # no `level:` -> default_level simple
 # The same level/model/effort in the service log (worker_turn_started) and in the
 # run events (turn_started), for pricing tasks by level next to cost_usd.
 import sqlite3
 service_log = (Path(calls_file).parent / "service.log").read_text(encoding="utf-8")
 started = [l for l in service_log.splitlines() if "worker_turn_started" in l and "identifier=KIT-1" in l]
-assert started and all("task_level=L1 model=haiku effort=medium" in l for l in started), started[:2]
+assert started and all("task_level=simple model=haiku effort=medium" in l for l in started), started[:2]
 db = sqlite3.connect(str(board.parent / ".symphony" / "state.db"))
 events = [json.loads(p) for (p,) in db.execute(
     "select payload_json from attempt_events where event_type = 'turn_started'")]
-assert events and any(e.get("task_level") == "L1" and e.get("model") == "haiku"
+assert events and any(e.get("task_level") == "simple" and e.get("model") == "haiku"
                       and e.get("effort") == "medium" for e in events), events[:2]
 print(f"levels: {len(started)} worker_turn_started log line(s) and {len(events)} turn_started run event(s) carry task_level/model/effort")
 if levels:
