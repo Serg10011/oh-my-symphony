@@ -14,6 +14,7 @@ from ..workflow import (
     selectable_agent_kinds,
     validated_ci_modes,
 )
+from ..workflow.levels import LEVEL_NAME_RE
 from ..workflow.mutate import (
     StateSpec,
     WorkflowMutationError,
@@ -197,6 +198,26 @@ def _check_agent_kind(raw: Any, cfg: ServiceConfig) -> str:
             f"unknown agent_kind {kind!r}; supported: {sorted(kinds)}"
         )
     return kind
+
+
+def _check_level(raw: Any, cfg: ServiceConfig) -> str:
+    """Level name for a new ticket; '' when absent. Known names only if `levels` is set."""
+    if raw is None:
+        return ""
+    if not isinstance(raw, str):
+        raise WorkflowMutationError("level must be a string")
+    level = raw.strip()
+    if not level:
+        return ""
+    if len(level) > 32 or not LEVEL_NAME_RE.match(level):
+        raise WorkflowMutationError(
+            "level must be 1-32 characters from [A-Za-z0-9_-]"
+        )
+    if cfg.levels and level not in cfg.levels:
+        raise WorkflowMutationError(
+            f"unknown level {level!r}; known levels: {sorted(cfg.levels)}"
+        )
+    return level
 
 
 def _check_chat_session_id(raw: Any) -> str:

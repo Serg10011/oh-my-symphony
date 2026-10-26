@@ -1152,6 +1152,7 @@ class FileBoardTracker:
         blocked_by: list[str] | None = None,
         request: str | None = None,
         planning_ref: PlanningRef | None = None,
+        level: str | None = None,
     ) -> tuple[str, Path]:
         """Validate the board graph and create the ticket under one lock.
 
@@ -1191,6 +1192,7 @@ class FileBoardTracker:
                         blocked_by=blocked_by,
                         request=request,
                         planning_ref=planning_ref,
+                        level=level,
                     )
                 except SymphonyError as exc:
                     last_error = exc
@@ -1214,6 +1216,7 @@ class FileBoardTracker:
         blocked_by: list[str] | None = None,
         request: str | None = None,
         planning_ref: PlanningRef | None = None,
+        level: str | None = None,
     ) -> tuple[str, Path]:
         with _exclusive_lock(self._allocator_lock_path()):
             last_error: Exception | None = None
@@ -1232,6 +1235,7 @@ class FileBoardTracker:
                         blocked_by=blocked_by,
                         request=request,
                         planning_ref=planning_ref,
+                        level=level,
                     )
                 except SymphonyError as exc:
                     last_error = exc
@@ -1253,6 +1257,7 @@ class FileBoardTracker:
         blocked_by: list[str] | None = None,
         request: str | None = None,
         planning_ref: PlanningRef | None = None,
+        level: str | None = None,
     ) -> Path:
         identifier = validate_identifier(identifier)
         path = self._root / f"{identifier}.md"
@@ -1270,6 +1275,7 @@ class FileBoardTracker:
                 blocked_by=blocked_by,
                 request=request,
                 planning_ref=planning_ref,
+                level=level,
             )
             write_ticket_atomic(path, front, description)
             return path
@@ -1287,6 +1293,7 @@ class FileBoardTracker:
         blocked_by: list[str] | None = None,
         request: str | None = None,
         planning_ref: PlanningRef | None = None,
+        level: str | None = None,
     ) -> dict[str, Any]:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         front: dict[str, Any] = {
@@ -1305,6 +1312,8 @@ class FileBoardTracker:
             front["request"] = request.strip()
         if isinstance(agent_kind, str) and agent_kind.strip():
             front["agent"] = {"kind": agent_kind.strip().lower()}
+        if isinstance(level, str) and level.strip():
+            front["level"] = level.strip()
         if planning_ref is not None:
             front["symphony_pm"] = {
                 "change_id": planning_ref.change_id,

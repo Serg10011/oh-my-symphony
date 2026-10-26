@@ -44,6 +44,7 @@ from ..workflow import (
     resolve_workflow_path,
     selectable_agent_kinds,
 )
+from ..workflow.levels import LEVEL_NAME_RE
 
 
 def _operator_message(exc: BaseException) -> str:
@@ -172,6 +173,28 @@ def _collect_labels(args: argparse.Namespace) -> list[str] | None:
     return labels or None
 
 
+def _check_level(args: argparse.Namespace) -> str | None:
+    """Validated `--level` (None when absent); raises SymphonyError when invalid.
+
+    The name format is always checked; membership in `levels` only when a
+    workflow is available and defines any (`--root` has no config to ask).
+    """
+    raw = getattr(args, "level", None)
+    if raw is None or not raw.strip():
+        return None
+    level = raw.strip()
+    if len(level) > 32 or not LEVEL_NAME_RE.match(level):
+        raise SymphonyError(
+            f"invalid level {level!r}; use 1-32 characters from [A-Za-z0-9_-]"
+        )
+    cfg = _resolve_config(args) if args.root is None else None
+    if cfg is not None and cfg.levels and level not in cfg.levels:
+        raise SymphonyError(
+            f"unknown level {level!r}; known levels: {sorted(cfg.levels)}"
+        )
+    return level
+
+
 def cmd_new(args: argparse.Namespace) -> int:
     tracker = _get_tracker(args)
     fbt = FileBoardTracker(tracker)
@@ -191,6 +214,11 @@ def cmd_new(args: argparse.Namespace) -> int:
             f"expected one of {sorted(legal_states.values())}",
             file=sys.stderr,
         )
+        return 1
+    try:
+        level = _check_level(args)
+    except SymphonyError as exc:
+        print(f"error: {_operator_message(exc)}", file=sys.stderr)
         return 1
     blocked_by = list(dict.fromkeys(args.blocked_by or []))
     try:
@@ -218,6 +246,7 @@ def cmd_new(args: argparse.Namespace) -> int:
             skills=args.skills.split(",") if args.skills else None,
             blocked_by=blocked_by or None,
             request=args.request,
+            level=level,
         )
     except (OSError, SymphonyError) as exc:
         print(f"error: {_operator_message(exc)}", file=sys.stderr)
@@ -457,6 +486,11 @@ def build_parser() -> argparse.ArgumentParser:
         dest="agent_kind",
         default=None,
         help="override backend for this ticket (default: WORKFLOW.md agent.kind)",
+    )
+    p_new.add_argument(
+        "--level",
+        default=None,
+        help="task level (a name from WORKFLOW.md `levels`); sets model/effort/limits",
     )
     p_new.set_defaults(func=cmd_new)
 

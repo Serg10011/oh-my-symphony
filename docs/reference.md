@@ -311,6 +311,7 @@ symphony board new TASK-2 "Add regression test" \
   --description-file ./spec.md      # or `-` to read stdin
 
 symphony board new TASK-3 "title" --agent-kind codex   # pin a backend
+symphony board new TASK-4 "title" --level S1          # task level (see Task levels)
 ```
 
 `new` validates before writing:
@@ -319,6 +320,9 @@ symphony board new TASK-3 "title" --agent-kind codex   # pin a backend
   model-generated id can never escape the board root);
 - the state must come from `tracker.active_states` / `terminal_states`;
 - every `--blocked-by` target must exist on the board;
+- `--level` must match `[A-Za-z0-9_-]{1,32}`, and when WORKFLOW.md defines
+  `levels` it must be one of them (`POST /api/v1/issues` takes the same value
+  in the `level` body field and applies the same checks);
 - added edges must keep the dependency graph acyclic (violations print the
   cycle path and exit non-zero).
 

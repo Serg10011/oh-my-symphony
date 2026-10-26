@@ -52,6 +52,7 @@ from .validation import (
     _check_description,
     _check_identifier,
     _check_labels,
+    _check_level,
     _check_priority,
     _check_request,
     _check_request_schedule_key,
@@ -381,6 +382,7 @@ def _register_issue_routes(
             "skills": list(normalize_skill_names(body.get("skills") or [])),
             "blocked_by": blocked_by or None,
             "request": _check_request(body.get("request")) or None,
+            "level": _check_level(body.get("level"), cfg) or None,
         }
 
         # F-15: validate and write under the same board lock so concurrent
