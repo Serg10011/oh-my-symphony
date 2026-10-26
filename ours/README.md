@@ -273,7 +273,7 @@ exit $rc
 
 | Файл | Содержимое | Что делает служба |
 |---|---|---|
-| `S4-03.run` | пусто или одна строка `model=opus` (`sonnet` по умолчанию, ещё `haiku`) | рядом должен лежать `S4-03.md` (задание). Если ветки `dev/S4-03` и папки `oms-dev/S4-03` ещё нет: `git fetch origin our-main`, `git worktree add --no-track -b dev/S4-03 … origin/our-main`, затем открывает окно Терминала с Claude Code внутри этой копии |
+| `S4-03.run` | пусто или одна строка слов через один пробел: `model=…` (`sonnet` по умолчанию, ещё `opus`, `haiku`) и/или `effort=…` (`low`, `medium`, `high`, `xhigh`, `max`); каждый ключ не более раза, в любом порядке, например `model=sonnet effort=high`; без `effort` флаг `--effort` не передаётся — усилие Claude Code по умолчанию; в отчёте строка `Запуск: model=… effort=…` (или `effort=по умолчанию`) | рядом должен лежать `S4-03.md` (задание). Если ветки `dev/S4-03` и папки `oms-dev/S4-03` ещё нет: `git fetch origin our-main`, `git worktree add --no-track -b dev/S4-03 … origin/our-main`, затем открывает окно Терминала с Claude Code внутри этой копии |
 | `S4-03.test` | пусто | гоняет в рабочей копии зашитый набор: `ruff check ours` и `pytest ours/tests -q`; если ветка меняет `src/` или `tests/` — ещё `ruff check src tests` и полный `pytest -q`. Для ветки с правками `src/` создаётся своё `.venv` в копии |
 | `S4-03.merge` | одна строка — имя ветки, например `dev/S4-03` | проверяет, что есть ровно один открытый PR из этой ветки этого же репозитория в `our-main`; вливает (`gh pr merge … --merge`), затем запускает `ours/bin/post-merge` |
 

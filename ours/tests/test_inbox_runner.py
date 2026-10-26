@@ -222,6 +222,72 @@ def test_run_model_opus(env: Env) -> None:
     assert "--model opus " in env.fake.windows[0][1]
 
 
+@pytest.mark.parametrize("text, expected", [
+    ("", {"model": "sonnet", "effort": None}),
+    ("model=opus\n", {"model": "opus", "effort": None}),
+    ("effort=high\n", {"model": "sonnet", "effort": "high"}),
+    ("model=sonnet effort=high", {"model": "sonnet", "effort": "high"}),
+    ("effort=high model=sonnet", {"model": "sonnet", "effort": "high"}),
+    ("effort=max model=haiku\n", {"model": "haiku", "effort": "max"}),
+])
+def test_parse_run_accepts(text: str, expected: dict) -> None:
+    assert ir.parse_content("run", text) == (expected, "")
+
+
+@pytest.mark.parametrize("text", [
+    "effort=turbo", "model=gpt", "speed=high", "model=sonnet model=opus", "effort=high effort=low",
+    "model=sonnet extra", "model=sonnet\neffort=high", "effort=", "EFFORT=high", "effort=High",
+    "model=sonnet  effort=high", "effort=high ", "effort",
+])
+def test_parse_run_rejects(text: str) -> None:
+    params, reason = ir.parse_content("run", text)
+    assert params is None and reason
+
+
+def test_terminal_command_effort() -> None:
+    base = ir.terminal_command(Path("/m/main"), Path("/m/wt"), "S4-03", "sonnet")
+    assert "--effort" not in base
+    cmd = ir.terminal_command(Path("/m/main"), Path("/m/wt"), "S4-03", "sonnet", "high")
+    assert cmd == ('cd /m/wt/S4-03 && claude --model sonnet --effort high '
+                   '"Выполни задание из файла /m/main/tmp_workspaces/inbox/S4-03.md"')
+    for bad in ("turbo", "high;id", "", "High"):
+        with pytest.raises(AssertionError):
+            ir.terminal_command(Path("/m/main"), Path("/m/wt"), "S4-03", "sonnet", bad)
+
+
+def test_run_model_and_effort(env: Env) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run", "model=opus effort=xhigh\n")
+    env.pass_()
+    assert "claude --model opus --effort xhigh " in env.fake.windows[0][1]
+    assert "Запуск: model=opus effort=xhigh" in env.log("S4-03.run.log")
+
+
+def test_run_effort_only(env: Env) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run", "effort=high")
+    env.pass_()
+    assert "claude --model sonnet --effort high " in env.fake.windows[0][1]
+    assert "Запуск: model=sonnet effort=high" in env.log("S4-03.run.log")
+
+
+def test_run_empty_reports_default_effort(env: Env) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run")
+    env.pass_()
+    assert "--effort" not in env.fake.windows[0][1]
+    assert "Запуск: model=sonnet effort=по умолчанию" in env.log("S4-03.run.log")
+
+
+def test_run_bad_effort_skipped(env: Env) -> None:
+    env.task("S4-03")
+    env.put("S4-03.run", "effort=turbo")
+    env.pass_()
+    assert env.fake.calls == [] and env.fake.windows == []
+    assert "S4-03.run" in env.skipped()
+    assert not (env.wroot / "S4-03").exists()
+
+
 @pytest.mark.parametrize("text", [
     "model=gpt4", "model=sonnet;rm -rf ~", "model=sonnet\nmodel=opus", "model = opus", "model= opus", "model =opus",
     " model=opus", "model=opus ", "model=Opus", "MODEL=opus", "opus", "model=", "model=opus\r\n", "\n\nmodel=opus",
