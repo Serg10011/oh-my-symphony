@@ -345,9 +345,33 @@ def validate_project(data: dict) -> dict:
             f"{PROJECT_FILE}: [limits] max_turns не меньше {ACTIVE_STATE_COUNT} "
             "(число активных состояний; иначе ядро не примет WORKFLOW.md)"
         )
+    attempts = limits["max_attempts"]
+    _check_turns_cover_attempts(f"{PROJECT_FILE}: [limits] max_turns", limits["max_turns"], attempts)
+    for name, body in out["levels"]["levels"].items():
+        if "max_turns" in body:
+            _check_turns_cover_attempts(f"{PROJECT_FILE}: [levels.{name}] max_turns", body["max_turns"], attempts)
     if limits["max_total_turns"] < limits["max_turns"]:
         raise ProjectError(f"{PROJECT_FILE}: [limits] max_total_turns меньше max_turns")
     return out
+
+
+def _check_turns_cover_attempts(label: str, max_turns: int, max_attempts: int) -> None:
+    """max_turns must fit every active stage plus `max_attempts` returns of one card.
+
+    A return re-runs the stages after it, so a card that uses all its returns
+    needs up to ACTIVE_STATE_COUNT * (1 + max_attempts) turns to reach Human
+    Review. `max_attempts = 0` means returns are unlimited: the stage-count rule
+    alone applies (a loop is stopped by max_state_turns).
+    """
+    if max_attempts <= 0:
+        return
+    needed = ACTIVE_STATE_COUNT * (1 + max_attempts)
+    if max_turns < needed:
+        raise ProjectError(
+            f"{label} = {max_turns} меньше {ACTIVE_STATE_COUNT} × (1 + max_attempts) = {needed}: "
+            f"карточка с max_attempts = {max_attempts} возвратами не успеет дойти до Human Review; "
+            f"увеличь max_turns до {needed} или уменьши max_attempts"
+        )
 
 
 def load_project(board: Path) -> dict:

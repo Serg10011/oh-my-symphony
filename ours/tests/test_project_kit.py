@@ -153,7 +153,7 @@ def test_rendered_workflow_is_accepted_by_the_core(kit: Kit) -> None:
                 or a.auto_merge_on_done or a.auto_merge_push_target)
     assert a.auto_commit_on_done
     assert a.feature_base_branch == a.auto_merge_target_branch == "dev"
-    assert a.preserve_workspace_states == ("human review",)
+    assert a.preserve_workspace_states == ("human review", "needs_human")
     assert a.done_gate_command == f'"$SYMPHONY_PYTHON" {OURS / "hooks" / "check.py"} gate'
     assert a.done_gate_timeout_ms == 960000 and cfg.hooks.timeout_ms == 1200000
     assert cfg.wiki.sweep_every_n == 0 and cfg.server.port == 9971

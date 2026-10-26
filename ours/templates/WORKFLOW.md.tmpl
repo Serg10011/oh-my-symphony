@@ -208,7 +208,7 @@ hooks:
   auto_commit_on_done: true
   feature_base_branch: {{yaml:base}}
   auto_merge_target_branch: {{yaml:base}}
-  preserve_workspace_states: ["Human Review"]
+  preserve_workspace_states: ["Human Review", "needs_human"]
   done_gate_command: {{yaml:done_gate_command}}
   # = test timeout + 60 s (DECISIONS: timeout rule).
   done_gate_timeout_ms: {{int:gate_ms}}
