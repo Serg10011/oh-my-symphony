@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from .. import __version__
-from ..errors import SymphonyError
+from ..errors import ConfigValidationError, SymphonyError
 from ..issue import Issue, normalize_state
 from ..workflow import ServiceConfig
 from ..workspace import HISTORY_PUSH_FAILED
@@ -25,6 +25,7 @@ from .constants import DONE_GATE_FAILURE_PREFIX, TICK_DEGRADED_AFTER_CONSECUTIVE
 from .release_cycle import is_release_evidence_issue as _is_release_evidence_issue
 from .entries import RetryEntry, RunningEntry, _IssueDebug
 from .helpers import (
+    _config_for_issue_agent,
     _is_successful_terminal_state,
     _from_monotonic_to_iso,
     _human_review_target_state,
@@ -52,6 +53,71 @@ def _core():
     from . import core
 
     return core
+
+
+async def reset_issue_budget(self: Orchestrator, identifier: str) -> dict[str, Any]:
+    """Zero the turn/rewind/retry counters and the exhausted flag of an idle ticket.
+
+    The pause is left alone (``/resume`` owns it). No run event is written:
+    the ticket has no active run, and the registry only accepts events for
+    active runs.
+    """
+    async with self._manual_completion_lock:
+        cfg = self._workflow_state.current()
+        if cfg is None:
+            raise ValueError("workflow is unavailable")
+        found = await asyncio.to_thread(
+            self._tracker_call_fetch_issue_full_by_id, cfg, identifier
+        )
+        if found is None:
+            raise FileNotFoundError(identifier)
+        issue: Issue = found
+        if self.find_running_issue_id(identifier) is not None:
+            raise ValueError(f"{identifier} has a running worker")
+        if self._has_active_run_lease(issue.id):
+            raise ValueError(f"{identifier} has an active run lease")
+        debug = self._issue_debug.get(issue.id)
+        before = {
+            "completed_turn_count": debug.completed_turn_count if debug else 0,
+            "rewind_count": debug.rewind_count if debug else 0,
+            "state_turn_state": debug.state_turn_state if debug else "",
+            "state_turn_count": debug.state_turn_count if debug else 0,
+            "restart_count": debug.restart_count if debug else 0,
+            "budget_exhausted": issue.id in self._turn_budget_exhausted,
+            "retry_attempt": self._persisted_retry_attempts.get(issue.id),
+            "paused": self.is_paused(issue.id),
+        }
+        changed = bool(
+            before["completed_turn_count"]
+            or before["rewind_count"]
+            or before["state_turn_count"]
+            or before["state_turn_state"]
+            or before["budget_exhausted"]
+            or before["retry_attempt"] is not None
+        )
+        if debug is not None:
+            debug.completed_turn_count = 0
+            debug.rewind_count = 0
+            debug.state_turn_count = 0
+            debug.state_turn_state = ""
+            debug.last_error = None
+        self._turn_budget_exhausted.discard(issue.id)
+        self._persisted_retry_attempts.pop(issue.id, None)
+        self._clear_issue_flags(issue.id, budget_exhausted=True, retry_attempt=True)
+        log.warning(
+            "budget_reset",
+            issue_id=issue.id,
+            identifier=identifier,
+            state=issue.state,
+            **before,
+        )
+        return {
+            "issue_identifier": identifier,
+            "issue_id": issue.id,
+            "state": issue.state,
+            "changed": changed,
+            "before": before,
+        }
 
 
 async def confirm_done(self: Orchestrator, identifier: str) -> dict[str, Any]:
@@ -401,6 +467,11 @@ async def issue_budget_snapshot(self: Orchestrator, issue: Issue) -> dict[str, A
     entry = self._running.get(issue.id)
     debug = self._issue_debug.get(issue.id)
     generated_at = _utc_iso_z()
+    try:
+        # Limits come from the ticket's level, as the guards that stop it use.
+        cfg_issue = _config_for_issue_agent(cfg, issue)
+    except ConfigValidationError:  # incl. LevelError; read-only, so fall back silently
+        cfg_issue = cfg
     current_state = (entry.state_at_turn_start or issue.state) if entry else issue.state
     attempt_turns = entry.turn_count if entry else None
     total_turns = (
@@ -448,19 +519,36 @@ async def issue_budget_snapshot(self: Orchestrator, issue: Issue) -> dict[str, A
             reopen_used = max(prior_done - 1, 0)
             if entry is not None and prior_done:
                 reopen_used += 1
-    reopen_limit = cfg.agent.max_reopens
+    if debug is None:
+        state_turns_used = None
+    elif debug.state_turn_state == normalize_state(current_state):  # stored normalized
+        state_turns_used = debug.state_turn_count
+    else:
+        state_turns_used = 0  # the first turn in a new state resets the counter
+    reopen_limit = cfg_issue.agent.max_reopens
     if reopen_limit > 0:
         reopen_limit += len(_REOPEN_APPROVED_RE.findall(issue.description or ""))
     return {
         "available": True,
         "generated_at": generated_at,
         "state": current_state,
+        "budget_exhausted": issue.id in self._turn_budget_exhausted,
+        "paused": self.is_paused(issue.id),
         "items": [
-            item("attempt_turns", cfg.agent.max_turns, attempt_turns),
-            item("total_turns", cfg.agent.max_total_turns, total_turns),
-            item("state_tokens", self._token_budget_for_state(cfg, current_state), state_tokens),
-            item("retries", cfg.agent.max_retries, retry_used),
-            item("rewinds", cfg.agent.max_attempts, rewinds),
+            item("attempt_turns", cfg_issue.agent.max_turns, attempt_turns),
+            item(
+                "state_turns",
+                self._max_state_turns_for_state(cfg_issue, current_state),
+                state_turns_used,
+            ),
+            item("total_turns", cfg_issue.agent.max_total_turns, total_turns),
+            item(
+                "state_tokens",
+                self._token_budget_for_state(cfg_issue, current_state),
+                state_tokens,
+            ),
+            item("retries", cfg_issue.agent.max_retries, retry_used),
+            item("rewinds", cfg_issue.agent.max_attempts, rewinds),
             item("reopens", reopen_limit, reopen_used),
         ],
     }

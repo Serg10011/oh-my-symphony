@@ -311,6 +311,7 @@ symphony board new TASK-2 "Add regression test" \
   --description-file ./spec.md      # or `-` to read stdin
 
 symphony board new TASK-3 "title" --agent-kind codex   # pin a backend
+symphony board new TASK-4 "title" --level S1          # task level (see Task levels)
 ```
 
 `new` validates before writing:
@@ -319,6 +320,9 @@ symphony board new TASK-3 "title" --agent-kind codex   # pin a backend
   model-generated id can never escape the board root);
 - the state must come from `tracker.active_states` / `terminal_states`;
 - every `--blocked-by` target must exist on the board;
+- `--level` must match `[A-Za-z0-9_-]{1,32}`, and when WORKFLOW.md defines
+  `levels` it must be one of them (`POST /api/v1/issues` takes the same value
+  in the `level` body field and applies the same checks);
 - added edges must keep the dependency graph acyclic (violations print the
   cycle path and exit non-zero).
 
@@ -884,6 +888,7 @@ only):
 | POST   | `/api/v1/{id}/pause` `/resume`    | Hold / release a running worker              |
 | POST   | `/api/v1/issues/{id}/skip-document` | Move idle Document ticket to Human Review (deprecated alias: `/skip-learn`) |
 | POST   | `/api/v1/{id}/confirm-done` | Confirm Human Review through host history/merge/hooks/cleanup; requires retained workspace and refuses run-bound release evidence |
+| POST   | `/api/v1/{id}/reset-budget` | Zero the turn/rewind/state-turn counters, the `budget_exhausted` flag (memory and `state.db`) and the persisted retry attempt of an idle ticket; 409 `not_resettable` while a worker or run lease is active; the pause is not lifted (use `/resume`); the response lists the values `before` the reset |
 
 **`rate_limits` in `/api/v1/state`.** One shared field holding the latest
 limits payload reported by whichever backend spoke last, or `null` before any

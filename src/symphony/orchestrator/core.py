@@ -846,6 +846,7 @@ class Orchestrator:
 
     # -- api_views.py ---------------------------------------------------
     confirm_done = api_views.confirm_done
+    reset_issue_budget = api_views.reset_issue_budget
     snapshot = api_views.snapshot
     schedule_snapshot = api_views.schedule_snapshot
     dependency_state_resolved = api_views.dependency_state_resolved
