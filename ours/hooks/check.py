@@ -86,6 +86,10 @@ STATE_DIR = pc.STATE_DIR
 TEST_SCRIPT = "test.sh"
 LOG_NAME = "check.log"
 NOTE_HEADING = "Check Failure"
+# One-shot mark "this turn's content passed the checks" for integrate.py hook.
+PASS_SUFFIX = ".pass.json"
+# Pathspec of the standard after_run block (templates/WORKFLOW.md.tmpl).
+STAGE_PATHSPEC = (".", ":(exclude)kanban", ":(exclude).symphony")
 
 CHECKED_STATES = frozenset({"done", "human review"})
 ROLLBACK_STATES = frozenset({"In Progress", "needs_human"})
@@ -250,7 +254,9 @@ def _git_env() -> dict[str, str]:
     return env
 
 
-def git(repo: Path, *args: str, stdin: bytes | None = None) -> bytes:
+def git(
+    repo: Path, *args: str, stdin: bytes | None = None, env: dict[str, str] | None = None
+) -> bytes:
     proc = subprocess.run(
         ["git", *GIT_SAFE_ARGS, *args],
         cwd=str(repo),
@@ -258,7 +264,7 @@ def git(repo: Path, *args: str, stdin: bytes | None = None) -> bytes:
         stdin=None if stdin is not None else subprocess.DEVNULL,
         capture_output=True,
         timeout=GIT_TIMEOUT_S,
-        env=_git_env(),
+        env={**_git_env(), **(env or {})},
         check=False,
     )
     if proc.returncode != 0:
@@ -370,6 +376,23 @@ def changed_paths(repo: Path, base: str, board_dir: str) -> set[str]:
             if entry is None or path not in disk or disk[path] != entry[1]:
                 paths.add(path)
     return paths
+
+
+def worktree_tree(workspace: Path) -> str:
+    """Tree object of the working-tree content the standard after_run block
+    would commit: HEAD plus `git add -A` with its exclusions, in a temporary
+    index. The real index is not touched."""
+    with tempfile.TemporaryDirectory(prefix="ours-index-") as tmp:
+        env = {"GIT_INDEX_FILE": str(Path(tmp) / "index")}
+        git(workspace, "read-tree", "HEAD", env=env)
+        try:
+            git(workspace, "add", "-A", "--", *STAGE_PATHSPEC, env=env)
+        except CheckError:
+            # Same as the standard block's `|| true`: git exits 1 when the
+            # excluded `kanban` link is ignored, yet the rest is added. A real
+            # failure only makes the tree differ, and integrate.py then skips.
+            pass
+        return git(workspace, "write-tree", env=env).decode().strip()
 
 
 def _under(path: str, directory: str) -> bool:
@@ -831,15 +854,15 @@ tracker.append_note(
 """
 
 
-def append_note(ctx: Context, body: str) -> str:
-    """Append `## Check Failure` through the tracker API; file fallback."""
+def append_note(ctx: Context, body: str, heading: str = NOTE_HEADING) -> str:
+    """Append `## <heading>` (default `## Check Failure`) through the tracker API; file fallback."""
     python = os.environ.get("SYMPHONY_PYTHON", "").strip()
     board = ctx.workflow_dir / BOARD_DIR
     if python and os.access(python, os.X_OK):
         try:
             proc = subprocess.run(
                 # -P: never put the cwd on sys.path (the agent controls it).
-                [python, "-P", "-c", _APPEND_NOTE_CODE, str(board), ctx.issue_id, NOTE_HEADING, body],
+                [python, "-P", "-c", _APPEND_NOTE_CODE, str(board), ctx.issue_id, heading, body],
                 cwd=str(ctx.workflow_dir),
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
@@ -850,11 +873,13 @@ def append_note(ctx: Context, body: str) -> str:
                 return "tracker"
         except (OSError, subprocess.TimeoutExpired):
             pass
-    _append_note_file(ctx.card, board, ctx.issue_id, body)
+    _append_note_file(ctx.card, board, ctx.issue_id, body, heading)
     return "file"
 
 
-def _append_note_file(card: Path, board: Path, issue_id: str, body: str) -> None:
+def _append_note_file(
+    card: Path, board: Path, issue_id: str, body: str, heading: str = NOTE_HEADING
+) -> None:
     lock_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", issue_id).strip("._") or "ticket"
     lock_path = board / ".locks" / f"{lock_name}.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -862,7 +887,7 @@ def _append_note_file(card: Path, board: Path, issue_id: str, body: str) -> None
         # Same per-ticket lock file as the file tracker's mutations.
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         text = card.read_text(encoding="utf-8")
-        new = f"{text.rstrip()}\n\n## {NOTE_HEADING}\n\n{body.strip()}\n"
+        new = f"{text.rstrip()}\n\n## {heading}\n\n{body.strip()}\n"
         _write_atomic(card, new.encode("utf-8"))
 
 
@@ -993,7 +1018,26 @@ def hook_main() -> int:
         return _hook_checked(ctx)
 
 
+def pass_path(ctx: Context) -> Path:
+    return ctx.state_dir / f"{ctx.issue_id}{PASS_SUFFIX}"
+
+
+def _write_pass_mark(ctx: Context, tree: str, head: str) -> None:
+    """The one-shot mark integrate.py hook reads in this same after_run: which
+    content (`tree`) passed, and who ran the check (`ppid`, the hook shell)."""
+    ensure_state_dir(ctx.state_dir)
+    payload = {"ppid": ctx.parent_pid, "tree": tree, "head": head, "at": _now()}
+    _write_atomic(pass_path(ctx), (json.dumps(payload, indent=2) + "\n").encode())
+
+
 def _hook_checked(ctx: Context) -> int:
+    # The tree goes first: it must describe the content the tests will see.
+    tree = head = None
+    try:
+        tree = worktree_tree(ctx.workspace)
+        head = git(ctx.workspace, "rev-parse", "HEAD").decode().strip()
+    except Exception as exc:  # noqa: BLE001 - no mark then; the checks still run
+        log_event(ctx, ctx.issue_id, "hook", "error", f"cannot compute the content tree: {exc}")
     try:
         result = run_checks(ctx)
     except Orphaned as exc:
@@ -1012,6 +1056,11 @@ def _hook_checked(ctx: Context) -> int:
         except Exception:  # noqa: BLE001
             pass
     if result.ok:
+        if tree and head:
+            try:
+                _write_pass_mark(ctx, tree, head)
+            except OSError as exc:
+                log_event(ctx, ctx.issue_id, "hook", "error", f"cannot write the pass mark: {exc}")
         log_event(ctx, ctx.issue_id, "hook", "pass", "")
         _emit(_format_report("hook", ctx.issue_id, result))
         return 0

@@ -1043,3 +1043,68 @@ def test_issue_title_is_ignored(env: Env) -> None:
     result = env.run("gate", SYMPHONY_ISSUE_TITLE=f"$(touch {pwned})`touch {pwned}`")
     assert_passed(result)
     assert not pwned.exists()
+
+
+# ---------------------------------------------------------------------------
+# the pass mark for integrate.py hook and the note heading (S4-12)
+# ---------------------------------------------------------------------------
+
+
+def pass_mark(env: Env) -> dict:
+    return json.loads((env.board / ".ours-state" / f"{ID}.pass.json").read_text())
+
+
+def test_hook_pass_writes_the_one_shot_mark(env: Env) -> None:
+    write(env.ws / "src" / "new.py", "y = 2\n")  # uncommitted: the mark must describe it
+    result = env.run("hook")
+    assert result.returncode == 0 and "PASS" in result.stdout
+    mark = pass_mark(env)
+    assert set(mark) == {"ppid", "tree", "head", "at"}
+    assert mark["ppid"] == os.getpid()  # the hook shell: here, the test process
+    assert mark["head"] == git(env.ws, "rev-parse", "HEAD").strip()
+    assert mark["tree"] == check.worktree_tree(env.ws)
+    assert mark["tree"] != git(env.ws, "rev-parse", "HEAD^{tree}").strip()
+    # What the standard block commits next has exactly this tree.
+    git(env.ws, "add", "-A")
+    git(env.ws, "commit", "-q", "-m", "wip: turn")
+    assert git(env.ws, "rev-parse", "HEAD^{tree}").strip() == mark["tree"]
+    # The real index was not touched by the temporary one.
+    assert git(env.ws, "status", "--porcelain").strip() == ""
+
+
+def test_hook_mark_tree_ignores_the_board_link_and_amend(env: Env) -> None:
+    result = env.run("hook")
+    assert result.returncode == 0
+    assert pass_mark(env)["tree"] == git(env.ws, "rev-parse", "HEAD^{tree}").strip()
+    git(env.ws, "commit", "-q", "--amend", "-m", "other subject")
+    assert pass_mark(env)["tree"] == git(env.ws, "rev-parse", "HEAD^{tree}").strip()
+
+
+def test_hook_failure_writes_no_mark(env: Env) -> None:
+    write(env.ws / "ours" / "x", "violation\n")
+    assert env.run("hook").returncode == 0
+    assert not (env.board / ".ours-state" / f"{ID}.pass.json").exists()
+
+
+def test_hook_that_does_not_act_writes_no_mark(env: Env) -> None:
+    env.set_card("In Progress")
+    assert env.run("hook").returncode == 0
+    assert not (env.board / ".ours-state" / f"{ID}.pass.json").exists()
+
+
+def test_a_new_pass_overwrites_an_old_mark(env: Env) -> None:
+    write(env.board / ".ours-state" / f"{ID}.pass.json", json.dumps({"ppid": 1, "tree": "old"}))
+    assert env.run("hook").returncode == 0
+    assert pass_mark(env)["tree"] != "old" and pass_mark(env)["ppid"] == os.getpid()
+
+
+def test_append_note_takes_a_heading(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = check.Context("hook", env.board, env.ws, ID)
+    monkeypatch.delenv("SYMPHONY_PYTHON", raising=False)
+    assert check.append_note(ctx, "- by file", "Integration") == "file"
+    monkeypatch.setenv("SYMPHONY_PYTHON", sys.executable)
+    assert check.append_note(ctx, "- by tracker", "Integration") == "tracker"
+    assert check.append_note(ctx, "- default heading") == "tracker"
+    text = env.card.read_text()
+    assert text.count("## Integration") == 2 and "- by file" in text and "- by tracker" in text
+    assert text.count("## Check Failure") == 1 and "- default heading" in text
