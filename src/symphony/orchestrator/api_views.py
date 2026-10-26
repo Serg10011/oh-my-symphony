@@ -54,6 +54,71 @@ def _core():
     return core
 
 
+async def reset_issue_budget(self: Orchestrator, identifier: str) -> dict[str, Any]:
+    """Zero the turn/rewind/retry counters and the exhausted flag of an idle ticket.
+
+    The pause is left alone (``/resume`` owns it). No run event is written:
+    the ticket has no active run, and the registry only accepts events for
+    active runs.
+    """
+    async with self._manual_completion_lock:
+        cfg = self._workflow_state.current()
+        if cfg is None:
+            raise ValueError("workflow is unavailable")
+        found = await asyncio.to_thread(
+            self._tracker_call_fetch_issue_full_by_id, cfg, identifier
+        )
+        if found is None:
+            raise FileNotFoundError(identifier)
+        issue: Issue = found
+        if self.find_running_issue_id(identifier) is not None:
+            raise ValueError(f"{identifier} has a running worker")
+        if self._has_active_run_lease(issue.id):
+            raise ValueError(f"{identifier} has an active run lease")
+        debug = self._issue_debug.get(issue.id)
+        before = {
+            "completed_turn_count": debug.completed_turn_count if debug else 0,
+            "rewind_count": debug.rewind_count if debug else 0,
+            "state_turn_state": debug.state_turn_state if debug else "",
+            "state_turn_count": debug.state_turn_count if debug else 0,
+            "restart_count": debug.restart_count if debug else 0,
+            "budget_exhausted": issue.id in self._turn_budget_exhausted,
+            "retry_attempt": self._persisted_retry_attempts.get(issue.id),
+            "paused": self.is_paused(issue.id),
+        }
+        changed = bool(
+            before["completed_turn_count"]
+            or before["rewind_count"]
+            or before["state_turn_count"]
+            or before["state_turn_state"]
+            or before["budget_exhausted"]
+            or before["retry_attempt"] is not None
+        )
+        if debug is not None:
+            debug.completed_turn_count = 0
+            debug.rewind_count = 0
+            debug.state_turn_count = 0
+            debug.state_turn_state = ""
+            debug.last_error = None
+        self._turn_budget_exhausted.discard(issue.id)
+        self._persisted_retry_attempts.pop(issue.id, None)
+        self._clear_issue_flags(issue.id, budget_exhausted=True, retry_attempt=True)
+        log.warning(
+            "budget_reset",
+            issue_id=issue.id,
+            identifier=identifier,
+            state=issue.state,
+            **before,
+        )
+        return {
+            "issue_identifier": identifier,
+            "issue_id": issue.id,
+            "state": issue.state,
+            "changed": changed,
+            "before": before,
+        }
+
+
 async def confirm_done(self: Orchestrator, identifier: str) -> dict[str, Any]:
     """Complete an operator-reviewed ticket through the host delivery gates."""
     async with self._manual_completion_lock:

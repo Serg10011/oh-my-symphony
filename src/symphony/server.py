@@ -11,6 +11,7 @@ endpoints below predate the web app and remain for scripts and the TUI:
     POST /api/v1/<id>/recover-blocked
     POST /api/v1/<id>/skip-document  (deprecated alias: /skip-learn)
     POST /api/v1/<id>/confirm-done
+    POST /api/v1/<id>/reset-budget
 """
 
 from __future__ import annotations
@@ -123,6 +124,19 @@ def build_app(orchestrator: Orchestrator) -> web.Application:
             return _error_response(500, "confirm_done_failed", str(exc))
         return web.json_response(result)
 
+    async def handle_reset_budget(request: web.Request) -> web.Response:
+        identifier = request.match_info.get("identifier", "")
+        try:
+            result = await orchestrator.reset_issue_budget(identifier)
+        except FileNotFoundError:
+            return _error_response(404, "issue_not_found", f"unknown issue {identifier}")
+        except ValueError as exc:
+            return _error_response(409, "not_resettable", str(exc))
+        except Exception as exc:
+            log.warning("reset_budget_failed", identifier=identifier, error=str(exc))
+            return _error_response(500, "reset_budget_failed", str(exc))
+        return web.json_response(result)
+
     async def handle_skip_document(request: web.Request) -> web.Response:
         identifier = request.match_info.get("identifier", "")
         changed, message = await orchestrator.skip_document(identifier)
@@ -224,6 +238,7 @@ def build_app(orchestrator: Orchestrator) -> web.Application:
     app.router.add_post("/api/v1/{identifier}/pause", handle_pause)
     app.router.add_post("/api/v1/{identifier}/resume", handle_resume)
     app.router.add_post("/api/v1/{identifier}/confirm-done", handle_confirm_done)
+    app.router.add_post("/api/v1/{identifier}/reset-budget", handle_reset_budget)
     app.router.add_post("/api/v1/{identifier}/recover-blocked", handle_recover_blocked)
     app.router.add_post("/api/v1/{identifier}/skip-document", handle_skip_document)
     # Deprecated alias — lane renamed Learn -> Document; old scripts keep working.
