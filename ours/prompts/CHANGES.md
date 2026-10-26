@@ -21,4 +21,6 @@
 
 Почему preflight из рабочей копии: штатный текст велит запускать `git merge-tree` «from the host repo», а у нас host — папка доски без git (REPORT-09). Целевая ветка в промпт не передаётся (в шаблон попадают только `agent.max_attempts` и `agent.auto_merge_on_done`, `prompt.py:508`), поэтому агент берёт её из `symphony.mergetargetbranch` — эту настройку пишет `ours/hooks/worktree.py`.
 
+Done подзадачам `role:worker` (S4-12) ставит не агент, а `ours/hooks/integrate.py hook` в конце `after_run`, после вливания их ветки в `integration/<ЗАДАЧА>`; промпты по-прежнему велят агенту ставить `Human Review`, правок текста не потребовалось.
+
 Не менялось сознательно: `stages/verify.md:13,16` (ветки `app-release` и интеграционного прогона — мы их не используем); `stages/done.md` (`Done` — терминальный статус, этот промпт не вызывается); `stages/document.md:14` (раздел `## Human Review` по-прежнему пишется только при реальном вмешательстве).

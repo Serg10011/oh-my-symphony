@@ -56,6 +56,9 @@ hooks:
     # Mechanical checks first: the standard block below exits early when
     # there are no changes. `|| true` keeps bash from exec-ing check.py.
     "$SYMPHONY_PYTHON" {{sh:check_py}} hook || true
+    # The standard block runs in a subshell: its `exit 0` ("no changes") then
+    # ends only the subshell, and the integrate.py line after it still runs.
+    (
     set -uo pipefail
     git add -A -- . ':(exclude)kanban' ':(exclude).symphony' 2>/dev/null || true
     if git diff --cached --quiet 2>/dev/null; then
@@ -177,13 +180,20 @@ hooks:
           commit -m "$SUBJECT" >/dev/null 2>&1 || true
     fi
     echo "run finished at $(date -u +%FT%TZ)"
+    )
+    # Last on purpose (S4-12): merging the subtask into the integration branch
+    # needs the standard block's commit, and it must happen before the core
+    # ends the turn and frees the agent slot. `|| true` for the same reason as
+    # above: bash must not exec the script, or its parent pid would differ from
+    # check.py's (integrate.py matches check.py's pass mark by parent pid).
+    "$SYMPHONY_PYTHON" {{sh:integrate_py}} hook || true
 
 # [levels] of project.toml (TASK-K14): model, effort and own turn limits per
 # task level; a card picks one with `level:` in its frontmatter. Empty
 # without [levels].
 {{raw:levels_block}}agent:
   kind: claude
-  max_concurrent_agents: 1
+  max_concurrent_agents: {{int:max_concurrent_agents}}
   {{raw:default_level_line}}# [limits] of project.toml (meaning: comments there, REPORT-12, REPORT-16).
   max_turns: {{int:max_turns}}
   max_total_turns: {{int:max_total_turns}}

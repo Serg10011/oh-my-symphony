@@ -68,6 +68,10 @@ STALL_MARGIN_S = 120
 # Active states of the template: the core refuses agent.max_turns below this.
 ACTIVE_STATE_COUNT = 4
 
+# [agent] max_concurrent_agents: 1 keeps one subtask at a time, which the merge
+# into the integration branch (S4-12) relies on.
+DEFAULT_MAX_CONCURRENT_AGENTS = 1
+
 # [integration] (S4-11): subtasks start from the task's integration branch.
 DEFAULT_INTEGRATION = {"enabled": False, "branch_prefix": "integration/", "worker_label": "role:worker"}
 # Prefixes worktree.py owns: a branch under them is renamed or removed by the hook.
@@ -103,7 +107,7 @@ _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
         "max_attempts": (int, False),
         "max_state_turns": (int, False),
     },
-    "agent": {"allowed_bash": (list, False)},
+    "agent": {"allowed_bash": (list, False), "max_concurrent_agents": (int, False)},
     "integration": {
         "enabled": (bool, False),
         "branch_prefix": (str, False),
@@ -270,7 +274,7 @@ def stall_timeout_ms(tests_s: int) -> int:
 
 
 def validate_project(data: dict) -> dict:
-    """Validate parsed project.toml; fill [timeouts], [limits] and [integration] defaults."""
+    """Validate parsed project.toml; fill [timeouts], [limits], [integration] and [agent] defaults."""
     unknown = sorted(set(data) - set(_SCHEMA) - {"levels"})
     if unknown:
         raise ProjectError(f"{PROJECT_FILE}: неизвестный раздел(ы) {', '.join(unknown)}")
@@ -320,6 +324,7 @@ def validate_project(data: dict) -> dict:
         "default_level": None, "levels": {},
     }
     out["agent"]["allowed_bash"] = _check_allowed_bash(out["agent"].get("allowed_bash", []))
+    agents = out["agent"].setdefault("max_concurrent_agents", DEFAULT_MAX_CONCURRENT_AGENTS)
     if "model" in out["service"] and not MODEL_RE.match(out["service"]["model"]):
         raise ProjectError(
             f"{PROJECT_FILE}: [service] model {out['service']['model']!r}: "
@@ -328,6 +333,12 @@ def validate_project(data: dict) -> dict:
     out["timeouts"] = {**DEFAULT_TIMEOUTS, **out["timeouts"]}
     integration = out["integration"] = {**DEFAULT_INTEGRATION, **out["integration"]}
     _check_branch_prefix(integration["branch_prefix"])
+    if integration["enabled"] and agents != 1:
+        raise ProjectError(
+            f"{PROJECT_FILE}: [agent] max_concurrent_agents = {agents} при [integration] enabled = true: "
+            "интеграционная ветка: вливание и Done подзадачи рассчитаны на одного агента "
+            "(одно вливание за раз); выключи интеграцию или оставь max_concurrent_agents = 1"
+        )
     limits = out["limits"] = {**DEFAULT_LIMITS, **out["limits"]}
     if limits["max_turns"] < ACTIVE_STATE_COUNT:
         raise ProjectError(
@@ -563,11 +574,13 @@ def template_values(board: Path, project: dict) -> dict[str, object]:
         "workspace_root": str(Path.home() / "symphony_workspaces" / p["name"]),
         "worktree_py": str(hooks / "worktree.py"),
         "check_py": str(hooks / "check.py"),
+        "integrate_py": str(hooks / "integrate.py"),
         "claude_command": claude,
         "done_gate_command": f'"$SYMPHONY_PYTHON" {q(str(hooks / "check.py"))} gate',
         "gate_ms": timeouts["gate_ms"],
         "stall_ms": stall_timeout_ms(timeouts["tests_s"]),
         "hooks_ms": timeouts["hooks_ms"],
+        "max_concurrent_agents": project["agent"]["max_concurrent_agents"],
         "max_turns": limits["max_turns"],
         "max_total_turns": limits["max_total_turns"],
         "max_attempts": limits["max_attempts"],
