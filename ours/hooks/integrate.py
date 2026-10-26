@@ -19,7 +19,10 @@ $SYMPHONY_WORKFLOW_DIR. Exit codes: 0 done, 1 refusal with a reason,
 Last line of hooks.after_run (TASK-S4-12). Merges the finished subtask into
 its integration branch and moves its card to Done (see hook_main). Always
 exits 0; the outcome is in <board>/.ours-state/check.log (mode "integrate")
-and in the `## Integration` section of the card.
+and in the `## Integration` section of the card. A card that is not in Human
+Review is passed over silently (no log line: the hook runs after every turn).
+After Done it leaves <board>/.ours-state/<ID>.merged.json (S4-13): the tree
+that was merged, so that the done gate does not run the tests a second time.
 
 The branch is NOT called symphony/<TASK>: the task's own manager card is run
 by an agent in a worktree on that very name, and worktree.py renames it on a
@@ -365,7 +368,11 @@ def _read_pass_mark(ctx: check.Context) -> dict | None:
 
 
 def _dirty_files(workspace: Path) -> list[str]:
-    out = check.git(workspace, "status", "--porcelain", "-z", "--untracked-files=all")
+    # The same pathspec as the standard block and worktree_tree: `.symphony` and
+    # the board link are not the agent's work.
+    out = check.git(
+        workspace, "status", "--porcelain", "-z", "--untracked-files=all", "--", *check.STAGE_PATHSPEC
+    )
     return [item[3:] for item in check._z(out)]
 
 
@@ -375,7 +382,7 @@ def _run_hook(ctx: check.Context, project: dict) -> int:
         return 0
     front = read_card_front(ctx.card, with_title=True)
     if front["state"].lower() != STATE_REVIEW.lower():
-        return _skip(ctx, f"карточка в состоянии {front['state']!r}, вливание только из {STATE_REVIEW}")
+        return 0  # silent: after_run runs after every turn of every card
     task = task_of(front, project, ctx.issue_id)
     if task is None:
         return _skip(ctx, "карточка не подзадача (нет метки, request или [integration] выключен)")
@@ -413,22 +420,43 @@ def _integrate(ctx: check.Context, project: dict, front: dict, task: str) -> int
         result = merge_subtask(repo, branch, ctx.issue_id, front.get("title", ""), task, sub)
     except Conflict as exc:
         return _conflict(ctx, cfg, task, branch, source, exc)
-    return _done(ctx, cfg, task, branch, source, result)
+    return _done(ctx, cfg, task, branch, source, result, mark["tree"])
 
 
 def _head(task: str, branch: str, source: str) -> list[str]:
     return [f"- at: {check._now()}", f"- task: {task}", f"- branch: {branch}", f"- source: {source}"]
 
 
+def _write_merged(ctx: check.Context, task: str, branch: str, source: str, tree: str,
+                  commit: str | None) -> str:
+    """The one-shot record check.py gate reads; "written" or "failed"."""
+    payload = {"tree": tree, "commit": commit, "task": task, "branch": branch,
+               "source": source, "at": check._now()}
+    try:
+        check.ensure_state_dir(ctx.state_dir)
+        check._write_atomic(
+            check.merged_path(ctx), (json.dumps(payload, indent=2) + "\n").encode("utf-8")
+        )
+    except OSError as exc:
+        _report(ctx, f"cannot write the merged record: {exc}")
+        return "failed"
+    return "written"
+
+
 def _done(ctx: check.Context, cfg: check.Config | None, task: str, branch: str, source: str,
-          result: dict) -> int:
+          result: dict, tree: str) -> int:
     commit = result["commit"] or "no changes"
     failure = _board_mv(ctx, cfg, STATE_DONE)
+    # Only after Done took effect: without Done the gate is not coming, and a
+    # gate run by hand later must test in full.
+    record = "not written" if failure is not None else _write_merged(
+        ctx, task, branch, source, tree, result["commit"])
     lines = [*_head(task, branch, source), f"- commit: {commit}", "- check: passed (check.py hook)",
              f"- moved to: {STATE_DONE}" if failure is None else f"- moved to: {STATE_DONE} FAILED (see check.log)"]
     note_via = _note(ctx, lines)
     check.log_event(ctx, ctx.issue_id, MODE, "done", "merged into the integration branch",
-                    task=task, branch=branch, commit=commit, old_tip=result["old_tip"], note=note_via)
+                    task=task, branch=branch, commit=commit, old_tip=result["old_tip"], note=note_via,
+                    merged_record=record)
     if failure is not None:
         _report(ctx, f"the code is merged ({commit}) but the card is not Done: {failure}")
     return 0

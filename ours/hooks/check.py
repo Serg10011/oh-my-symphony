@@ -22,7 +22,9 @@ collected), the project tests last and only when the fast checks passed:
     5. card shape: required sections present and non-empty
     6. project tests: `/bin/bash <board>/test.sh`, own process group; exit 0
        and the last `PIPELINE_TESTS passed=.. skipped=.. failed=..` line:
-       failed = 0, passed >= baseline, skipped <= baseline
+       failed = 0, passed >= baseline, skipped <= baseline. The gate skips
+       this one check when the tree of the working copy is the tree that
+       passed `hook` and was merged by integrate.py (<ID>.merged.json).
 
 One check per card at a time (<board>/.ours-state/<ID>.lock): a second hook
 skips, the gate waits within its timeout.
@@ -88,6 +90,9 @@ LOG_NAME = "check.log"
 NOTE_HEADING = "Check Failure"
 # One-shot mark "this turn's content passed the checks" for integrate.py hook.
 PASS_SUFFIX = ".pass.json"
+# One-shot record "this tree was merged into the integration branch" written
+# by integrate.py hook; the gate may then skip the tests for the same tree.
+MERGED_SUFFIX = ".merged.json"
 # Pathspec of the standard after_run block (templates/WORKFLOW.md.tmpl).
 STAGE_PATHSPEC = (".", ":(exclude)kanban", ":(exclude).symphony")
 
@@ -639,6 +644,10 @@ class Result:
     reasons: list[str] = field(default_factory=list)
     tail: str = ""
     cfg: Config | None = None
+    tests_skipped: bool = False  # gate only: the merged tree, tests not run again
+    note: str = ""  # one line for the report and the log when tests were skipped
+    tests: str = ""  # "skipped" | "full" for a gate that met a merged record
+    tests_reason: str = ""  # why the record could not skip the tests
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -701,8 +710,48 @@ def load_baseline(board: Path, cfg: Config) -> dict:
     return baseline
 
 
+def merged_path(ctx: Context) -> Path:
+    return ctx.state_dir / f"{ctx.issue_id}{MERGED_SUFFIX}"
+
+
+def _take_merged(ctx: Context) -> dict | None:
+    """The one-shot record of integrate.py hook; removed whatever it says."""
+    path = merged_path(ctx)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = None
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    return data if isinstance(data, dict) else None
+
+
+def _merged_skip(ctx: Context, merged: dict) -> tuple[str | None, str]:
+    """(skip note, "") when the working copy holds the merged tree, else (None, reason)."""
+    tree = merged.get("tree")
+    if not isinstance(tree, str) or not tree:
+        return None, "merged record has no tree"
+    try:
+        current = worktree_tree(ctx.workspace)
+    except CheckError as exc:
+        return None, f"cannot compute the content tree: {exc}"
+    if current != tree:
+        return None, "tree differs from the merged one"
+    commit = merged.get("commit")
+    where = str(commit)[:12] if commit else "no changes"
+    return (
+        f"tests skipped: tree {tree[:12]} passed check.py hook and was merged into "
+        f"{_clean(str(merged.get('branch', '?')))} ({_clean(where)})",
+        "",
+    )
+
+
 def run_checks(ctx: Context, cfg: Config | None = None) -> Result:
     cfg = cfg or load_config(ctx.workflow_dir)
+    # Only the gate reads the record, and it is used up here, passed or not.
+    merged = _take_merged(ctx) if ctx.mode == "gate" else None
     reasons: list[str] = []
     baseline: dict = {}
     try:
@@ -720,15 +769,21 @@ def run_checks(ctx: Context, cfg: Config | None = None) -> Result:
     reasons += card_violations(ctx.card, cfg)
     if reasons:
         return Result(False, reasons, "", cfg)
+    mark: dict[str, object] = {}
+    if merged is not None:
+        note, why = _merged_skip(ctx, merged)
+        if note is not None:
+            return Result(True, [], "", cfg, tests_skipped=True, note=note, tests="skipped")
+        mark = {"tests": "full", "tests_reason": why}
     failure, tail, summary = run_tests(
         ctx.workspace, ctx.workflow_dir / TEST_SCRIPT, cfg, ctx.parent_pid
     )
     if failure is not None:
-        return Result(False, [failure], tail, cfg)
+        return Result(False, [failure], tail, cfg, **mark)
     problems = summary_violations(summary, baseline)
     if problems:
-        return Result(False, problems, tail, cfg)
-    return Result(True, [], tail, cfg)
+        return Result(False, problems, tail, cfg, **mark)
+    return Result(True, [], tail, cfg, **mark)
 
 
 # ---------------------------------------------------------------------------
@@ -955,6 +1010,8 @@ def _emit(text: str, *, stream=None) -> None:
 def _format_report(mode: str, issue_id: str, result: Result) -> str:
     head = f"check.py {mode}: {'PASS' if result.ok else 'FAIL'} ({issue_id})"
     lines = [head] + [f"- {_clean(reason)}" for reason in result.reasons]
+    if result.tests_skipped:
+        lines.append(f"- {_clean(result.note)}")
     if not result.ok and result.tail.strip():
         lines += ["--- test output (tail) ---", result.tail.rstrip()]
     return "\n".join(lines)
@@ -987,7 +1044,13 @@ def gate_main() -> int:
     issue_id = ctx.issue_id if ctx else "?"
     _emit(_format_report("gate", issue_id, result))
     if ctx is not None:
-        log_event(ctx, issue_id, "gate", "pass" if result.ok else "fail", "; ".join(result.reasons))
+        extra = {}
+        if result.tests:
+            extra["tests"] = result.tests
+        if result.tests_reason:
+            extra["tests_reason"] = result.tests_reason
+        reason = result.note if result.tests_skipped else "; ".join(result.reasons)
+        log_event(ctx, issue_id, "gate", "pass" if result.ok else "fail", reason, **extra)
     return 0 if result.ok else 1
 
 

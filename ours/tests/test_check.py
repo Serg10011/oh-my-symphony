@@ -1108,3 +1108,112 @@ def test_append_note_takes_a_heading(env: Env, monkeypatch: pytest.MonkeyPatch) 
     text = env.card.read_text()
     assert text.count("## Integration") == 2 and "- by file" in text and "- by tracker" in text
     assert text.count("## Check Failure") == 1 and "- default heading" in text
+
+
+# ---------------------------------------------------------------------------
+# the gate skips the tests for a tree that was merged (S4-13)
+# ---------------------------------------------------------------------------
+
+
+def merged_file(env: Env) -> Path:
+    return env.board / ".ours-state" / f"{ID}.merged.json"
+
+
+def put_merged(env: Env, tree: str | None = None, commit: str | None = "c" * 40) -> None:
+    """What integrate.py hook leaves after Done; by default for the tree of the working copy."""
+    payload = {"tree": tree or check.worktree_tree(env.ws), "commit": commit, "task": "T-0",
+               "branch": "integration/T-0", "source": f"symphony/{ID}@{'a' * 40}", "at": "t"}
+    write(merged_file(env), json.dumps(payload))
+
+
+def gate_events(env: Env) -> list[dict]:
+    return [e for e in env.log() if e["mode"] == "gate"]
+
+
+def test_gate_skips_the_tests_for_the_merged_tree(env: Env) -> None:
+    write(env.ws / "src" / "app.py", "x = 2\n")
+    env.commit()
+    put_merged(env)
+    result = env.run("gate")
+    assert_passed(result)
+    assert not env.marker.exists()
+    assert f"tests skipped: tree {check.worktree_tree(env.ws)[:12]} passed check.py hook" in result.stdout
+    assert f"merged into integration/T-0 ({'c' * 12})" in result.stdout
+    (event,) = gate_events(env)
+    assert event["outcome"] == "pass" and event["tests"] == "skipped"
+    assert event["reason"].startswith("tests skipped: tree ")
+    assert not merged_file(env).exists()
+
+
+def test_gate_skip_says_no_changes_for_an_empty_merge(env: Env) -> None:
+    put_merged(env, commit=None)
+    result = env.run("gate")
+    assert_passed(result)
+    assert "(no changes)" in result.stdout and not env.marker.exists()
+
+
+def test_gate_skip_survives_the_core_squash(env: Env) -> None:
+    write(env.ws / "src" / "a.py", "a = 1\n")
+    env.commit("one")
+    write(env.ws / "src" / "b.py", "b = 1\n")
+    env.commit("two")
+    put_merged(env)
+    # finalize_delivery_history: soft reset to the base and one new commit.
+    git(env.ws, "reset", "--soft", git(env.code, "rev-parse", "main").strip())
+    git(env.ws, "commit", "-q", "-m", "squashed")
+    assert_passed(env.run("gate"))
+    assert not env.marker.exists()
+    assert gate_events(env)[-1]["tests"] == "skipped"
+
+
+def test_gate_runs_the_tests_when_the_tree_differs(env: Env) -> None:
+    write(env.ws / "src" / "app.py", "x = 2\n")
+    env.commit()
+    put_merged(env)
+    write(env.ws / "src" / "app.py", "x = 3\n")  # after the merge
+    assert_passed(env.run("gate"))
+    assert env.marker.exists()
+    (event,) = gate_events(env)
+    assert event["tests"] == "full" and event["tests_reason"] == "tree differs from the merged one"
+    assert not merged_file(env).exists()
+
+
+def test_gate_without_a_record_runs_the_tests(env: Env) -> None:
+    assert_passed(env.run("gate"))
+    assert env.marker.exists()
+    assert "tests skipped" not in env.run("gate").stdout
+
+
+def test_gate_record_does_not_excuse_a_failed_fast_check(env: Env) -> None:
+    write(env.ws / "tests" / "test_app.py", "def test_a():\n    pass\n")
+    env.commit()
+    put_merged(env)
+    assert_refused(env.run("gate"), "existing test changed: tests/test_app.py")
+    assert not env.marker.exists()
+    assert not merged_file(env).exists()
+
+
+def test_gate_with_a_damaged_record_runs_the_tests(env: Env) -> None:
+    write(merged_file(env), "not json")
+    assert_passed(env.run("gate"))
+    assert env.marker.exists() and not merged_file(env).exists()
+    write(merged_file(env), json.dumps({"commit": None}))
+    env.marker.unlink()
+    assert_passed(env.run("gate"))
+    assert env.marker.exists()
+    assert gate_events(env)[-1]["tests_reason"] == "merged record has no tree"
+
+
+def test_the_record_is_used_up_by_one_gate(env: Env) -> None:
+    put_merged(env)
+    assert_passed(env.run("gate"))
+    assert not env.marker.exists()
+    assert_passed(env.run("gate"))
+    assert env.marker.exists()
+
+
+def test_hook_ignores_the_merged_record(env: Env) -> None:
+    put_merged(env)
+    assert env.run("hook").returncode == 0
+    assert env.marker.exists()
+    assert merged_file(env).exists()
