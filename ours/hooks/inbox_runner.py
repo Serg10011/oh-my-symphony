@@ -22,6 +22,7 @@ import hashlib
 import json
 import os
 import re
+import resource
 import shlex
 import signal
 import stat
@@ -710,6 +711,7 @@ class Runner:
                 report.line(f"ОТКАЗ: нет {python}; создайте окружение в основной папке. Проверки не запускались.")
                 return
         report.line(f"Python: {python}")
+        report.line(f"Лимит открытых файлов: мягкий {resource.getrlimit(resource.RLIMIT_NOFILE)[0]}")
 
         check_env = clean_env(f"{python.parent}:{SAFE_PATH}")
         py = str(python)
@@ -787,6 +789,26 @@ def acquire_lock(main: Path):
     return fh
 
 
+def raise_open_files_limit(wanted: int = 10240) -> tuple[int, int]:
+    """Raise the soft open-files limit (launchd gives 256) so child processes inherit it.
+
+    Never lowers the limit; errors are swallowed. Returns (soft, hard) after the attempt.
+    """
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (ValueError, OSError):
+        return (-1, -1)
+    if soft != resource.RLIM_INFINITY and soft < wanted:
+        target = wanted if hard == resource.RLIM_INFINITY else min(wanted, hard)
+        if target > soft:
+            try:
+                resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+                soft = target
+            except (ValueError, OSError):
+                pass
+    return (soft, hard)
+
+
 def serve(settings: Settings, ops: Ops, once: bool = False) -> int:
     """Poll the inbox until SIGTERM (or once). Returns the exit code."""
     lock = acquire_lock(settings.main)
@@ -847,4 +869,6 @@ def run(argv: list[str] | None = None, ops: Ops | None = None) -> int:
     signal.signal(signal.SIGTERM, lambda *_: STOP.set())
     signal.signal(signal.SIGINT, lambda *_: STOP.set())
     settings = Settings(main, root, args.gh, args.osascript, args.interval)
+    soft, hard = raise_open_files_limit()
+    print(f"inbox-runner: лимит открытых файлов: мягкий {soft}, жёсткий {hard}", flush=True)
     return serve(settings, ops or Ops(), once=args.once)

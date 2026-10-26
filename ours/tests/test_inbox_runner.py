@@ -1066,3 +1066,90 @@ def test_command_rejects_bad_paths(tmp_path: Path) -> None:
     done = subprocess.run([sys.executable, str(RUNNER), "--main", str(main), "--once", "--gh", "/x/gh"],
                           capture_output=True, text=True, timeout=60)
     assert done.returncode == 1 and "без пробелов" in done.stderr
+
+
+# --- open files limit -------------------------------------------------------------------
+
+
+class FakeResource:
+    RLIMIT_NOFILE = 8
+    RLIM_INFINITY = -1
+
+    def __init__(self, soft: int, hard: int, error: Exception | None = None) -> None:
+        self.limits = (soft, hard)
+        self.error = error
+        self.set_calls: list[tuple[int, int]] = []
+
+    def getrlimit(self, _which: int) -> tuple[int, int]:
+        return self.limits
+
+    def setrlimit(self, _which: int, value: tuple[int, int]) -> None:
+        if self.error:
+            raise self.error
+        self.set_calls.append(value)
+        self.limits = value
+
+
+def test_raise_limit_to_wanted(monkeypatch) -> None:
+    fake = FakeResource(256, 1_000_000)
+    monkeypatch.setattr(ir, "resource", fake)
+    assert ir.raise_open_files_limit() == (10240, 1_000_000)
+    assert fake.set_calls == [(10240, 1_000_000)]
+
+
+def test_raise_limit_infinite_hard(monkeypatch) -> None:
+    fake = FakeResource(256, FakeResource.RLIM_INFINITY)
+    monkeypatch.setattr(ir, "resource", fake)
+    assert ir.raise_open_files_limit()[0] == 10240
+
+
+def test_raise_limit_capped_by_hard(monkeypatch) -> None:
+    fake = FakeResource(256, 4096)
+    monkeypatch.setattr(ir, "resource", fake)
+    assert ir.raise_open_files_limit() == (4096, 4096)
+
+
+def test_raise_limit_never_lowers(monkeypatch) -> None:
+    fake = FakeResource(20000, 30000)
+    monkeypatch.setattr(ir, "resource", fake)
+    assert ir.raise_open_files_limit() == (20000, 30000)
+    assert fake.set_calls == []
+
+
+@pytest.mark.parametrize("error", [OSError("no"), ValueError("bad")])
+def test_raise_limit_swallows_errors(monkeypatch, error) -> None:
+    fake = FakeResource(256, 4096, error)
+    monkeypatch.setattr(ir, "resource", fake)
+    assert ir.raise_open_files_limit() == (256, 4096)
+
+
+def test_raise_limit_inherited_by_child() -> None:
+    import resource
+
+    hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+    if hard != resource.RLIM_INFINITY and hard < 1024:
+        pytest.skip("hard open-files limit is below 1024")
+    expected = 10240 if hard == resource.RLIM_INFINITY else min(10240, hard)
+    script = (
+        "import importlib.util, resource, sys\n"
+        "hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]\n"
+        "resource.setrlimit(resource.RLIMIT_NOFILE, (256, hard))\n"
+        "spec = importlib.util.spec_from_file_location('inbox_runner', sys.argv[1])\n"
+        "m = importlib.util.module_from_spec(spec)\n"
+        "sys.modules['inbox_runner'] = m\n"
+        "spec.loader.exec_module(m)\n"
+        "m.raise_open_files_limit()\n"
+        "child = m.run_process([sys.executable, '-c', "
+        "'import resource; print(resource.getrlimit(resource.RLIMIT_NOFILE)[0])'])\n"
+        "print(child.out.strip())\n"
+    )
+    done = subprocess.run([sys.executable, "-c", script, str(OURS / "hooks" / "inbox_runner.py")],
+                          capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=60)
+    assert done.returncode == 0, done.stderr
+    assert int(done.stdout.strip().splitlines()[-1]) >= expected
+
+
+def test_test_report_shows_open_files_limit(env: Env) -> None:
+    prep_test(env, "ours/a.py\n")
+    env.pass_()
+    assert "Лимит открытых файлов: мягкий " in env.log("S4-05.test.log")
