@@ -48,6 +48,7 @@ BRANCH_PREFIX = "dev/"
 COMMANDS = ("run", "test", "merge")
 MODELS = ("sonnet", "opus", "haiku")
 DEFAULT_MODEL = "sonnet"
+EFFORTS = ("low", "medium", "high", "xhigh", "max")  # values of `claude --effort`
 DEFAULT_WORKTREE_ROOT = "/Users/helloworld10011/dev/oms-dev"
 GIT = "/usr/bin/git"
 OSASCRIPT = "/usr/bin/osascript"
@@ -56,7 +57,6 @@ SAFE_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 CODE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]{0,30}")
 BRANCH_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,80}")
 PATH_RE = re.compile(r"/[A-Za-z0-9._/-]+")
-MODEL_LINE_RE = re.compile(r"model=(sonnet|opus|haiku)")
 
 MAX_FILE_BYTES = 1024
 SETTLE_S = 2.0
@@ -137,6 +137,24 @@ def content_lines(text: str) -> list[str]:
     return text.split("\n")
 
 
+RUN_FORMAT_HINT = ("в файле .run допустима пустота или одна строка из слов через пробел: "
+                   "model=sonnet|opus|haiku и/или effort=low|medium|high|xhigh|max, каждое не более раза")
+
+
+def parse_run_line(lines: list[str]) -> tuple[dict | None, str]:
+    """Strict `key=value` words of a non-empty .run file; exact lowercase values only."""
+    allowed = {"model": MODELS, "effort": EFFORTS}
+    if len(lines) != 1:
+        return None, RUN_FORMAT_HINT
+    found: dict[str, str] = {}
+    for word in lines[0].split(" "):
+        key, eq, value = word.partition("=")
+        if not eq or key not in allowed or value not in allowed[key] or key in found:
+            return None, RUN_FORMAT_HINT
+        found[key] = value
+    return {"model": found.get("model", DEFAULT_MODEL), "effort": found.get("effort")}, ""
+
+
 def parse_content(command: str, text: str) -> tuple[dict | None, str]:
     """Parameters of the command, or (None, reason in Russian)."""
     lines = content_lines(text)
@@ -145,11 +163,8 @@ def parse_content(command: str, text: str) -> tuple[dict | None, str]:
         return ({}, "") if empty else (None, "файл .test должен быть пустым")
     if command == "run":
         if empty:
-            return {"model": DEFAULT_MODEL}, ""
-        m = MODEL_LINE_RE.fullmatch(lines[0]) if len(lines) == 1 else None
-        if m is None:
-            return None, "в файле .run допустима пустота или одна строка model=sonnet|opus|haiku"
-        return {"model": m.group(1)}, ""
+            return {"model": DEFAULT_MODEL, "effort": None}, ""
+        return parse_run_line(lines)
     if len(lines) != 1 or not lines[0]:
         return None, "в файле .merge должна быть ровно одна непустая строка — имя ветки"
     if not valid_branch(lines[0]):
@@ -377,15 +392,18 @@ def worktree_add_argv(main: Path, worktree_root: Path, code: str) -> list[str]:
             str(worktree_root / code), f"{REMOTE}/{BASE_BRANCH}"]
 
 
-def terminal_command(main: Path, worktree_root: Path, code: str, model: str) -> str:
+def terminal_command(main: Path, worktree_root: Path, code: str, model: str,
+                     effort: str | None = None) -> str:
     """The line typed into Terminal. Only validated parts reach it."""
+    assert effort is None or effort in EFFORTS
     assert valid_code(code) and model in MODELS and valid_abs_path(str(main)) and valid_abs_path(str(worktree_root))
     task = main / INBOX_REL / f"{code}.md"
     prompt = TASK_PROMPT.format(path=task)
     # the task path has only [A-Za-z0-9._/-], so it is safe inside double quotes
     assert not re.search(r'[\s"$`\\!\']', str(task))
+    effort_arg = f"--effort {shlex.quote(effort)} " if effort else ""
     return (f"cd {shlex.quote(str(worktree_root / code))} && claude --model {shlex.quote(model)} "
-            f'"{prompt}"')
+            f'{effort_arg}"{prompt}"')
 
 
 def pr_list_argv(gh: str, branch: str) -> list[str]:
@@ -549,7 +567,7 @@ class Runner:
         try:
             report.line(f"Начало: команда .{command}, код {code}, файл {name!r}")
             if command == "run":
-                self.do_run(report, code, params["model"])
+                self.do_run(report, code, params["model"], params["effort"])
             elif command == "merge":
                 self.do_merge(report, params["branch"])
             else:
@@ -591,7 +609,7 @@ class Runner:
 
     # --- .run --------------------------------------------------------------
 
-    def do_run(self, report: Report, code: str, model: str) -> None:
+    def do_run(self, report: Report, code: str, model: str, effort: str | None) -> None:
         s = self.s
         branch, wt = branch_for(code), s.worktree_root / code
         env = git_env()
@@ -615,7 +633,8 @@ class Runner:
         if add.rc != 0:
             report.line("ОТКАЗ: рабочая копия не создана; окно не открыто.")
             return
-        command = terminal_command(s.main, s.worktree_root, code, model)
+        command = terminal_command(s.main, s.worktree_root, code, model, effort)
+        report.line(f"Запуск: model={model} effort={effort or 'по умолчанию'}")
         report.line("Шаг: открыть окно Терминала")
         ok, text = self.ops.terminal(s.osascript, command)
         if text:
