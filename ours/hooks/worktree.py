@@ -20,6 +20,16 @@ way); `git worktree add` from refs/heads/<base>; worktree config, base
 record, links; then setup.sh. Any failure after the add rolls everything
 back and exits non-zero.
 
+Start branch (S4-11): with [integration] enabled, a card labelled
+`role:worker` with `request: <TASK>` starts from refs/heads/<branch_prefix>
+<TASK> instead of the base branch (symphony.basebranch and
+symphony.mergetargetbranch become that branch). The branch is created from
+the base branch if missing, under the same lock, before park(); an existing
+one is never recreated or moved. With [integration] off the card is not read.
+The base record keeps `base_branch` (the project's, what baseline.json was
+measured on) and adds `start_branch` and `task`. A rollback never deletes
+the integration branch: another subtask may already stand on it.
+
 remove: drop only the links that point into the board folder, then the
 standard `_worktree_cleanup` with SYMPHONY_WORKFLOW_DIR = code repository.
 Branches are never touched.
@@ -41,6 +51,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+import integrate
 import project_config as pc
 
 LOCK_WAIT_S = 120
@@ -197,11 +208,14 @@ def restore_links(t: Ticket) -> None:
         link.symlink_to(target, target_is_directory=True)
 
 
-def write_base_record(t: Ticket, sha: str) -> None:
+def write_base_record(t: Ticket, sha: str, start_branch: str | None = None,
+                      task: str | None = None) -> None:
     pc.ensure_state_dir(t.board)
     write_json(pc.base_record_path(t.board, t.id), {
         "base_sha": sha,
         "base_branch": t.base,
+        "start_branch": start_branch or t.base,
+        "task": task,
         "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     })
 
@@ -256,6 +270,8 @@ def park(t: Ticket, plan: Plan) -> None:
 
 
 def rollback(t: Ticket, plan: Plan) -> None:
+    """Undo a clean start. The integration branch (S4-11) is never deleted, even
+    if this start created it: another subtask may already stand on it."""
     problems = []
 
     def step(fn, *args) -> None:
@@ -303,32 +319,49 @@ def run_setup(t: Ticket) -> int:
         proc.wait()
 
 
+def subtask_task(t: Ticket) -> str | None:
+    """The task this card is a subtask of, or None (also when [integration] is off)."""
+    if not t.project["integration"]["enabled"]:
+        return None
+    card = t.board / pc.BOARD_DIR / f"{t.id}.md"
+    if not card.is_file():
+        raise HookError(f"нет карточки {card}: интеграционная ветка требует прочитать её шапку")
+    return integrate.task_of(integrate.read_card_front(card), t.project, t.id)
+
+
 def create(t: Ticket) -> int:
     common = preflight(t)
     if is_ticket_worktree(t, common):
         refresh(t)
         return 0
+    task = subtask_task(t)
+    start = integrate.integration_branch(t.project, task) if task else t.base
     plan = Plan()
     with worktree_lock(common):
         prepared = t.cleanup_module("--prepare-setup", t.branch)
         if prepared.returncode != 0:
             raise HookError("штатная подготовка (_worktree_cleanup --prepare-setup) отказала: "
                             + (prepared.stderr or prepared.stdout).strip()[-500:])
+        if task:
+            # Not undone by rollback(): another subtask may already stand on it.
+            _, created = integrate.ensure_integration_branch(t.repo, start, t.base)
+            if created:
+                say(f"ветка {start} создана от {t.base}")
         park(t, plan)
         try:
             git(t.repo, "worktree", "add", str(t.workspace), "-b", t.branch,
-                f"refs/heads/{t.base}")
+                f"refs/heads/{start}")
             plan.added = True
             sha = git(t.workspace, "rev-parse", "HEAD")
             restore_exclusions(t)
-            for key, value in (("symphony.basesha", sha), ("symphony.basebranch", t.base),
-                               ("symphony.mergetargetbranch", t.base)):
+            for key, value in (("symphony.basesha", sha), ("symphony.basebranch", start),
+                               ("symphony.mergetargetbranch", start)):
                 git(t.workspace, "config", "--worktree", key, value)
             git(t.workspace, "config", "--worktree", "--unset-all",
                 "symphony.autocommitExclude", check=False)
             for path in (pc.BOARD_DIR, f"docs/{t.id}", "docs/llm-wiki"):
                 git(t.workspace, "config", "--worktree", "--add", "symphony.autocommitExclude", path)
-            write_base_record(t, sha)
+            write_base_record(t, sha, start, task)
             restore_links(t)
         except BaseException:
             rollback(t, plan)
@@ -339,7 +372,8 @@ def create(t: Ticket) -> int:
         with worktree_lock(common):
             rollback(t, plan)
         return 1
-    say(f"рабочая копия {t.workspace} на {t.branch} от {t.base} ({sha[:12]})")
+    origin = f"от {start} (задача {task}, {sha[:12]})" if task else f"от {start} ({sha[:12]})"
+    say(f"рабочая копия {t.workspace} на {t.branch} {origin}")
     return 0
 
 
@@ -366,7 +400,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         ticket = Ticket()
         return create(ticket) if args[0] == "create" else remove(ticket)
-    except (HookError, pc.ProjectError) as exc:
+    except (HookError, integrate.IntegrateError, pc.ProjectError) as exc:
         say(f"отказ: {exc}")
         return 1
 

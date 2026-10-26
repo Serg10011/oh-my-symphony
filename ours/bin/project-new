@@ -158,6 +158,16 @@ max_check_failures = 2         # провалов проверки check.py до
 # похоже на отключение проверок разрешений.
 # allowed_bash = [".venv/bin/python -m ruff"]
 
+[integration]            # интеграционная ветка задачи (S4-11); пока выключено
+# Подзадачи одной задачи (карточки с меткой worker_label и полем `request: <ЗАДАЧА>`)
+# стартуют не от базовой ветки, а от конца общей ветки задачи, чтобы видеть код друг
+# друга. Ветку создаёт `ours/hooks/integrate.py ensure-branch <ЗАДАЧА>` или, если её
+# ещё нет, worktree.py при старте первой подзадачи. Вливание подзадач в неё — следующая
+# задача (S4-12): пока включать только осознанно. Без раздела и при false всё как раньше.
+# enabled = false
+# branch_prefix = "integration/"   # на /; не symphony/ и не attempts/ (их занял хук)
+# worker_label = "role:worker"     # без учёта регистра
+
 [service]                # служба под launchd (ours/bin/project-launchd)
 # model = "haiku"              # переменная ANTHROPIC_MODEL службы; без ключа не задаётся
 

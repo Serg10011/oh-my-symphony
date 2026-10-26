@@ -68,6 +68,11 @@ STALL_MARGIN_S = 120
 # Active states of the template: the core refuses agent.max_turns below this.
 ACTIVE_STATE_COUNT = 4
 
+# [integration] (S4-11): subtasks start from the task's integration branch.
+DEFAULT_INTEGRATION = {"enabled": False, "branch_prefix": "integration/", "worker_label": "role:worker"}
+# Prefixes worktree.py owns: a branch under them is renamed or removed by the hook.
+RESERVED_BRANCH_PREFIXES = ("symphony/", "attempts/")
+
 # section -> key -> (type, required)
 _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
     "project": {
@@ -99,6 +104,11 @@ _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
         "max_state_turns": (int, False),
     },
     "agent": {"allowed_bash": (list, False)},
+    "integration": {
+        "enabled": (bool, False),
+        "branch_prefix": (str, False),
+        "worker_label": (str, False),
+    },
     "service": {"model": (str, False)},
 }
 # [levels]: `default_level` plus one table per level (TASK-K14). Mirrors the core
@@ -160,6 +170,22 @@ def _check_allowed_bash(entries: list[str]) -> list[str]:
         if entry not in checked:
             checked.append(entry)
     return checked
+
+
+def _check_branch_prefix(prefix: str) -> None:
+    """[integration] branch_prefix: a directory-like prefix no hook already owns."""
+    where = f"{PROJECT_FILE}: [integration] branch_prefix {prefix!r}"
+    if not prefix.endswith("/"):
+        raise ProjectError(f"{where}: должен заканчиваться на /")
+    if prefix.startswith("-"):
+        raise ProjectError(f"{where}: не может начинаться с '-'")
+    if any(ch.isspace() for ch in prefix) or ".." in prefix:
+        raise ProjectError(f"{where}: без пробелов и '..'")
+    if prefix in RESERVED_BRANCH_PREFIXES:
+        raise ProjectError(
+            f"{where}: префикс занят хуком worktree.py "
+            f"({', '.join(RESERVED_BRANCH_PREFIXES)}); возьми другой, например integration/"
+        )
 
 
 def _check_levels(raw: object) -> dict:
@@ -244,7 +270,7 @@ def stall_timeout_ms(tests_s: int) -> int:
 
 
 def validate_project(data: dict) -> dict:
-    """Validate parsed project.toml; fill [checks] and [timeouts] defaults."""
+    """Validate parsed project.toml; fill [timeouts], [limits] and [integration] defaults."""
     unknown = sorted(set(data) - set(_SCHEMA) - {"levels"})
     if unknown:
         raise ProjectError(f"{PROJECT_FILE}: неизвестный раздел(ы) {', '.join(unknown)}")
@@ -300,6 +326,8 @@ def validate_project(data: dict) -> dict:
             "только буквы, цифры и . _ : [ ] - (например haiku)"
         )
     out["timeouts"] = {**DEFAULT_TIMEOUTS, **out["timeouts"]}
+    integration = out["integration"] = {**DEFAULT_INTEGRATION, **out["integration"]}
+    _check_branch_prefix(integration["branch_prefix"])
     limits = out["limits"] = {**DEFAULT_LIMITS, **out["limits"]}
     if limits["max_turns"] < ACTIVE_STATE_COUNT:
         raise ProjectError(
