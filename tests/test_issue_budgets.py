@@ -31,7 +31,7 @@ async def test_live_budgets_use_guard_counters_and_inclusive_token_total():
     result = await orch.issue_budget_snapshot(issue)
     rows = {row["name"]: row for row in result["items"]}
     assert {name: row["remaining"] for name, row in rows.items()} == {
-        "attempt_turns": 3, "total_turns": 14, "state_tokens": 400,
+        "attempt_turns": 3, "state_turns": 30, "total_turns": 14, "state_tokens": 400,
         "retries": 1, "rewinds": 1, "reopens": 1,
     }
     assert issue.id in orch._running  # A projection never stops or dispatches work.
@@ -47,7 +47,8 @@ async def test_unknown_usage_and_disabled_caps_are_distinct():
     rows = {row["name"]: row for row in result["items"]}
     assert rows["attempt_turns"]["status"] == "unknown"
     assert all(row["status"] == "disabled" and row["remaining"] is None
-               for name, row in rows.items() if name != "attempt_turns")
+               for name, row in rows.items() if name not in ("attempt_turns", "state_turns"))
+    assert rows["state_turns"]["status"] == "unknown"
 
 
 @pytest.mark.parametrize("done_runs,running,approved,remaining", [
