@@ -51,7 +51,7 @@ import integrate
 import project_config as pc
 
 MODE = "plan"
-MANAGER_LABEL = "role:manager-plan"
+MANAGER_LABEL = integrate.MANAGER_LABEL
 STATE_PLAN = "Plan"
 STATE_SUBTASKS = "Subtasks"
 STATE_ESCALATE = "needs_human"
@@ -59,7 +59,7 @@ STATE_ESCALATE = "needs_human"
 STATE_WORKER = "In Progress"
 NOTE_ACCEPTED = "Plan Accepted"
 NOTE_FAILURE = "Plan Failure"
-NOTE_PROGRESS = "Subtask Progress"
+NOTE_PROGRESS = integrate.NOTE_PROGRESS
 PLAN_DIR = "work"
 PLAN_NAME = "plan.toml"
 LIMITS_NAME = "limits.md"

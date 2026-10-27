@@ -23,6 +23,22 @@ and in the `## Integration` section of the card. A card that is not in Human
 Review is passed over silently (no log line: the hook runs after every turn).
 After Done it leaves <board>/.ours-state/<ID>.merged.json (S4-13): the tree
 that was merged, so that the done gate does not run the tests a second time.
+Then (S4-21) it writes `- <ID> merged (k of N)` into `## Subtask Progress` of the
+task card and, when every subtask of `## Plan Accepted` is Done, calls the final
+check of the task (finish_task) - after leaving every lock of the merge.
+
+    integrate.py finish-task <TASK> [--board <board folder>]
+
+The same final check by hand (the last subtask was moved to Done by a human).
+The task card (label `role:manager-plan`, section `## Plan Accepted`) must be in
+`Subtasks` and every subtask Done. Under the task's card lock and the worktree
+lock: integration/<TASK> is merged with the base branch (a real two-parent
+commit, or nothing when the base did not move), the task's working copy is put
+on the result, the diff files for Verify are written, the base record moves to
+the new base, `.final.json` is written and the card goes to `Verify`. Any
+problem: nothing in the branches changes, the card goes to `needs_human` with
+`## Final Check`. Exit codes: 0 moved to Verify, 1 not (the reason is printed),
+2 bad arguments.
 
 The branch is NOT called symphony/<TASK>: the task's own manager card is run
 by an agent in a worktree on that very name, and worktree.py renames it on a
@@ -176,6 +192,38 @@ def task_of(front: dict, project: dict, card_id: str | None = None) -> str | Non
 
 def integration_branch(project: dict, task: str) -> str:
     return project["integration"]["branch_prefix"] + task
+
+
+# ---------------------------------------------------------------------------
+# the card of a task (S4-21)
+# ---------------------------------------------------------------------------
+
+MANAGER_LABEL = "role:manager-plan"
+NOTE_ACCEPTED = "Plan Accepted"
+NOTE_PROGRESS = "Subtask Progress"
+STATE_SUBTASKS = "Subtasks"
+_ACCEPTED_RE = re.compile(rf"^##\s+{re.escape(NOTE_ACCEPTED)}\s*$", re.IGNORECASE | re.MULTILINE)
+_NEXT_HEADING_RE = re.compile(r"^##\s+\S", re.MULTILINE)
+# A subtask line of `## Plan Accepted` (plan.py): `- <ID> — <title> — <level>`.
+_PLAN_LINE_RE = re.compile(r"^-\s+([A-Za-z][A-Za-z0-9_-]{0,63}) — ", re.MULTILINE)
+
+
+def is_task_card(front: dict, body: str) -> bool:
+    """The one definition of a task card: the manager label and a `## Plan
+    Accepted` section (plan.py writes it when it creates the subtask cards).
+    Used by the final check, by check.py and by the progress lines."""
+    return MANAGER_LABEL in front["labels"] and _ACCEPTED_RE.search(body) is not None
+
+
+def plan_accepted_ids(body: str) -> list[str]:
+    """IDs of the subtasks in `## Plan Accepted`, in the order of the section."""
+    match = _ACCEPTED_RE.search(body)
+    if match is None:
+        return []
+    after = body[match.end():]
+    following = _NEXT_HEADING_RE.search(after)
+    section = after if following is None else after[: following.start()]
+    return _PLAN_LINE_RE.findall(section)
 
 
 # ---------------------------------------------------------------------------
@@ -340,11 +388,13 @@ def _board_mv(ctx: check.Context, cfg: check.Config | None, target: str) -> str 
     return f"board mv to {target!r} did not take effect (exit {rc}, state now {now!r}): {detail[:300]}"
 
 
-def _note(ctx: check.Context, lines: list[str]) -> str:
+def _note(ctx: check.Context, lines: list[str], heading: str = NOTE_HEADING,
+          issue_id: str | None = None) -> str:
+    """The note goes to the card of `ctx`, or to `issue_id` (another card of the board)."""
     try:
-        return check.append_note(ctx, "\n".join(lines), NOTE_HEADING)
+        return check.append_note(ctx, "\n".join(lines), heading, issue_id)
     except Exception as exc:  # noqa: BLE001 - the card note is secondary to the outcome
-        _report(ctx, f"cannot append the note: {type(exc).__name__}: {exc}")
+        _report(ctx, f"cannot append the note {heading!r}: {type(exc).__name__}: {exc}")
         return "failed"
 
 
@@ -399,20 +449,27 @@ def _run_hook(ctx: check.Context, project: dict) -> int:
     if lock is None:
         return _skip(ctx, "проверка или шлюз этой карточки ещё идёт (блокировка занята)")
     with lock:
-        return _integrate(ctx, project, front, task)
+        code, done = _integrate(ctx, project, front, task)
+    # Every lock of this merge is released: the final check takes its own (flock
+    # does not nest: a second open of the same lock file in this process waits
+    # for itself), and the task card lock is another file than the subtask's.
+    if done:
+        _signal_task(ctx, project, task)
+    return code
 
 
-def _integrate(ctx: check.Context, project: dict, front: dict, task: str) -> int:
+def _integrate(ctx: check.Context, project: dict, front: dict, task: str) -> tuple[int, bool]:
+    """(exit code, True when the subtask is Done and the task may be ready)."""
     mark = _read_pass_mark(ctx)
     if mark is None or mark.get("ppid") != os.getppid() or not isinstance(mark.get("tree"), str):
-        return _skip(ctx, "проверка этого хода не пройдена (нет отметки .pass.json или она от другого хода)")
+        return _skip(ctx, "проверка этого хода не пройдена (нет отметки .pass.json или она от другого хода)"), False
     ws = ctx.workspace
     if check.git(ws, "rev-parse", "HEAD^{tree}").decode().strip() != mark["tree"]:
-        return _skip(ctx, "содержимое не совпадает с проверенным: после проверки файлы менялись")
+        return _skip(ctx, "содержимое не совпадает с проверенным: после проверки файлов менялись"), False
     dirty = _dirty_files(ws)
     if dirty:
         shown = ", ".join(check._clean(name) for name in dirty[:MAX_LISTED_FILES])
-        return _skip(ctx, f"рабочая копия не закоммичена, вливать нельзя: {shown}")
+        return _skip(ctx, f"рабочая копия не закоммичена, вливать нельзя: {shown}"), False
     sub = check.git(ws, "rev-parse", "HEAD").decode().strip()
     repo = Path(project["project"]["repo"])
     branch = integration_branch(project, task)
@@ -424,8 +481,8 @@ def _integrate(ctx: check.Context, project: dict, front: dict, task: str) -> int
     try:
         result = merge_subtask(repo, branch, ctx.issue_id, front.get("title", ""), task, sub)
     except Conflict as exc:
-        return _conflict(ctx, cfg, task, branch, source, exc)
-    return _done(ctx, cfg, task, branch, source, result, mark["tree"])
+        return _conflict(ctx, cfg, task, branch, source, exc), False
+    return _done(ctx, cfg, project, task, branch, source, result, mark["tree"])
 
 
 def _head(task: str, branch: str, source: str) -> list[str]:
@@ -448,8 +505,8 @@ def _write_merged(ctx: check.Context, task: str, branch: str, source: str, tree:
     return "written"
 
 
-def _done(ctx: check.Context, cfg: check.Config | None, task: str, branch: str, source: str,
-          result: dict, tree: str) -> int:
+def _done(ctx: check.Context, cfg: check.Config | None, project: dict, task: str, branch: str,
+          source: str, result: dict, tree: str) -> tuple[int, bool]:
     commit = result["commit"] or "no changes"
     failure = _board_mv(ctx, cfg, STATE_DONE)
     # Only after Done took effect: without Done the gate is not coming, and a
@@ -464,7 +521,9 @@ def _done(ctx: check.Context, cfg: check.Config | None, task: str, branch: str, 
                     merged_record=record)
     if failure is not None:
         _report(ctx, f"the code is merged ({commit}) but the card is not Done: {failure}")
-    return 0
+        return 0, False
+    _progress(ctx, project, task)
+    return 0, True
 
 
 def _conflict(ctx: check.Context, cfg: check.Config | None, task: str, branch: str, source: str,
@@ -482,6 +541,76 @@ def _conflict(ctx: check.Context, cfg: check.Config | None, task: str, branch: s
     if failure is not None:
         _report(ctx, f"conflict, but the card did not move to {STATE_ESCALATE}: {failure}")
     return 0
+
+
+# ---------------------------------------------------------------------------
+# progress of the task and the signal "every subtask is Done" (S4-21)
+# ---------------------------------------------------------------------------
+
+
+def _read_task_card(board: Path, task: str) -> tuple[dict, str]:
+    """(front matter, body) of the task card; IntegrateError when unreadable."""
+    path = board / pc.BOARD_DIR / f"{task}.md"
+    front = read_card_front(path, with_title=True)
+    return front, check.split_card(path.read_text(encoding="utf-8"))[1]
+
+
+def _not_done(board: Path, ids: list[str]) -> list[str]:
+    """`<ID> (<state>)` for every subtask that is not Done (a missing card too)."""
+    waiting = []
+    for ident in ids:
+        try:
+            state = read_card_front(board / pc.BOARD_DIR / f"{ident}.md")["state"]
+        except IntegrateError:
+            state = "нет карточки"
+        if state.lower() != STATE_DONE.lower():
+            waiting.append(f"{ident} ({state})")
+    return waiting
+
+
+def _progress(ctx: check.Context, project: dict, task: str) -> None:
+    """`- <ID> merged (k of N)` into `## Subtask Progress` of the task card, under
+    the lock of the TASK card. Any failure is an `error` event only: the subtask
+    is Done already."""
+    try:
+        try:
+            _, body = _read_task_card(ctx.workflow_dir, task)
+        except IntegrateError:
+            return  # no card of the task on this board: nothing to keep up
+        ids = plan_accepted_ids(body)
+        if not ids:
+            return  # the task has no accepted plan (a subtask made by hand)
+        if ctx.issue_id not in ids:
+            _report(ctx, f"progress: {ctx.issue_id} is not in `## {NOTE_ACCEPTED}` of {task}; no line written")
+            return
+        done = len(ids) - len(_not_done(ctx.workflow_dir, ids))
+        lock = check.try_lock(_task_ctx(ctx.workflow_dir, project, task), LOCK_WAIT_S)
+        if lock is None:
+            _report(ctx, f"progress: the lock of the task card {task} is busy; no line written")
+            return
+        with lock:
+            via = check.append_note(ctx, f"- {ctx.issue_id} merged ({done} of {len(ids)})", NOTE_PROGRESS, task)
+        check.log_event(ctx, ctx.issue_id, MODE, "progress", f"{done} of {len(ids)}", task=task, note=via)
+    except Exception as exc:  # noqa: BLE001 - never touches the merge that is done
+        _report(ctx, f"progress of {task}: {type(exc).__name__}: {exc}")
+
+
+def _signal_task(ctx: check.Context, project: dict, task: str) -> None:
+    """The subtask just became Done: when it was the last one, finish the task."""
+    try:
+        try:
+            front, body = _read_task_card(ctx.workflow_dir, task)
+        except IntegrateError:
+            return  # no card of the task on this board
+        ids = plan_accepted_ids(body)
+        if (not is_task_card(front, body) or front["state"].lower() != STATE_SUBTASKS.lower()
+                or not ids or _not_done(ctx.workflow_dir, ids)):
+            return
+        ok, text = finish_task(ctx.workflow_dir, project, task)
+        if not ok:
+            check._emit(f"integrate.py hook: {text}", stream=sys.stderr)
+    except BaseException as exc:  # noqa: BLE001 - the subtask is Done, whatever happens here
+        _report(ctx, f"final check of {task}: {type(exc).__name__}: {exc}")
 
 
 def hook_main() -> int:
@@ -503,13 +632,324 @@ def hook_main() -> int:
 
 
 # ---------------------------------------------------------------------------
+# the final check of a task (S4-21)
+# ---------------------------------------------------------------------------
+
+STATE_VERIFY = "Verify"
+NOTE_FINAL = "Final Check"
+FINAL_SUFFIX = ".final.json"
+DIFF_MD = "final-diff.md"
+DIFF_PATCH = "final-diff.patch"
+DIFF_LIMIT = 200 * 1024  # bytes of the patch kept for Verify
+WORK_DIR = "work"
+
+
+def workspace_root(project: dict) -> Path:
+    """Where the working copies of this project are. The service tells its hooks
+    ($SYMPHONY_WORKSPACE_ROOT); by hand the rendered WORKFLOW.md default is used."""
+    raw = os.environ.get("SYMPHONY_WORKSPACE_ROOT", "").strip()
+    return Path(raw) if raw else pc.default_workspace_root(project)
+
+
+def _task_ctx(board: Path, project: dict, task: str) -> check.Context:
+    """A context for the task card: its lock, its card, its working copy."""
+    return check.Context(MODE, board, workspace_root(project) / task, task)
+
+
+def final_path(board: Path, task: str) -> Path:
+    return board / pc.STATE_DIR / f"{task}{FINAL_SUFFIX}"
+
+
+def _git_bytes(repo: Path, *args: str) -> bytes:
+    try:
+        return check.git(repo, *args)
+    except (check.CheckError, OSError, subprocess.TimeoutExpired) as exc:
+        raise IntegrateError(f"git {args[0]}: {str(exc)[:300]}") from None
+
+
+def _is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
+    code = _git_run(repo, "merge-base", "--is-ancestor", ancestor, descendant).returncode
+    if code not in (0, 1):
+        raise IntegrateError(f"git merge-base --is-ancestor {ancestor[:12]} {descendant[:12]} (код {code})")
+    return code == 0
+
+
+def merge_with_base(repo: Path, branch: str, base_branch: str, task: str) -> dict:
+    """Bring refs/heads/<base_branch> into refs/heads/<branch> with a real merge commit.
+
+    {"int", "main", "target", "merged"}: `int` and `main` are the tips used, `target`
+    the new tip of the branch. When `main` is an ancestor of `int` nothing is done
+    (target = int). Otherwise git merge-tree -> git commit-tree with TWO parents
+    (int, main) -> git update-ref with the old value checked; if the branch moved
+    in between, one retry from the start, then Conflict. A flat commit would show
+    the changes of the base branch as the changes of the task (architect, S4-21).
+    """
+    for attempt in (1, 2):
+        int_sha, main_sha = _tip(repo, branch), _tip(repo, base_branch)
+        if _is_ancestor(repo, main_sha, int_sha):
+            return {"int": int_sha, "main": main_sha, "target": int_sha, "merged": False}
+        try:
+            tree = _merge_trees(repo, int_sha, main_sha)
+        except Conflict as exc:
+            raise Conflict(f"слияние {branch} с {base_branch} даёт конфликт", exc.files) from None
+        env = {f"GIT_{role}_{key}": value for role in ("AUTHOR", "COMMITTER") for key, value in IDENTITY.items()}
+        proc = _git_run(repo, "commit-tree", tree, "-p", int_sha, "-p", main_sha,
+                        "-m", f"{task}: merge {base_branch} for the final check", env=env)
+        if proc.returncode != 0 or not _OID_RE.match(proc.stdout.strip()):
+            raise IntegrateError(f"git commit-tree (код {proc.returncode}): {proc.stderr.strip()[:300]}")
+        new = proc.stdout.strip()
+        moved = _git_run(repo, "update-ref", "-m", f"final check {task}", f"refs/heads/{branch}", new, int_sha)
+        if moved.returncode == 0:
+            return {"int": int_sha, "main": main_sha, "target": new, "merged": True}
+        if attempt == 2:
+            raise Conflict(f"ветка {branch} сдвинулась дважды за время слияния: {moved.stderr.strip()[:200]}")
+    raise AssertionError("unreachable")  # pragma: no cover
+
+
+def _write_work_file(board: Path, task: str, name: str, data: bytes) -> None:
+    """<board>/artifacts/<task>/work/<name>; not through a link (the agent can replace
+    `docs/<task>/work` with one), the same guard as plan.py."""
+    directory = board / pc.ARTIFACTS_DIR / task / WORK_DIR
+    expected = Path(os.path.realpath(board)) / pc.ARTIFACTS_DIR / task / WORK_DIR
+    directory.mkdir(parents=True, exist_ok=True)
+    if os.path.realpath(directory) != str(expected):
+        raise IntegrateError(f"{directory} — ссылка или лежит не там: файлы диффа не пишу")
+    check._write_atomic(directory / name, data)
+
+
+def write_final_diff(repo: Path, board: Path, task: str, branch: str, base_branch: str,
+                     main: str, target: str, merged: bool) -> None:
+    """The diff of the task against the base branch for Verify, written by the
+    program: `git diff` is not allowed to the agent and its rights are not widened."""
+    span = f"{main}..{target}"
+    flags = ("--no-ext-diff", "--no-textconv", "--no-color")
+    names = _git_bytes(repo, "diff", *flags, "--name-status", span).decode("utf-8", errors="replace")
+    stat = _git_bytes(repo, "diff", *flags, "--stat", span).decode("utf-8", errors="replace")
+    patch = _git_bytes(repo, "diff", *flags, span)
+    how = "merge commit of the final check" if merged else "no merge was needed"
+    text = "\n".join([
+        f"# Final diff of {task}", "",
+        f"Written by ours/hooks/integrate.py at {check._now()}. `git diff` is not allowed for the agent: "
+        "the program prepares the diff.", "",
+        f"- compared: `{main}` ({base_branch}) .. `{target}` ({branch}, {how})",
+        f"- full patch: `docs/{task}/work/{DIFF_PATCH}`", "",
+        "## Files (git diff --name-status)", "", "```", names.rstrip() or "(no changes)", "```", "",
+        "## Size (git diff --stat)", "", "```", stat.rstrip() or "(no changes)", "```", "",
+    ])
+    if len(patch) > DIFF_LIMIT:
+        kept = patch[:DIFF_LIMIT].rsplit(b"\n", 1)[0] + b"\n"
+        total_kb = -(-len(patch) // 1024)
+        patch = kept + f"обрезано, {total_kb} КБ всего, полный дифф: git diff {main} {target}\n".encode()
+    _write_work_file(board, task, DIFF_MD, text.encode("utf-8"))
+    _write_work_file(board, task, DIFF_PATCH, patch)
+
+
+def _final_lines(task: str, **fields: str) -> list[str]:
+    return [f"- at: {check._now()}", f"- task: {task}", *(f"- {key}: {value}" for key, value in fields.items())]
+
+
+def _final_stop(tctx: check.Context, cfg: check.Config | None, reasons: list[str], *,
+                files: tuple[str, ...] = (), moved: list[str] | None = None) -> tuple[bool, str]:
+    """The task card goes to needs_human with `## Final Check`; the event final:needs_human."""
+    task = tctx.issue_id
+    failure = _board_mv(tctx, cfg, STATE_ESCALATE)
+    lines = _final_lines(task, result="needs_human",
+                         **{"moved to": STATE_ESCALATE if failure is None else f"{STATE_ESCALATE} FAILED (see check.log)"})
+    lines += ["", "Причины:", ""]
+    lines += [f"- {check._clean(reason)}" for reason in reasons]
+    if files:
+        lines += ["", "Файлы с конфликтом:", ""]
+        lines += [f"- {check._clean(name)}" for name in files[:MAX_LISTED_FILES]]
+    lines += ["", "Сдвинуто в ветках:", ""]
+    lines += [f"- {check._clean(item)}" for item in moved] if moved else ["- ничего: ветки и рабочая копия не менялись."]
+    lines += ["", "Разбор — человек."]
+    via = _note(tctx, lines, NOTE_FINAL)
+    check.log_event(tctx, task, MODE, "final:needs_human", "; ".join(reasons), note=via,
+                    files=", ".join(check._clean(name) for name in files),
+                    moved="; ".join(moved or []))
+    if failure is not None:
+        _report(tctx, f"the final check stopped, but the card did not move to {STATE_ESCALATE}: {failure}")
+    text = f"{task}: итоговая проверка не начата, карточка → {STATE_ESCALATE}. " + " ".join(reasons)
+    if moved:
+        text += " Уже сдвинуто: " + "; ".join(moved) + "."
+    return False, text
+
+
+def _workspace_problems(tctx: check.Context, repo: Path, common: Path, task: str) -> list[str]:
+    import worktree  # lazy: worktree.py imports this module
+
+    ws = tctx.workspace
+    if not (ws / ".git").exists():
+        return [f"нет рабочей копии карточки-задачи: {ws}"]
+    problems = []
+    try:
+        top = _git_out(ws, "rev-parse", "--show-toplevel")
+        if Path(top).resolve() != ws.resolve():
+            problems.append(f"{ws} — не корень рабочей копии")
+        if worktree.common_dir(ws) != common:
+            problems.append(f"{ws} — рабочая копия не того репозитория, что {repo}")
+        head = _git_run(ws, "symbolic-ref", "--quiet", "HEAD").stdout.strip()
+        if head != f"refs/heads/symphony/{task}":
+            problems.append(f"рабочая копия стоит не на symphony/{task} (HEAD: {head or 'отсоединён'})")
+    except (IntegrateError, worktree.HookError) as exc:
+        return [f"рабочая копия карточки-задачи {ws} не читается: {exc}"]
+    if problems:
+        return problems
+    dirty = _dirty_files(ws)
+    if dirty:
+        shown = ", ".join(check._clean(name) for name in dirty[:MAX_LISTED_FILES])
+        problems.append(f"рабочая копия карточки-задачи не чистая (есть незакоммиченное): {shown}")
+    try:
+        base = pc.read_base_record(tctx.workflow_dir, task)["base_sha"]
+    except pc.ProjectError as exc:
+        problems.append(str(exc))
+    else:
+        code = _git_run(ws, "diff", "--quiet", base, "HEAD").returncode
+        if code == 1:
+            problems.append("в ветке руководителя есть правки файлов (руководитель код не пишет)")
+        elif code != 0:
+            problems.append(f"не сравнить HEAD с записанной базой {base[:12]} (git diff, код {code})")
+    return problems
+
+
+def _write_state_json(path: Path, payload: dict) -> None:
+    check._write_atomic(path, (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+
+
+def _move_base(tctx: check.Context, base_branch: str, main: str) -> None:
+    """The base record and the worktree config move to `main`, the end of the base
+    branch the task was merged with. `symphony.mergetargetbranch` / `basebranch` must
+    name the base branch (worktree.py gives a task card exactly that): the
+    `## Merge Status` of Verify then checks the merge into it."""
+    board, task, ws = tctx.workflow_dir, tctx.issue_id, tctx.workspace
+    record = pc.read_base_record(board, task)
+    old = record["base_sha"]
+    record["final_from"] = record.get("final_from", old)
+    record["base_sha"] = main
+    check.ensure_state_dir(tctx.state_dir)
+    _write_state_json(pc.base_record_path(board, task), record)
+    _git_out(ws, "config", "--worktree", "symphony.basesha", main)
+    for key in ("symphony.basebranch", "symphony.mergetargetbranch"):
+        if _git_run(ws, "config", "--worktree", "--get", key).stdout.strip() != base_branch:
+            _git_out(ws, "config", "--worktree", key, base_branch)
+
+
+def finish_task(board: Path, project: dict, task: str) -> tuple[bool, str]:
+    """The final check of a task: (True, text) when the task card went to Verify.
+
+    Takes the lock of the task card and the worktree lock itself: call it only
+    after leaving every lock of a subtask merge (flock does not nest). Not ready
+    (not a task card, not in Subtasks, a subtask not Done): (False, why), nothing
+    changes. A problem once it is ready: needs_human + `## Final Check`
+    (_final_stop); the branches are not touched unless the text says so.
+    """
+    import worktree  # lazy: worktree.py imports this module
+
+    check_task_id(task, project)
+    tctx = _task_ctx(board, project, task)
+    try:
+        cfg: check.Config | None = check.load_config(board)
+    except check.CheckError:
+        cfg = None
+    repo = Path(project["project"]["repo"])
+    lock = check.try_lock(tctx, LOCK_WAIT_S)
+    if lock is None:
+        return False, f"{task}: блокировка карточки занята (идёт проверка или шлюз), повтори позже."
+    with lock:
+        try:
+            common = worktree.common_dir(repo)
+            with worktree.worktree_lock(common):
+                return _finish_locked(tctx, cfg, project, repo, common)
+        except worktree.HookError as exc:
+            check.log_event(tctx, task, MODE, "error", f"final check: {exc}")
+            return False, f"{task}: {exc}"
+
+
+def _finish_locked(tctx: check.Context, cfg: check.Config | None, project: dict, repo: Path,
+                   common: Path) -> tuple[bool, str]:
+    board, task = tctx.workflow_dir, tctx.issue_id
+    branch = integration_branch(project, task)
+    base_branch = project["project"]["base_branch"]
+    try:
+        front, body = _read_task_card(board, task)
+    except IntegrateError as exc:
+        return False, f"{task}: {exc}"
+    ids = plan_accepted_ids(body)
+    refusal = None
+    if not is_task_card(front, body):
+        refusal = f"{task}: это не карточка-задача (нужны метка {MANAGER_LABEL} и раздел ## {NOTE_ACCEPTED})."
+    elif front["state"].lower() != STATE_SUBTASKS.lower():
+        refusal = f"{task}: карточка в статусе {front['state']}, а итоговая проверка начинается из {STATE_SUBTASKS}."
+    elif not ids:
+        refusal = f"{task}: в разделе ## {NOTE_ACCEPTED} нет подзадач."
+    elif waiting := _not_done(board, ids):
+        refusal = f"{task}: не все подзадачи в {STATE_DONE}: {', '.join(waiting)}."
+    if refusal is not None:
+        check.log_event(tctx, task, MODE, "final:refused", refusal)
+        return False, refusal
+
+    problems = _workspace_problems(tctx, repo, common, task)
+    if not problems:
+        for name in (branch, base_branch):
+            if not _has_branch(repo, name):
+                problems.append(f"в {repo} нет ветки refs/heads/{name}")
+    if problems:
+        return _final_stop(tctx, cfg, problems)
+
+    ws = tctx.workspace
+    moved: list[str] = []
+    try:
+        try:
+            merge = merge_with_base(repo, branch, base_branch, task)
+        except Conflict as exc:
+            return _final_stop(tctx, cfg, [exc.reason], files=exc.files)
+        main, target = merge["main"], merge["target"]
+        if merge["merged"]:
+            moved.append(f"{branch}: {merge['int'][:12]} → {target[:12]} (коммит слияния с {base_branch})")
+        proc = _git_run(ws, "reset", "--keep", target)
+        head = _git_run(ws, "rev-parse", "HEAD").stdout.strip()
+        if proc.returncode != 0 or head != target:
+            raise IntegrateError(f"git reset --keep {target[:12]} в рабочей копии (код {proc.returncode}): "
+                                 f"{proc.stderr.strip()[:300]}")
+        moved.append(f"symphony/{task}: на {target[:12]}")
+        write_final_diff(repo, board, task, branch, base_branch, main, target, merge["merged"])
+        _move_base(tctx, base_branch, main)
+        check.ensure_state_dir(tctx.state_dir)
+        _write_state_json(final_path(board, task), {
+            "task": task, "branch": branch, "integration_commit": target, "our_main": main,
+            "merged": merge["merged"], "at": check._now(),
+        })
+    except (IntegrateError, OSError, pc.ProjectError) as exc:
+        return _final_stop(tctx, cfg, [str(exc)], moved=moved)
+
+    result = f"merge commit {target}" if merge["merged"] else "no merge needed"
+    lines = _final_lines(
+        task, branch=f"{branch} (symphony/{task} stands on the same commit)",
+        **{"integration tip before": merge["int"], f"{base_branch} tip": main, "result": result},
+    )
+    lines += ["- итоговая проверка: Verify → Document → Human Review, полный test.sh",
+              f"- diff for Verify: docs/{task}/work/{DIFF_MD}, docs/{task}/work/{DIFF_PATCH}"]
+    via = _note(tctx, lines, NOTE_FINAL)
+    failure = _board_mv(tctx, cfg, STATE_VERIFY)
+    if failure is not None:
+        return _final_stop(tctx, cfg, [f"не удалось перевести в {STATE_VERIFY}: {failure}"], moved=moved)
+    check.log_event(tctx, task, MODE, "final:started", result, branch=branch, int=merge["int"], main=main,
+                    commit=target, merged=str(merge["merged"]).lower(), note=via)
+    how = (f"коммит слияния {target[:12]} (два родителя: {merge['int'][:12]} и {main[:12]})"
+           if merge["merged"] else f"слияния не нужно ({base_branch} не сдвигался)")
+    return True, f"{task}: итоговая проверка начата, карточка → {STATE_VERIFY}; {how}."
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
-USAGE = "использование: integrate.py ensure-branch <ЗАДАЧА> [--board <папка доски>] | integrate.py hook"
+USAGE = ("использование: integrate.py ensure-branch <ЗАДАЧА> [--board <папка доски>] | "
+         "integrate.py finish-task <ЗАДАЧА> [--board <папка доски>] | integrate.py hook")
+COMMANDS = ("ensure-branch", "finish-task")
 
 
-def _parse(args: list[str]) -> tuple[str, Path] | None:
+def _parse(args: list[str]) -> tuple[str, str, Path] | None:
     board: str | None = None
     rest: list[str] = []
     it = iter(args)
@@ -520,12 +960,12 @@ def _parse(args: list[str]) -> tuple[str, Path] | None:
                 return None
         else:
             rest.append(arg)
-    if len(rest) != 2 or rest[0] != "ensure-branch" or rest[1].startswith("-"):
+    if len(rest) != 2 or rest[0] not in COMMANDS or rest[1].startswith("-"):
         return None
     raw = board if board is not None else os.environ.get("SYMPHONY_WORKFLOW_DIR", "").strip()
     if not raw:
         return None
-    return rest[1], Path(raw).resolve()
+    return rest[0], rest[1], Path(raw).resolve()
 
 
 def ensure_branch_command(task: str, board: Path) -> int:
@@ -546,6 +986,13 @@ def ensure_branch_command(task: str, board: Path) -> int:
     return 0
 
 
+def finish_task_command(task: str, board: Path) -> int:
+    project = pc.load_project(board)
+    ok, text = finish_task(board, project, task)
+    say(text)
+    return 0 if ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if args == ["hook"]:
@@ -556,8 +1003,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     import worktree  # lazy: worktree.py imports this module
 
+    command, task, board = parsed
     try:
-        return ensure_branch_command(*parsed)
+        if command == "finish-task":
+            return finish_task_command(task, board)
+        return ensure_branch_command(task, board)
     except (IntegrateError, pc.ProjectError, worktree.HookError) as exc:
         print(f"integrate.py: отказ: {exc}", file=sys.stderr)
         return 1
