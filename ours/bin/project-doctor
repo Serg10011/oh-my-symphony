@@ -13,7 +13,10 @@ Prints a PASS / FAIL / WARN list; exit 0 only without FAIL. Steps:
    outside the board and the code; no branch is created): setup.sh, then
    test.sh, each with a 3600 s limit in its own process group. test.sh
    must exit 0 with a summary line and failed = 0. The counts and times go
-   to <board>/.ours-state/baseline.json; the worktree is always removed.
+   to <board>/.ours-state/baseline.json (the last measure) and are added
+   to baselines.json (S4-25: one record per commit, the last 50; check.py
+   compares a card with the record of its branching point). A failed
+   measure changes neither file. The worktree is always removed.
    The scripts run in a reduced environment (see script_env): the service
    started by launchd has a short PATH, so a script that only works with
    the terminal's PATH must fail here, not at night.
@@ -283,6 +286,27 @@ def write_atomic(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
+def update_history(report: Report, board: Path, baseline: dict) -> None:
+    """Add the measure to baselines.json; the first record may come from the
+    baseline.json of the time before the history."""
+    try:
+        records = pc.read_baselines(board)
+    except pc.ProjectError as exc:
+        report.add("WARN", f"{exc}; история начинается заново")
+        records = []
+    if records is None:
+        records = []
+        try:
+            previous = pc.read_baseline(board)
+        except pc.ProjectError:
+            previous = None
+        if previous is not None and pc.is_real_baseline(previous):
+            records.append(previous)
+    records = pc.add_baseline(records, baseline)
+    write_atomic(pc.baselines_path(board), pc.baselines_text(records))
+    report.add("PASS", f"история замеров: {len(records)} зап. в {pc.baselines_path(board)}")
+
+
 # ---------------------------------------------------------------------------
 # 3. timeouts
 # ---------------------------------------------------------------------------
@@ -398,6 +422,7 @@ def main(argv: list[str] | None = None) -> int:
         baseline = trial(report, board, project)
         if baseline is not None:
             pc.ensure_state_dir(board)
+            update_history(report, board, baseline)  # before baseline.json: it is the old measure
             write_atomic(pc.baseline_path(board),
                          json.dumps(baseline, ensure_ascii=False, indent=2) + "\n")
             report.add("PASS", f"замер базы записан в {pc.baseline_path(board)}")

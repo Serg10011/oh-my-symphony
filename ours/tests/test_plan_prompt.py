@@ -227,3 +227,9 @@ def test_the_prompt_leaves_the_rules_to_the_hook() -> None:
     assert "ours/hooks" not in text and ".pem" not in text, "the list of forbidden paths is not in the prompt"
     assert "<board folder>" not in text and "starting with a verb" in text
     assert "except the plan file" in text
+
+
+def test_the_prompt_says_that_check_proves_its_own_subtask() -> None:
+    text = render_plan()
+    assert "6. `check` proves the result of THIS subtask" in text
+    assert "never a precondition" in text
