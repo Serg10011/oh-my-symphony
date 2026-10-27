@@ -210,6 +210,10 @@ def _attention_signal(
 
 
 def _successful_blocker_terminal_states(cfg: ServiceConfig | None) -> set[str]:
+    if cfg is not None and cfg.agent.dependency_resolving_states:
+        return {
+            normalize_state(s).strip() for s in cfg.agent.dependency_resolving_states
+        }
     if cfg is None:
         terminal_states = DEFAULT_TERMINAL_STATES
         archive_state = "Archive"

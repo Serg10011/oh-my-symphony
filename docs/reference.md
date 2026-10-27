@@ -412,6 +412,17 @@ listed, and anything other than a list of non-empty strings is a config error.
 Once the ticket leaves such a state (`confirm_done` to `Done`, `Archive`, …),
 its workspace is cleaned up by the usual rules.
 
+`agent.dependency_resolving_states` (list of state names, default empty) lists
+the terminal states in which a `blocked_by` dependency counts as resolved — for
+dispatch, the `waiting_dependency` decision, `Blocked` recovery and the API
+dependency summaries alike. Empty keeps the legacy rule: every
+`tracker.terminal_states` entry except the failed ones (`Archive`, `Blocked`,
+`Cancelled`, `Duplicate`, `Human Review`, `needs_human`). Every name must be in
+`tracker.terminal_states` (compared case-insensitively); an unknown name,
+including an active state, or anything other than a list of non-empty strings
+is a config error. Use it when a custom terminal state (for example a parent
+card waiting on sub-tickets) must not release its dependents.
+
 `workspace.code_repo` (absolute path string, default unset) points the read-only
 web Git routes — branch list, log, task branches, compare and diff — at a git
 repository other than the `WORKFLOW.md` directory, for boards kept outside the

@@ -502,8 +502,10 @@ async def issue_budget_snapshot(self: Orchestrator, issue: Issue) -> dict[str, A
     reopen_used = None
     registry = self._run_registry
     if registry is not None:
-        records = await asyncio.to_thread(
-            self._registry_guard,
+        # Synchronous on purpose: the registry's SQLite connection belongs to
+        # the service-loop thread, so `asyncio.to_thread` would fail with
+        # "SQLite objects created in a thread can only be used in that same thread".
+        records = self._registry_guard(
             "budget_reopen_history",
             lambda: registry.recent_runs(issue.id, limit=200, status="normal"),
             None,
