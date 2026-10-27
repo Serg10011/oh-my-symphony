@@ -84,7 +84,7 @@ def test_max_total_turns_must_still_cover_max_turns() -> None:
 def test_stub_limits_pass_the_loader_and_the_formula(kit: Kit) -> None:
     assert kit.new().returncode == 0
     limits = pc.load_project(kit.board)["limits"]
-    assert limits["max_turns"] == pc.ACTIVE_STATE_COUNT * (1 + limits["max_attempts"]) == 12
+    assert limits["max_turns"] == pc.STAGES_ON_LONGEST_PATH * (1 + limits["max_attempts"]) == 12
     assert limits["max_total_turns"] >= limits["max_turns"]
     text = (kit.board / "project.toml").read_text()
     assert "штатного сброса нет" not in text

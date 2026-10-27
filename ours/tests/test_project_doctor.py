@@ -341,7 +341,7 @@ def test_limits_reach_the_core_config(doc: Doc) -> None:
 @pytest.mark.parametrize(
     ("limits", "reason"),
     [
-        ({"max_turns": 3}, "max_turns не меньше 4"),
+        ({"max_turns": 3}, "max_turns не меньше числа активных статусов доски"),
         ({"max_turns": 70}, "max_total_turns меньше max_turns"),
         ({"max_attempts": 0}, "целое число больше нуля"),
         ({"max_tokens": 5}, "неизвестный ключ(и) в [limits]: max_tokens"),

@@ -65,8 +65,14 @@ MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:\[\]-]*$")
 STALL_MIN_MS = 300_000
 # Margin over the test run for the model's own output around a long Bash call.
 STALL_MARGIN_S = 120
-# Active states of the template: the core refuses agent.max_turns below this.
-ACTIVE_STATE_COUNT = 4
+# Active states of the template (Todo, Plan, In Progress, Verify, Document): the
+# core refuses agent.max_turns, and max_turns of a level, below this. A test
+# keeps it equal to the length of `active_states` in the rendered WORKFLOW.md.
+ACTIVE_STATE_COUNT = 5
+# Stages on the longest path of one card (the ordinary card: Todo, In Progress,
+# Verify, Document; a worker has 3, a manager: Plan, then Verify, Document).
+# Not the same number as above: a card never visits every active state.
+STAGES_ON_LONGEST_PATH = 4
 
 # [agent] max_concurrent_agents: 1 keeps one subtask at a time, which the merge
 # into the integration branch (S4-12) relies on.
@@ -242,8 +248,8 @@ def _check_levels(raw: object) -> dict:
                 _check_value(f"{label} {key}", body[key], int)
         if body.get("max_turns", ACTIVE_STATE_COUNT) < ACTIVE_STATE_COUNT:
             raise ProjectError(
-                f"{label}: max_turns не меньше {ACTIVE_STATE_COUNT} "
-                "(число активных состояний; иначе ядро не примет WORKFLOW.md)"
+                f"{label}: max_turns не меньше числа активных статусов доски ({ACTIVE_STATE_COUNT}); "
+                "иначе ядро не примет WORKFLOW.md"
             )
     if "default_level" in raw:
         _check_value(f"{where} default_level", default, str)
@@ -344,8 +350,8 @@ def validate_project(data: dict) -> dict:
     limits = out["limits"] = {**DEFAULT_LIMITS, **out["limits"]}
     if limits["max_turns"] < ACTIVE_STATE_COUNT:
         raise ProjectError(
-            f"{PROJECT_FILE}: [limits] max_turns не меньше {ACTIVE_STATE_COUNT} "
-            "(число активных состояний; иначе ядро не примет WORKFLOW.md)"
+            f"{PROJECT_FILE}: [limits] max_turns не меньше числа активных статусов доски ({ACTIVE_STATE_COUNT}); "
+            "иначе ядро не примет WORKFLOW.md"
         )
     attempts = limits["max_attempts"]
     _check_turns_cover_attempts(f"{PROJECT_FILE}: [limits] max_turns", limits["max_turns"], attempts)
@@ -358,19 +364,20 @@ def validate_project(data: dict) -> dict:
 
 
 def _check_turns_cover_attempts(label: str, max_turns: int, max_attempts: int) -> None:
-    """max_turns must fit every active stage plus `max_attempts` returns of one card.
+    """max_turns must fit the stages of one card's longest path plus `max_attempts` returns.
 
     A return re-runs the stages after it, so a card that uses all its returns
-    needs up to ACTIVE_STATE_COUNT * (1 + max_attempts) turns to reach Human
-    Review. `max_attempts = 0` means returns are unlimited: the stage-count rule
-    alone applies (a loop is stopped by max_state_turns).
+    needs up to STAGES_ON_LONGEST_PATH * (1 + max_attempts) turns to reach Human
+    Review. `max_attempts = 0` means returns are unlimited: the active-state
+    count rule alone applies (a loop is stopped by max_state_turns).
     """
     if max_attempts <= 0:
         return
-    needed = ACTIVE_STATE_COUNT * (1 + max_attempts)
+    needed = STAGES_ON_LONGEST_PATH * (1 + max_attempts)
     if max_turns < needed:
         raise ProjectError(
-            f"{label} = {max_turns} меньше {ACTIVE_STATE_COUNT} × (1 + max_attempts) = {needed}: "
+            f"{label} = {max_turns} меньше {STAGES_ON_LONGEST_PATH} × (1 + max_attempts) = {needed} "
+            f"({STAGES_ON_LONGEST_PATH} — этапов на самом длинном пути карточки): "
             f"карточка с max_attempts = {max_attempts} возвратами не успеет дойти до Human Review; "
             f"увеличь max_turns до {needed} или уменьши max_attempts"
         )
@@ -617,7 +624,7 @@ def template_values(board: Path, project: dict) -> dict[str, object]:
         ),
         "prompt_base": str(PROMPTS_DIR / "base.md"),
     }
-    for stage in ("todo", "in-progress", "verify", "document", "done"):
+    for stage in ("todo", "plan", "in-progress", "verify", "document", "done"):
         values["prompt_" + stage.replace("-", "_")] = str(PROMPTS_DIR / "stages" / f"{stage}.md")
     return values
 

@@ -5,11 +5,20 @@
 tracker:
   kind: file
   board_root: ./kanban
-  # Standard lanes: stage contracts stay on (stage_contracts: auto).
-  active_states: [Todo, "In Progress", Verify, Document]
+  # Todo stays first: `board new` without --state puts a card in active_states[0].
+  # Plan = a manager slices a task card (label role:manager-plan) into subtasks;
+  # it is an active state so that the core picks its own stage prompt.
+  active_states: [Todo, Plan, "In Progress", Verify, Document]
   # Order matters: the core picks the first human/review/block state for a
   # hand-off, which must be Human Review (DECISIONS 2026-10-24, item g).
-  terminal_states: ["Human Review", needs_human, Done, Blocked, Archive]
+  # Subtasks = the plan is handed in and the workers do the subtasks; no agent
+  # works on the task card meanwhile. Terminal for the core, so it must keep
+  # clear of the words human/review/block in its name. It is no "done":
+  # agent.dependency_resolving_states below.
+  # Auto-archive (core default, tracker.archive_after_days is not set): a
+  # terminal card untouched for 30 days goes to Archive; editing the card
+  # restarts the count (S4-19/S4-21 will append `## Subtask Progress`).
+  terminal_states: ["Human Review", needs_human, Subtasks, Done, Blocked, Archive]
 
 polling:
   interval_ms: 30000
@@ -199,7 +208,11 @@ hooks:
   max_total_turns: {{int:max_total_turns}}
   max_attempts: {{int:max_attempts}}
   max_state_turns: {{int:max_state_turns}}
-  stage_contracts: auto
+  # Not `auto`: auto enables contracts only when every active state is a stock
+  # lane (presets.board_uses_shipped_contracts), and Plan is not, so contracts
+  # would silently switch off. With `on`, Plan has no contract (outside the
+  # set, it passes) and the other lanes keep the default contract set.
+  stage_contracts: "on"
   budget_exhausted_state: needs_human
   auto_recover_blocked: false
   normalize_legacy_human_review: false
@@ -208,7 +221,12 @@ hooks:
   auto_commit_on_done: true
   feature_base_branch: {{yaml:base}}
   auto_merge_target_branch: {{yaml:base}}
-  preserve_workspace_states: ["Human Review", "needs_human"]
+  # Subtasks: the task card's workspace is needed at the final check (S4-21);
+  # otherwise terminal cleanup and the service restart would remove it.
+  preserve_workspace_states: ["Human Review", "needs_human", "Subtasks"]
+  # A blocked_by dependency is met only in Done. Without the key the core counts
+  # every terminal state except Blocked/Archive/..., so Subtasks would be "met" (S4-17).
+  dependency_resolving_states: [Done]
   done_gate_command: {{yaml:done_gate_command}}
   # = test timeout + 60 s (DECISIONS: timeout rule).
   done_gate_timeout_ms: {{int:gate_ms}}
@@ -230,6 +248,7 @@ prompts:
   base: {{yaml:prompt_base}}
   stages:
     Todo: {{yaml:prompt_todo}}
+    Plan: {{yaml:prompt_plan}}
     "In Progress": {{yaml:prompt_in_progress}}
     Verify: {{yaml:prompt_verify}}
     Document: {{yaml:prompt_document}}
