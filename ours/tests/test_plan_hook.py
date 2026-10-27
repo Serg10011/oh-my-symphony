@@ -88,7 +88,7 @@ def sub(key: str = "a", **fields: object) -> dict:
         "level_reason": "одна страница текста, кода нет",
         "goal": "Написать словарь.\nВторая строка цели.",
         "criteria": ["Словарь лежит в docs/our/GLOSSARY.md"],
-        "check": "/bin/bash /somewhere/test.sh",
+        "check": "test -s docs/a.md",
         "paths": ["docs/our/GLOSSARY.md"],
         "blocked_by": [],
         "non_goals": ["Не править код"],
@@ -592,7 +592,7 @@ def test_the_body_of_a_subtask_card(env: Env, monkeypatch: pytest.MonkeyPatch) -
     for section in ("## Goal", "## Acceptance Criteria", "## Check", "## Scope"):
         assert section in body, section
     assert "- AC1: Словарь лежит в docs/our/GLOSSARY.md" in body
-    assert "`/bin/bash /somewhere/test.sh`" in body
+    assert "`test -s docs/a.md`" in body
     assert "- `docs/our/INDEX.md`" in body and "- `docs/our/**`" in body
     # no non_goals in subtask 2: no empty section; the others have it
     assert "## Non-goals" not in body and "## Non-goals" in env.body("OMS-9-1")
