@@ -436,6 +436,12 @@ def exclude_text(id_prefix: str) -> str:
     )
 
 
+def default_workspace_root(project: dict) -> Path:
+    """Where the service puts the working copies of this project (`workspace.root`
+    of the rendered WORKFLOW.md)."""
+    return Path.home() / "symphony_workspaces" / project["project"]["name"]
+
+
 def base_record_path(board: Path, issue_id: str) -> Path:
     return board / STATE_DIR / f"{issue_id}.base.json"
 
@@ -616,7 +622,7 @@ def template_values(board: Path, project: dict) -> dict[str, object]:
         "base": p["base_branch"],
         "port": p["port"],
         "code_repo": p["repo"],
-        "workspace_root": str(Path.home() / "symphony_workspaces" / p["name"]),
+        "workspace_root": str(default_workspace_root(project)),
         "worktree_py": str(hooks / "worktree.py"),
         "check_py": str(hooks / "check.py"),
         "integrate_py": str(hooks / "integrate.py"),

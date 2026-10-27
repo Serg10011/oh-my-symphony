@@ -28,7 +28,9 @@ collected), the project tests last and only when the fast checks passed:
        skipped (S4-13) when the tree of the working copy is the tree that
        passed `hook` and was merged by integrate.py (<ID>.merged.json), and
        (S4-16) when every changed path matches [checks] doc_paths (a
-       non-empty change set; checks 1-5 always run).
+       non-empty change set; checks 1-5 always run). Neither skip applies to
+       the card of a task (integrate.is_task_card; S4-21): its run is always
+       the full suite, and a failure sends it to needs_human at once.
 
 One check per card at a time (<board>/.ours-state/<ID>.lock): a second hook
 skips, the gate waits within its timeout.
@@ -106,6 +108,8 @@ CHECKED_STATES = frozenset({"done", "human review"})
 ROLLBACK_STATES = frozenset({"In Progress", "needs_human"})
 STATE_RETRY = "In Progress"
 STATE_ESCALATE = "needs_human"
+# S4-21: the card of a task never gets the doc_paths skip (S4-16, item 4).
+TASK_CARD_FULL_REASON = "task card: full suite (S4-16 п. 4)"
 
 ISSUE_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 TAIL_BYTES = 4000
@@ -549,6 +553,20 @@ def is_subtask_card(card: Path, cfg: Config) -> bool:
     return integrate.is_subtask(front, {"enabled": True, "worker_label": cfg.worker_label})
 
 
+def is_task_card_file(card: Path) -> bool:
+    """Same definition as integrate.py (integrate.is_task_card): the manager
+    label and a `## Plan Accepted` section. A card that cannot be read is an
+    ordinary card."""
+    import integrate  # lazy: integrate.py imports this module
+
+    try:
+        text = card.read_text(encoding="utf-8")
+        front = integrate.read_card_front(card)
+    except (OSError, UnicodeDecodeError, integrate.IntegrateError):
+        return False
+    return integrate.is_task_card(front, split_card(text)[1])
+
+
 def card_violations(card: Path, cfg: Config) -> list[str]:
     try:
         text = card.read_text(encoding="utf-8")
@@ -683,6 +701,7 @@ class Result:
     note: str = ""  # one line for the report and the log when tests were skipped
     tests: str = ""  # "skipped" | "full" for a gate that met a merged record; "skipped-docs"
     tests_reason: str = ""  # why the record could not skip the tests
+    task_card: bool = False  # the card of a task: full suite, no skips (S4-21)
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -797,6 +816,9 @@ def run_checks(ctx: Context, cfg: Config | None = None) -> Result:
     cfg = cfg or load_config(ctx.workflow_dir)
     # Only the gate reads the record, and it is used up here, passed or not.
     merged = _take_merged(ctx) if ctx.mode == "gate" else None
+    task_card = is_task_card_file(ctx.card)
+    if task_card:
+        merged = None  # taken (used up) above, but never used: the task card is not merged by integrate.py
     reasons: list[str] = []
     baseline: dict = {}
     changed: set[str] = set()
@@ -815,14 +837,16 @@ def run_checks(ctx: Context, cfg: Config | None = None) -> Result:
         reasons += test_violations(repo, base, cfg)
     reasons += card_violations(ctx.card, cfg)
     if reasons:
-        return Result(False, reasons, "", cfg)
-    mark: dict[str, object] = {}
+        return Result(False, reasons, "", cfg, task_card=task_card)
+    mark: dict[str, object] = {"task_card": True} if task_card else {}
+    if task_card:
+        mark.update(tests="full", tests_reason=TASK_CARD_FULL_REASON)
     if merged is not None:
         note, why = _merged_skip(ctx, merged)
         if note is not None:
             return Result(True, [], "", cfg, tests_skipped=True, note=note, tests="skipped")
         mark = {"tests": "full", "tests_reason": why}
-    note = _docs_only(changed, cfg)
+    note = None if task_card else _docs_only(changed, cfg)
     if note is not None:
         mark["tests"] = "skipped-docs"
         return Result(True, [], "", cfg, tests_skipped=True, note=note, **mark)
@@ -921,12 +945,17 @@ def resolve_symphony_bin(cfg: Config | None) -> str | None:
 
 
 def render_note(
-    result: Result, *, mode: str, failures: int, limit: int, target: str, moved: bool
+    result: Result, *, mode: str, failures: int, limit: int, target: str, moved: bool,
+    task_card: bool = False,
 ) -> str:
     lines = [
         f"- at: {_now()}",
         f"- check: ours/hooks/check.py {mode}",
         f"- failures: {failures} of {limit}",
+    ]
+    if task_card:
+        lines.append("- task card: straight to needs_human, no worker retry (S4-21)")
+    lines += [
         f"- moved to: {target}" if moved else f"- rollback to {target} FAILED (see check.log)",
         "",
         "Reasons:",
@@ -960,15 +989,21 @@ tracker.append_note(
 """
 
 
-def append_note(ctx: Context, body: str, heading: str = NOTE_HEADING) -> str:
-    """Append `## <heading>` (default `## Check Failure`) through the tracker API; file fallback."""
+def append_note(
+    ctx: Context, body: str, heading: str = NOTE_HEADING, issue_id: str | None = None
+) -> str:
+    """Append `## <heading>` (default `## Check Failure`) through the tracker API; file fallback.
+
+    `issue_id` names another card of the same board (S4-21: the task card gets
+    progress lines from its subtask's hook); default: the card of `ctx`."""
+    target = issue_id or ctx.issue_id
     python = os.environ.get("SYMPHONY_PYTHON", "").strip()
     board = ctx.workflow_dir / BOARD_DIR
     if python and os.access(python, os.X_OK):
         try:
             proc = subprocess.run(
                 # -P: never put the cwd on sys.path (the agent controls it).
-                [python, "-P", "-c", _APPEND_NOTE_CODE, str(board), ctx.issue_id, heading, body],
+                [python, "-P", "-c", _APPEND_NOTE_CODE, str(board), target, heading, body],
                 cwd=str(ctx.workflow_dir),
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
@@ -979,7 +1014,7 @@ def append_note(ctx: Context, body: str, heading: str = NOTE_HEADING) -> str:
                 return "tracker"
         except (OSError, subprocess.TimeoutExpired):
             pass
-    _append_note_file(ctx.card, board, ctx.issue_id, body, heading)
+    _append_note_file(board / f"{target}.md", board, target, body, heading)
     return "file"
 
 
@@ -1001,7 +1036,10 @@ def rollback(ctx: Context, result: Result) -> None:
     limit = result.cfg.max_check_failures if result.cfg else DEFAULT_MAX_CHECK_FAILURES
     reason = "; ".join(result.reasons)
     failures = bump_counter(ctx, reason)
-    target = STATE_ESCALATE if failures >= limit else STATE_RETRY
+    # The card of a task never goes back to In Progress (S4-21): it would get the
+    # worker prompt and fix code itself, past the subtasks. A human decides.
+    task_card = is_task_card_file(ctx.card)
+    target = STATE_ESCALATE if failures >= limit or task_card else STATE_RETRY
     if target not in ROLLBACK_STATES:  # pragma: no cover - defensive
         raise CheckError(f"refusing rollback target {target!r}")
     errors: list[str] = []
@@ -1033,7 +1071,8 @@ def rollback(ctx: Context, result: Result) -> None:
                 f"{now_state!r}): {detail[:300]}"
             )
     note = render_note(
-        result, mode=ctx.mode, failures=failures, limit=limit, target=target, moved=not errors
+        result, mode=ctx.mode, failures=failures, limit=limit, target=target, moved=not errors,
+        task_card=task_card,
     )
     try:
         note_via = append_note(ctx, note)
@@ -1063,6 +1102,8 @@ def _format_report(mode: str, issue_id: str, result: Result) -> str:
     lines = [head] + [f"- {_clean(reason)}" for reason in result.reasons]
     if result.tests_skipped:
         lines.append(f"- {_clean(result.note)}")
+    if result.task_card:
+        lines.append(f"- {TASK_CARD_FULL_REASON}")
     if not result.ok and result.tail.strip():
         lines += ["--- test output (tail) ---", result.tail.rstrip()]
     return "\n".join(lines)
@@ -1176,6 +1217,8 @@ def _hook_checked(ctx: Context) -> int:
             except OSError as exc:
                 log_event(ctx, ctx.issue_id, "hook", "error", f"cannot write the pass mark: {exc}")
         extra = {"tests": result.tests} if result.tests else {}
+        if result.task_card:
+            extra["tests_reason"] = result.tests_reason
         reason = result.note if result.tests_skipped else ""
         log_event(ctx, ctx.issue_id, "hook", "pass", reason, **extra)
         _emit(_format_report("hook", ctx.issue_id, result))

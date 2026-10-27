@@ -18,7 +18,10 @@ Document does not run tests and does not repeat Verify's proofs.
    - Update the ticket frontmatter to `Human Review` -- for normal success and for the intervention branch alike. Do not stage, commit, or publish the delivery record yourself.
    - After this stage exits, the host commits the workspace onto the ticket branch; nothing is merged or published. Record what you produced and where; leave SHAs to the host.
    - Never set `Blocked` because a local git command failed -- a sandbox that refuses `.git/objects` writes is an environment limit, not lost work; the host gate records the same delivery moments later.
-10. Set state to `Human Review`. Never set `Done`: only a human sets it, through Confirm done (`confirm_done`).
+10. Set state to `Human Review`. Never set `Done`: only a human sets it, through Confirm done (`confirm_done`).{% for label in issue.labels %}{% if label == "role:manager-plan" %}
+
+**Document of a whole task** (the `Labels:` line shows `role:manager-plan`; the ticket has `## Plan Accepted`). This ticket has no `## Plan`, `## Implementation` or `## Self-Critique` -- that is normal, the workers wrote them in the subtasks; a missing worker section is not a `## Document Defect`. In step 1 read instead `## Plan Accepted`, `docs/{{ issue.identifier }}/qa/final-check.md`, `docs/{{ issue.identifier }}/work/final-diff.md` and the subtask cards `kanban/{{ issue.identifier }}-N.md`. The wiki update and the `## As-Is -> To-Be Report` cover the whole task, not one subtask.
+{% endif %}{% endfor %}
 
 Operator skip: the TUI/web skip action may append `## Document Skipped` and move an idle Document ticket to `Human Review`; agents must not simulate that skip themselves.
 {% if board_health %}

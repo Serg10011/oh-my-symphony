@@ -272,10 +272,11 @@ def test_base_shows_the_request_and_the_manager_path() -> None:
     assert "manager (role:manager-plan): Plan -> Subtasks -> Verify -> Document -> Human Review" in with_request
 
 
-def test_the_plan_placeholder_renders_and_hands_the_card_to_a_human() -> None:
+def test_the_plan_prompt_renders_by_the_core_engine_and_is_not_empty() -> None:
+    # S4-21: no check of the text (the placeholder is replaced by the real prompt in S4-20,
+    # which adds its own content tests in a new file).
     text = render_prompt("stages/plan.md", state="Plan", labels=("role:manager-plan",))
-    assert "needs_human" in text
-    assert "Plan stage is not configured yet (S4-20)" in text
+    assert text.strip()
 
 
 # ---------------------------------------------------------------------------
