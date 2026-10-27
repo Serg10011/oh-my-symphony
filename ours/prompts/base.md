@@ -19,13 +19,15 @@ This ticket depends on:
 
 ## Production pipeline (4 active stages)
 
-Honour the gate matching `{{ issue.state }}`. One stage = one transition; never jump ahead.
+Honour the gate matching `{{ issue.state }}`. One stage = one transition; never jump ahead (one exception: a subtask goes from Verify straight to `Human Review`, see Verify step 9).
 
 ```
   Todo  ->  In Progress  ->  Verify  ->  Document  ->  Human Review  ->  Done (set by a human)
                  ^              |          |
                  |              |          |
                  +--------------+------------- Verify/Document defects rewind here
+
+  subtask (role:worker + request): Verify -> Human Review (no Document)
 ```
 
 - `docs/llm-wiki/` is the reusable knowledge base: In Progress reads it first, Document writes back.
@@ -60,7 +62,7 @@ Caps: `## Security Audit` exactly 7 rows; `## As-Is -> To-Be Report` <= 20 lines
 
 ## Hard rules
 
-- Never skip Verify. Never mark `Done` without `## QA Evidence`, `## Merge Status`, `## Wiki Updates`, and `## As-Is -> To-Be Report`.
+- Never skip Verify. Never mark `Done` without `## QA Evidence`, `## Merge Status`, `## Wiki Updates`, and `## As-Is -> To-Be Report` (a subtask needs only the first two: its documentation is written by the task card, see Verify step 9).
 - Document ends in `Human Review`: that is the normal completion path of this pipeline. Never set `Done` yourself: only a human sets it, through Confirm done (`confirm_done`).
 - Never silence failing tests, hide errors, or add fake success paths. Fix the root cause or move the ticket to `Blocked`.
 - Test budget: how often tests may run is set by the stage prompt (`Test budget` in In Progress and Verify); the host runs the full suite once per pass.

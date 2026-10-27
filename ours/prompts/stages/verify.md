@@ -36,4 +36,4 @@ Re-verify after a rewind: check only the items of the last `## Review Findings` 
 {% else %}
 8. Merge is deferred to a human by pipeline rule (`agent.auto_merge_on_done` is false). Do NOT merge, rebase, or reset anything. From this workspace run the preflight `git merge-tree --write-tree "$(git config --get symphony.mergetargetbranch)" HEAD` and save its output to `docs/{{ issue.identifier }}/qa/merge-tree.log`. Append `## Merge Status` with the target branch, the preflight result, and the line `Merge deferred to a human by pipeline rule; no merge performed.`
 {% endif %}
-9. Set state to `Document`.
+9. Set the next state. **Subtask** (the `Labels:` line of the ticket shows `role:worker` AND the ticket has a `request:` field): after a clean Verify (`## Review` written, no `## Review Findings` / `## QA Failure`) append `## Document Skipped` with the one line `Subtask: documentation is written by the task card` and set state to `Human Review`; the task card carries the wiki, Learnings and the As-Is -> To-Be report. Any other ticket: set state to `Document`.

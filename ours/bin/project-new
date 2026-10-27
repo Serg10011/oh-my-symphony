@@ -147,6 +147,19 @@ claude = {claude}
 # test_globs = ["tests/**"]    # ЗАМЕНЯЮТ встроенный список
 # allow_modified_tests = []
 # required_sections = ["## Wiki Updates", "## As-Is -> To-Be Report"]
+# worker_required_sections = ["## QA Evidence", "## Merge Status"]
+#                              # то же для подзадачи ([integration] enabled = true, метка
+#                              # worker_label и поле `request:`): у неё нет этапа Document,
+#                              # wiki и отчёт пишет карточка задачи; эти разделы пишет Verify
+# doc_paths = ["docs/our/**/*.md"]
+#                              # пути, правка которых не требует полного прогона тестов
+#                              # (все изменённые пути должны совпасть с этим списком;
+#                              # быстрые проверки идут всегда). Включать только то, что
+#                              # тесты точно не читают (например, `CHANGELOG.md` у форка
+#                              # читает тест — его сюда нельзя); лучше ограничивать
+#                              # расширением `.md` — тогда файл кода в такой папке не
+#                              # пройдёт без тестов. Перед доставкой задачи полный прогон
+#                              # всё равно будет
 max_check_failures = 2         # провалов проверки check.py до needs_human: второй
 #                              # провал (откат из Human Review в In Progress) — стоп
 

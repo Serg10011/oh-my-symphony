@@ -331,8 +331,7 @@ def test_limits_reach_the_core_config(doc: Doc) -> None:
     # Strict defaults of the project-new stub (TASK-K14).
     assert (cfg.agent.max_turns, cfg.agent.max_total_turns, cfg.agent.max_attempts) == (12, 20, 2)
     assert cfg.agent.max_state_turns == 2
-    doc.toml.write_text(doc.toml.read_text().replace("max_turns = 8 ", "max_turns = 12")
-                        .replace("max_attempts = 2 ", "max_attempts = 1"))
+    doc.toml.write_text(doc.toml.read_text().replace("max_attempts = 2 ", "max_attempts = 1"))
     project = pc.load_project(doc.board)
     (doc.board / "WORKFLOW.md").write_text(pc.render_workflow(doc.board, project))
     cfg = build_service_config(load_workflow(doc.board / "WORKFLOW.md"))
