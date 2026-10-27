@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -1219,3 +1221,514 @@ def test_test_report_shows_open_files_limit(env: Env) -> None:
     prep_test(env, "ours/a.py\n")
     env.pass_()
     assert "Лимит открытых файлов: мягкий " in env.log("S4-05.test.log")
+
+
+# --- closing the Claude Code window after a merge (TASK-S4-23) -------------------------------
+
+TTY = "/dev/ttys004"
+WIN = 18816
+PS_ALL, PS_TTY = "-ww -A -o", f"-ww -t {TTY} -o"
+
+
+class WinFake(Fake):
+    """Fake with a process table, a Terminal window and one journal of everything that happens."""
+
+    def __init__(self, task: str) -> None:
+        super().__init__()
+        self.journal: list[str] = []
+        self.task = task
+        self.terminal_out = ""
+        self.state = "match"  # what the window check script answers while the window is open
+        self.check_rc = 0
+        self.close_rc = 0
+        self.close_works = True
+        self.ps_rc = 0
+        self.kills: list[tuple[int, int]] = []
+        self.ignore_term: set[int] = set()
+        self.kill_error: Exception | None = None
+        # pid, ppid, stat, command, on the window's tty?
+        self.table: list[list] = [
+            [100, 1, "Ss", "-zsh", True],
+            [101, 100, "S+", f"node claude --model sonnet Выполни задание из файла {task}", True],
+            [102, 101, "S", "node mcp-server", False],  # helper of Claude Code, another tty
+            [103, 102, "S", "sleep 999", False],
+            [200, 1, "S", f"vim {task}", True],  # the task file, but not claude
+            [300, 1, "S", "claude --model opus Выполни задание из файла /other/inbox/S4-99.md", True],
+        ]
+
+    def terminal(self, osascript: str, command: str) -> tuple[bool, str]:
+        super().terminal(osascript, command)
+        return self.window_ok, self.terminal_out
+
+    def proc(self, argv, cwd=None, env=None, timeout=120, stdin_text=None) -> ir.Proc:
+        line = " ".join(str(a) for a in argv)
+        if argv[0] == "/usr/bin/osascript" and stdin_text == ir.WINDOW_CHECK_SCRIPT:
+            self.journal.append("osa:check")
+            self.calls.append({"argv": [str(a) for a in argv], "line": line, "cwd": cwd, "env": env,
+                               "timeout": timeout, "stdin": stdin_text})
+            if self.check_rc:
+                return ir.Proc(self.check_rc, "osascript: boom")
+            return ir.Proc(0, self.state + "\n")
+        if argv[0] == "/usr/bin/osascript" and stdin_text == ir.WINDOW_CLOSE_SCRIPT:
+            self.journal.append("osa:close")
+            self.calls.append({"argv": [str(a) for a in argv], "line": line, "cwd": cwd, "env": env,
+                               "timeout": timeout, "stdin": stdin_text})
+            if self.close_rc == 0 and self.close_works:
+                self.state = "no window"
+            return ir.Proc(self.close_rc, "" if self.close_rc == 0 else "execution error")
+        if argv[0] == ir.PS:
+            self.journal.append("ps")
+            if self.on_call:
+                self.on_call(argv)
+            self.calls.append({"argv": [str(a) for a in argv], "line": line, "cwd": cwd, "env": env,
+                               "timeout": timeout})
+            if self.ps_rc:
+                return ir.Proc(self.ps_rc, "ps: boom")
+            only_tty = PS_TTY in line
+            return ir.Proc(0, "".join(f"{p} {pp} {st} {cmd}\n" for p, pp, st, cmd, on in self.table
+                                      if on or not only_tty))
+        if "pr merge" in line:
+            self.journal.append("merge")
+        elif "post-merge" in line:
+            self.journal.append("post-merge")
+        return super().proc(argv, cwd, env, timeout, stdin_text)
+
+    def kill(self, pid: int, sig: int) -> None:
+        self.journal.append(f"kill:{pid}:{sig}")
+        if self.kill_error:
+            raise self.kill_error
+        self.kills.append((pid, sig))
+        if sig == 15 and pid in self.ignore_term:
+            return
+        self.table = [r for r in self.table if r[0] != pid]
+
+    def ops(self) -> ir.Ops:
+        ops = super().ops()
+        ops.kill = self.kill
+        return ops
+
+
+@pytest.fixture
+def wenv(env: Env) -> Env:
+    env.fake = WinFake(str(env.main / "tmp_workspaces" / "inbox" / "S4-03.md"))
+    return env
+
+
+def record_window(env: Env, code: str = "S4-03") -> Path:
+    env.outbox.mkdir(parents=True, exist_ok=True)
+    path = env.outbox / f"{code}.terminal.json"
+    ir.write_terminal_record(path, code, WIN, TTY, "2026-10-27T10:00:00Z")
+    return path
+
+
+def order(journal: list[str], *labels: str) -> None:
+    """The labels appear in the journal in this order (other entries may sit between them)."""
+    at = -1
+    for label in labels:
+        later = [i for i, e in enumerate(journal) if i > at and e.startswith(label)]
+        assert later, f"{label!r} not found after position {at} in {journal}"
+        at = later[0]
+
+
+def test_terminal_scripts_take_data_from_argv_only() -> None:
+    for script in (ir.TERMINAL_SCRIPT, ir.WINDOW_CHECK_SCRIPT, ir.WINDOW_CLOSE_SCRIPT):
+        assert script.startswith("on run argv") and "{" not in script and "%" not in script
+    assert "item 1 of argv" in ir.WINDOW_CHECK_SCRIPT and "item 2 of argv" in ir.WINDOW_CHECK_SCRIPT
+    assert "close window id wantId" in ir.WINDOW_CLOSE_SCRIPT
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("window_id=18816\ntty=/dev/ttys004", (18816, "/dev/ttys004")),
+    ("window_id=1\ntty=/dev/ttys0\n", (1, "/dev/ttys0")),
+])
+def test_parse_window_output_accepts(text: str, expected: tuple) -> None:
+    assert ir.parse_window_output(text) == (expected, "")
+
+
+@pytest.mark.parametrize("text", [
+    "", "tab 1 of window id 18816", "tty=/dev/ttys004", "window_id=18816", "window_id=x\ntty=/dev/ttys004",
+    "tty=/dev/ttys004\nwindow_id=18816", "window_id=18816\ntty=/dev/null", "window_id=-5\ntty=/dev/ttys004",
+    "window_id=18816\ntty=/dev/ttys004\nextra", "window_id=18816\ntty=/dev/ttys004; rm -rf /",
+])
+def test_parse_window_output_rejects(text: str) -> None:
+    parsed, why = ir.parse_window_output(text)
+    assert parsed is None and why
+
+
+def test_run_records_window(wenv: Env) -> None:
+    wenv.task("S4-03")
+    wenv.put("S4-03.run")
+    wenv.fake.terminal_out = f"window_id={WIN}\ntty={TTY}"
+    wenv.pass_()
+    rec = json.loads((wenv.outbox / "S4-03.terminal.json").read_text())
+    assert rec == {"code": "S4-03", "window_id": WIN, "tty": TTY, "opened_at": "1970-01-01T00:16:40Z"}
+    assert stat.S_IMODE((wenv.outbox / "S4-03.terminal.json").stat().st_mode) == 0o600
+    assert f"Окно: id {WIN}, tty {TTY}" in wenv.log("S4-03.run.log")
+    assert not list(wenv.outbox.glob("*.tmp"))
+
+
+@pytest.mark.parametrize("out", ["", "tab 1 of window id 18816", "window_id=18816", f"tty={TTY}\nwindow_id={WIN}"])
+def test_run_unparsable_window_output_no_record_launch_ok(wenv: Env, out: str) -> None:
+    wenv.task("S4-03")
+    wenv.put("S4-03.run")
+    wenv.fake.terminal_out = out
+    wenv.pass_()
+    log = wenv.log("S4-03.run.log")
+    assert not (wenv.outbox / "S4-03.terminal.json").exists()
+    assert "окно не записано:" in log and "Окно Терминала открыто" in log and "ОШИБКА" not in log
+
+
+def test_run_failed_window_writes_no_record(wenv: Env) -> None:
+    wenv.task("S4-03")
+    wenv.put("S4-03.run")
+    wenv.fake.window_ok = False
+    wenv.fake.terminal_out = f"window_id={WIN}\ntty={TTY}"
+    wenv.pass_()
+    assert not (wenv.outbox / "S4-03.terminal.json").exists()
+
+
+def test_record_reading_is_strict(tmp_path: Path) -> None:
+    path = tmp_path / "S4-03.terminal.json"
+    assert ir.read_terminal_record(path, "S4-03") == (None, "")
+    good = {"code": "S4-03", "window_id": WIN, "tty": TTY, "opened_at": "x"}
+    path.write_text(json.dumps(good))
+    assert ir.read_terminal_record(path, "S4-03")[0] == {"code": "S4-03", "window_id": WIN, "tty": TTY}
+    assert ir.read_terminal_record(path, "S4-04")[0] is None  # a record of another task
+    for bad in ("not json", "[]", "null", json.dumps({**good, "window_id": True}), json.dumps({**good, "window_id": 0}),
+                json.dumps({**good, "window_id": "5"}), json.dumps({**good, "tty": "/dev/null"}),
+                json.dumps({**good, "tty": "/dev/ttys1; x"}), json.dumps({"code": "S4-03"})):
+        path.write_text(bad)
+        record, why = ir.read_terminal_record(path, "S4-03")
+        assert record is None and why, bad
+
+
+def test_merge_closes_window_after_merge_before_post_merge(wenv: Env) -> None:
+    f = wenv.fake
+    path = record_window(wenv)
+    merge_env(wenv, [pr()])
+    assert wenv.pass_() is False
+    order(f.journal, "merge", "osa:check", "ps", "kill:101:15", "osa:close", "osa:check", "post-merge")
+    assert [(p, s) for p, s in f.kills if s == 15] == [(101, 15), (102, 15), (103, 15)]
+    assert all(s == 15 for _, s in f.kills)  # everything died of SIGTERM, no SIGKILL needed
+    # nothing outside the tree of Claude Code was touched: shell, vim on the file, other task
+    assert {p for p, _ in f.kills} == {101, 102, 103}
+    assert [r[0] for r in f.table] == [100, 200, 300]
+    assert not path.exists()
+    log = wenv.log("S4-03.merge.log")
+    assert "PR влит." in log and "Окно закрыто; запись окна удалена." in log
+    assert log.index("PR влит.") < log.index("Шаг: закрыть окно Claude Code") < log.index("Шаг: post-merge")
+    assert "post-merge: готово" in log
+
+
+def test_merge_window_scripts_get_data_by_argv(wenv: Env) -> None:
+    record_window(wenv)
+    merge_env(wenv, [pr()])
+    wenv.pass_()
+    osa = [c for c in wenv.fake.calls if c["argv"][0] == "/usr/bin/osascript"]
+    assert [c["argv"][1:] for c in osa] == [["-", str(WIN), TTY], ["-", str(WIN)], ["-", str(WIN), TTY]]
+    assert all(c["timeout"] == ir.OSASCRIPT_TIMEOUT_S for c in osa)
+    assert all(str(WIN) not in c["stdin"] and TTY not in c["stdin"] for c in osa)
+    ps_calls = [c["argv"] for c in wenv.fake.calls if c["argv"][0] == ir.PS]
+    assert ps_calls[0] == [ir.PS, "-ww", "-t", TTY, "-o", ir.PS_COLUMNS]
+    assert ps_calls[1] == [ir.PS, "-ww", "-A", "-o", ir.PS_COLUMNS]
+
+
+def test_merge_term_ignored_gets_kill_after_wait(wenv: Env) -> None:
+    f = wenv.fake
+    f.ignore_term = {103}
+    record_window(wenv)
+    merge_env(wenv, [pr()])
+    wenv.pass_()
+    assert (103, 15) in f.kills and (103, 9) in f.kills and (101, 9) not in f.kills
+    assert [r[0] for r in f.table] == [100, 200, 300]
+    assert "SIGKILL" in wenv.log("S4-03.merge.log") and "Окно закрыто" in wenv.log("S4-03.merge.log")
+
+
+def test_merge_pid_reused_after_term_is_not_killed(wenv: Env) -> None:
+    f = wenv.fake
+    f.ignore_term = {103}
+    record_window(wenv)
+    merge_env(wenv, [pr()])
+
+    def reuse(argv):
+        if argv and argv[0] == ir.PS and "-A" in argv and (103, 15) in f.kills:
+            f.table = [r for r in f.table if r[0] != 103] + [[103, 1, "S", "somebody-else", False]]
+
+    f.on_call = reuse
+    wenv.pass_()
+    assert (103, 9) not in f.kills
+
+
+@pytest.mark.parametrize("state, reason", [
+    ("tty mismatch", "это уже не то окно"),
+    ("no window", "окна с таким номером уже нет"),
+    ("not running", "Терминал не запущен"),
+    ("garbage", "неожиданный ответ osascript"),
+])
+def test_merge_window_is_not_the_one_nothing_closed(wenv: Env, state: str, reason: str) -> None:
+    f = wenv.fake
+    f.state = state
+    path = record_window(wenv)
+    merge_env(wenv, [pr()])
+    wenv.pass_()
+    assert f.kills == [] and "osa:close" not in f.journal and "ps" not in f.journal
+    order(f.journal, "merge", "osa:check", "post-merge")
+    log = wenv.log("S4-03.merge.log")
+    assert reason in log and "post-merge: готово" in log
+    assert path.exists()
+
+
+def test_merge_osascript_failure_nothing_closed(wenv: Env) -> None:
+    f = wenv.fake
+    f.check_rc = 1
+    path = record_window(wenv)
+    merge_env(wenv, [pr()])
+    wenv.pass_()
+    assert f.kills == [] and "osa:close" not in f.journal and path.exists()
+    assert "post-merge" in f.journal and "osascript не отработал" in wenv.log("S4-03.merge.log")
+
+
+@pytest.mark.parametrize("content", [None, "not json", json.dumps({"code": "S4-03"})])
+def test_merge_no_or_broken_record_nothing_closed(wenv: Env, content: str | None) -> None:
+    f = wenv.fake
+    if content is not None:
+        wenv.outbox.mkdir(parents=True, exist_ok=True)
+        (wenv.outbox / "S4-03.terminal.json").write_text(content)
+    merge_env(wenv, [pr()])
+    wenv.pass_()
+    assert not [e for e in f.journal if e.startswith(("osa", "ps", "kill"))]
+    assert "post-merge" in f.journal
+    assert "окно не записано — закрой сам, если открыто" in wenv.log("S4-03.merge.log")
+
+
+def test_merge_record_of_other_task_is_not_used(wenv: Env) -> None:
+    record_window(wenv, "S4-04")
+    merge_env(wenv, [pr()])
+    wenv.pass_()
+    assert not [e for e in wenv.fake.journal if e.startswith(("osa", "ps", "kill"))]
+    assert (wenv.outbox / "S4-04.terminal.json").exists()
+
+
+def test_merge_terminal_refuses_to_close_keeps_record(wenv: Env) -> None:
+    f = wenv.fake
+    f.close_works = False  # Terminal asked for confirmation: the window stays
+    path = record_window(wenv)
+    merge_env(wenv, [pr()])
+    wenv.pass_()
+    log = wenv.log("S4-03.merge.log")
+    assert "окно не закрыто:" in log and "закрой сам" in log and "спросил подтверждение" in log
+    assert path.exists() and "post-merge: готово" in log
+    assert f.journal.count("osa:close") == 1  # nothing is retried or forced
+
+
+def test_merge_close_script_error_reported(wenv: Env) -> None:
+    f = wenv.fake
+    f.close_rc = 1
+    f.close_works = False
+    record_window(wenv)
+    merge_env(wenv, [pr()])
+    wenv.pass_()
+    assert "osascript close: код 1" in wenv.log("S4-03.merge.log") and "post-merge" in f.journal
+
+
+def test_merge_ps_failure_window_left_open(wenv: Env) -> None:
+    f = wenv.fake
+    f.ps_rc = 2
+    path = record_window(wenv)
+    merge_env(wenv, [pr()])
+    wenv.pass_()
+    assert f.kills == [] and "osa:close" not in f.journal and path.exists()
+    assert "post-merge" in f.journal and "окно не закрыто" in wenv.log("S4-03.merge.log")
+
+
+def test_merge_claude_already_gone_window_still_closed(wenv: Env) -> None:
+    f = wenv.fake
+    f.table = [r for r in f.table if r[0] not in (101, 102, 103)]
+    path = record_window(wenv)
+    merge_env(wenv, [pr()])
+    wenv.pass_()
+    assert f.kills == [] and "osa:close" in f.journal and not path.exists()
+    assert "нет процесса Claude Code этой задачи" in wenv.log("S4-03.merge.log")
+
+
+def test_merge_internal_error_in_close_step_does_not_stop_post_merge(wenv: Env) -> None:
+    f = wenv.fake
+    f.kill_error = RuntimeError("boom")
+    record_window(wenv)
+    merge_env(wenv, [pr()])
+    wenv.pass_()
+    log = wenv.log("S4-03.merge.log")
+    assert "внутренняя ошибка" in log and "post-merge: готово" in log and "ВНУТРЕННЯЯ ОШИБКА" not in log
+
+
+def test_merge_kill_permission_error_is_reported_and_window_check_goes_on(wenv: Env) -> None:
+    f = wenv.fake
+    f.kill_error = PermissionError(1, "Operation not permitted")
+    record_window(wenv)
+    merge_env(wenv, [pr()])
+    wenv.pass_()
+    assert "не прошёл" in wenv.log("S4-03.merge.log") and "post-merge" in f.journal
+
+
+def test_merge_of_other_branch_does_not_close_window(wenv: Env) -> None:
+    record_window(wenv)
+    merge_env(wenv, [pr(headRefName="dev/other")], text="dev/other\n")
+    wenv.pass_()
+    assert "post-merge" in wenv.fake.journal
+    assert not [e for e in wenv.fake.journal if e.startswith(("osa", "ps", "kill"))]
+    assert "не совпадает" in wenv.log("S4-03.merge.log")
+
+
+def test_failed_merge_and_refusals_never_touch_window(wenv: Env) -> None:
+    f = wenv.fake
+    record_window(wenv)
+    merge_env(wenv, [pr()])
+    f.on("pr merge", 1, "merge conflict")
+    wenv.pass_()
+    assert not [e for e in f.journal if e.startswith(("osa", "ps", "kill", "post-merge"))]
+    assert (wenv.outbox / "S4-03.terminal.json").exists()
+    assert "Шаг: закрыть окно" not in wenv.log("S4-03.merge.log")
+
+
+@pytest.mark.parametrize("prs", [[], [pr(), pr(number=8)], [pr(baseRefName="main")]])
+def test_refused_merge_never_touches_window(wenv: Env, prs) -> None:
+    record_window(wenv)
+    merge_env(wenv, prs)
+    wenv.pass_()
+    assert not [e for e in wenv.fake.journal if e.startswith(("osa", "ps", "kill", "post-merge"))]
+    assert (wenv.outbox / "S4-03.terminal.json").exists()
+
+
+def test_test_command_never_touches_window(wenv: Env) -> None:
+    record_window(wenv, "S4-05")
+    prep_test(wenv, "ours/a.py\n")
+    wenv.pass_()
+    assert not [e for e in wenv.fake.journal if e.startswith(("osa", "ps", "kill"))]
+    assert (wenv.outbox / "S4-05.terminal.json").exists() and "ТЕСТЫ: PASS" in wenv.log("S4-05.test.log")
+
+
+# --- process selection and stopping on real processes --------------------------------------
+
+
+def ps_row(pid: int, command: str, state: str = "S", ppid: int = 1) -> ir.ProcRow:
+    return ir.ProcRow(pid, ppid, state, command)
+
+
+def test_find_roots_needs_claude_and_exact_task_path() -> None:
+    task = "/m/tmp_workspaces/inbox/S4-23.md"
+    rows = [
+        ps_row(1, f"claude --model sonnet Выполни задание из файла {task}"),
+        ps_row(2, f"vim {task}"),  # the path, but not claude
+        ps_row(3, "claude --model sonnet nothing"),  # claude, but no path
+        ps_row(4, "claude Выполни задание из файла /m/tmp_workspaces/inbox/S4-2.md"),
+        ps_row(5, "claude Выполни задание из файла /m/tmp_workspaces/inbox/S4-233.md"),
+        ps_row(6, f"claude Выполни задание из файла /x{task}"),  # a longer path that ends with ours
+        ps_row(7, f"claude Выполни задание из файла {task}", state="Z+"),  # zombie
+        ps_row(8, f'claude "Выполни задание из файла {task}"'),
+    ]
+    assert [r.pid for r in ir.find_roots(rows, task)] == [1, 8]
+
+
+def test_find_roots_claude_in_the_path_does_not_count() -> None:
+    task = "/Users/x/claude/tmp_workspaces/inbox/S4-23.md"
+    rows = [ps_row(1, f"vim {task}"), ps_row(2, f"node claude Выполни задание из файла {task}")]
+    assert [r.pid for r in ir.find_roots(rows, task)] == [2]
+
+
+def test_process_tree_takes_descendants_only() -> None:
+    rows = [ps_row(10, "zsh", ppid=1), ps_row(11, "claude", ppid=10), ps_row(12, "mcp", ppid=11),
+            ps_row(13, "sleep", ppid=12), ps_row(14, "other", ppid=10), ps_row(15, "x", ppid=1)]
+    tree = ir.process_tree(rows, [rows[1]])
+    assert sorted(tree) == [11, 12, 13]
+    assert ir.process_tree([ps_row(1, "launchd", ppid=0), ps_row(os.getpid(), "me", ppid=1)],
+                           [ps_row(1, "launchd", ppid=0), ps_row(os.getpid(), "me", ppid=1)]) == {}
+
+
+def test_parse_ps_skips_junk() -> None:
+    rows = ir.parse_ps("  12   1 Ss   /bin/zsh -l\nnot a row\n 13 12 S+ node  a   b\n14 1 S\n")
+    assert [(r.pid, r.ppid, r.state, r.command) for r in rows] == [(12, 1, "Ss", "/bin/zsh -l"),
+                                                                   (13, 12, "S+", "node  a   b")]
+
+
+def alive(pid: int) -> bool:
+    """Running and not a zombie."""
+    done = subprocess.run([ir.PS, "-p", str(pid), "-o", "stat="], capture_output=True, text=True)
+    state = done.stdout.strip()
+    return bool(state) and not state.startswith("Z")
+
+
+def wait_for(path: Path, seconds: float = 20.0) -> int:
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if path.exists() and path.read_text().strip():
+            return int(path.read_text())
+        time.sleep(0.05)
+    raise AssertionError(f"{path} did not appear")
+
+
+def test_stop_tree_real_processes(tmp_path: Path) -> None:
+    py = sys.executable
+    task = f"{tmp_path}/main/tmp_workspaces/inbox/S4-23.md"
+    other = f"{tmp_path}/main/tmp_workspaces/inbox/S4-99.md"
+    prompt = "Выполни задание из файла "
+    grand_src = "import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(60)"  # ignores SIGTERM
+    child_src = ("import subprocess,sys,time;"
+                 "g=subprocess.Popen([sys.executable,'-c',sys.argv[1],'grandchild']);"
+                 "open(sys.argv[2],'w').write(str(g.pid));time.sleep(60)")
+    stub_src = ("import subprocess,sys,time;"
+                "c=subprocess.Popen([sys.executable,'-c',sys.argv[5],sys.argv[6],sys.argv[7]]);"
+                "open(sys.argv[8],'w').write(str(c.pid));time.sleep(60)")
+    shell_src = ("import json,subprocess,sys,time;a=json.load(open(sys.argv[1]));c=subprocess.Popen(a);"
+                 "open(sys.argv[2],'w').write(str(c.pid));time.sleep(60)")
+    idle_src = "import time;time.sleep(60)"
+    argv_file, stub_pid_file, child_pid_file, grand_pid_file = (tmp_path / n for n in
+                                                                 ("argv.json", "stub.pid", "child.pid", "grand.pid"))
+    # "claude"-looking stub: runs a child which runs a grandchild that ignores SIGTERM
+    stub_argv = [py, "-c", stub_src, "claude", "--model", "sonnet", prompt + task, child_src, grand_src,
+                 str(grand_pid_file), str(child_pid_file)]
+    spawned: list[subprocess.Popen] = []
+
+    def start(argv: list[str]) -> subprocess.Popen:
+        proc = subprocess.Popen(argv, start_new_session=True, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        spawned.append(proc)
+        return proc
+
+    try:
+        # the stub is started by `shell`, which must survive (it plays the tab's shell)
+        argv_file.write_text(json.dumps(stub_argv))
+        shell = start([py, "-c", shell_src, str(argv_file), str(stub_pid_file)])
+        stub_pid = wait_for(stub_pid_file)
+        grand_pid = wait_for(grand_pid_file)
+        child_pid = int(child_pid_file.read_text())
+        no_path = start([py, "-c", idle_src, "claude", "--model", "sonnet", "no task here"])
+        other_code = start([py, "-c", idle_src, "claude", "--model", "sonnet", prompt + other])
+        no_claude = start([py, "-c", idle_src, "editor", prompt + task])
+        assert all(alive(p) for p in (stub_pid, child_pid, grand_pid, shell.pid, no_path.pid, other_code.pid,
+                                      no_claude.pid))
+
+        ops = ir.Ops()  # real ps, real kill, real sleep
+        rows = ir.ps_rows(ops, "-A")
+        assert rows is not None
+        roots = ir.find_roots(rows, task)
+        assert [r.pid for r in roots] == [stub_pid]
+        stopped, notes = ir.stop_tree(ops, rows, roots, wait_s=1.0, poll_s=0.1)
+
+        assert stopped, notes
+        assert not any(alive(p) for p in (stub_pid, child_pid, grand_pid))  # root and all descendants
+        assert any("SIGKILL" in n and str(grand_pid) in n for n in notes)  # the SIGTERM-proof one needed it
+        assert not any("SIGKILL" in n and str(stub_pid) in n for n in notes)
+        # nobody outside the tree was touched
+        assert all(alive(p) for p in (shell.pid, no_path.pid, other_code.pid, no_claude.pid))
+    finally:
+        for proc in spawned:
+            proc.kill()
+        for pid_file in (stub_pid_file, child_pid_file, grand_pid_file):
+            if pid_file.exists() and pid_file.read_text().strip():
+                try:
+                    os.kill(int(pid_file.read_text()), signal.SIGKILL)
+                except OSError:
+                    pass
+        for proc in spawned:
+            proc.wait(timeout=10)
+
