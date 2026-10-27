@@ -51,7 +51,7 @@
 - [x] PR ядра №4 — статус для карточки-задачи (`agent.dependency_resolving_states`), исправление `budget_reopen_history` — S4-17. — тесты на ядре и настоящем `RunRegistry`; в работающей службе не проверено
 - [x] Включить `[integration] enabled = true` на доске `oms` (сделано 26.10.2026; условие — `max_concurrent_agents = 1`).
 - [ ] Исследование: хаб ядра (`symphony hub`) как временный обзор досок (REPORT).
-- [ ] S4-18 — статус `Subtasks` в шаблоне и заготовке (вместе с `dependency_resolving_states: [Done]`).
+- [x] S4-18 — статусы нарезки `Plan` и `Subtasks` (шаблон `WORKFLOW.md`, промпты, `dependency_resolving_states: [Done]`, `stage_contracts: on`, нижняя граница `max_turns` = 5). — тесты на ядре; в работающей службе и на доске `oms` не проверено; после слияния чат этапа пересобирает `WORKFLOW.md` `oms` (`post-merge`) и проверяет `symphony doctor` и столбцы доски
 - [ ] S4-19 — хук «план-файл → карточки».
 - [ ] S4-20 — промпты `role:manager-plan` (карточкой на доску `oms`).
 - [ ] S4-21 — выход из `Subtasks` на итоговую проверку (слияние с `our-main` двумя родителями).
