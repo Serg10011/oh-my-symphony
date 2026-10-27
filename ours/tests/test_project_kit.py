@@ -162,8 +162,10 @@ def test_rendered_workflow_is_accepted_by_the_core(kit: Kit) -> None:
     # check.py is the first command, before the early "no changes" exit.
     commands = [line for line in cfg.hooks.after_run.splitlines() if not line.lstrip().startswith("#")]
     assert commands[0] == f'"$SYMPHONY_PYTHON" {OURS / "hooks" / "check.py"} hook || true'
+    # S4-19: plan.py is second, before the subshell of the standard block.
+    assert commands[1] == f'"$SYMPHONY_PYTHON" {OURS / "hooks" / "plan.py"} hook || true'
     # S4-12: the standard block is a subshell now, so its early `exit 0` cannot skip integrate.py.
-    assert commands[1] == "(" and commands[2] == "set -uo pipefail"
+    assert commands[2] == "(" and commands[3] == "set -uo pipefail"
     assert commands[-1] == f'"$SYMPHONY_PYTHON" {OURS / "hooks" / "integrate.py"} hook || true'
     assert "worktree.py create" in cfg.hooks.after_create
     assert "worktree.py remove" in cfg.hooks.before_remove
