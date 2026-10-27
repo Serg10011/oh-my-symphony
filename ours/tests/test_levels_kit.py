@@ -167,7 +167,7 @@ def test_levels_accept_every_documented_key() -> None:
         ({"L1": {"claude": {"model": "$(x)"}}}, "только буквы, цифры"),
         ({"L1": {"claude": {"effort": ""}}}, "нужна непустая строка"),
         ({"L1": {"claude": {"effort": "ultra"}}}, "допустимо: low, medium, high, xhigh, max"),
-        ({"L1": {"max_turns": 3}}, "max_turns не меньше 4"),
+        ({"L1": {"max_turns": 3}}, "max_turns не меньше числа активных статусов доски"),
         ({"L1": {"max_turns": 0}}, "нужно целое число больше нуля"),
         ({"L1": {"max_state_turns": 0}}, "нужно целое число больше нуля"),
         ({"L1": {"max_state_turns": True}}, "нужно целое число больше нуля"),
@@ -218,7 +218,7 @@ def test_max_state_turns_must_be_a_positive_integer(value: object) -> None:
 
 
 def test_max_turns_still_covers_the_active_states() -> None:
-    with pytest.raises(pc.ProjectError, match="max_turns не меньше 4"):
+    with pytest.raises(pc.ProjectError, match="max_turns не меньше числа активных статусов доски"):
         pc.validate_project(data(limits={"max_turns": 3}))
 
 

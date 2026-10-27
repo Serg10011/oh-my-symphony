@@ -10,6 +10,7 @@ Current state: {{ issue.state }}.
 {% endif %}
 
 {% if issue.labels %}Labels: {{ issue.labels | join: ", " }}{% endif %}
+{% if issue.request %}Request: {{ issue.request }}{% endif %}
 
 {% if issue.blocked_by %}
 This ticket depends on:
@@ -28,6 +29,7 @@ Honour the gate matching `{{ issue.state }}`. One stage = one transition; never 
                  +--------------+------------- Verify/Document defects rewind here
 
   subtask (role:worker + request): Verify -> Human Review (no Document)
+  manager (role:manager-plan): Plan -> Subtasks -> Verify -> Document -> Human Review
 ```
 
 - `docs/llm-wiki/` is the reusable knowledge base: In Progress reads it first, Document writes back.
