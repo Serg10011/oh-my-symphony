@@ -80,6 +80,9 @@ TITLE_MAX = 80
 CRITERIA_MAX = 5
 NON_GOALS_MAX = 5
 PATHS_MAX = 20
+# A `check` command is one plain command: no chaining, piping, substitution, redirection.
+# (Backticks are refused separately, by the text check.)
+CHECK_FORBIDDEN_SYNTAX = ("&&", "||", ";", "|", "$(", ">", "<")
 
 _REQUIRED = ("key", "title", "level", "level_reason", "goal", "criteria", "check", "paths")
 _OPTIONAL = ("blocked_by", "non_goals")
@@ -302,9 +305,30 @@ def _forbidden_problem(pattern: str, cfg: check.Config) -> str | None:
     return f"путь попадает в {where}: агент там ничего менять не может"
 
 
+def allowed_check_commands(board: Path, project: dict) -> list[str]:
+    """Command prefixes the agent may run: the `Bash(<prefix>:*)` rules of the board.
+
+    The same list the service gets as --allowedTools (project_config.agent_bash_rules).
+    """
+    rules = pc.agent_bash_rules(board, project["agent"]["allowed_bash"])
+    return [rule[len("Bash("):-len(":*)")] for rule in rules]
+
+
+def _command_problem(command: str, prefixes: list[str]) -> str | None:
+    """Why `command` cannot run for an agent, or None. A prefix ends at a space or at the end."""
+    shown = "; ".join(prefixes)
+    for syntax in CHECK_FORBIDDEN_SYNTAX:
+        if syntax in command:
+            return (f"check: команда не разрешена агенту: {syntax!r} не допускается "
+                    f"(одна простая команда); разрешены: {shown}")
+    if any(command == prefix or command.startswith(prefix + " ") for prefix in prefixes):
+        return None
+    return f"check: команда не разрешена агенту; разрешены: {shown}"
+
+
 def _check_subtask(index: int, raw: object, keys: list[str | None], levels: list[str],
                    ceiling: int | None, task_level: str | None, cfg: check.Config,
-                   errors: list[str]) -> Subtask | None:
+                   prefixes: list[str] | None, errors: list[str]) -> Subtask | None:
     """Validate one [[subtask]]; the problems go to `errors`. The Subtask when it is clean."""
     if not isinstance(raw, dict):
         errors.append(f"подзадача {index}: нужна таблица [[subtask]]")
@@ -355,6 +379,8 @@ def _check_subtask(index: int, raw: object, keys: list[str | None], levels: list
             problem = _text_problem(name, value, multiline=multiline)
             if problem is None and name == "check" and "`" in raw[name]:
                 problem = "check: обратная кавычка не допускается"
+            if problem is None and name == "check" and prefixes is not None:
+                problem = _command_problem(raw[name].strip(), prefixes)
             if problem:
                 problems.append(problem)
     if "criteria" in raw:
@@ -410,9 +436,13 @@ def level_ceiling(project: dict, front_level: str | None) -> tuple[int | None, s
     return None, None
 
 
-def check_plan(text: str, project: dict, cfg: check.Config, task_level: str | None
-               ) -> tuple[list[Subtask], list[str]]:
-    """(subtasks, []) for a good plan, ([], reasons) with every reason found."""
+def check_plan(text: str, project: dict, cfg: check.Config, task_level: str | None,
+               board: Path | None = None) -> tuple[list[Subtask], list[str]]:
+    """(subtasks, []) for a good plan, ([], reasons) with every reason found.
+
+    `board` is the board folder: with it, `check` must start with a command the
+    agent may run there. Without it that rule is not applied (a library call).
+    """
     try:
         data = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
@@ -433,8 +463,9 @@ def check_plan(text: str, project: dict, cfg: check.Config, task_level: str | No
     levels = list(project["levels"]["levels"])
     ceiling, level_name = level_ceiling(project, task_level)
     keys = [item.get("key") if isinstance(item, dict) and isinstance(item.get("key"), str) else None for item in raw]
+    prefixes = None if board is None else allowed_check_commands(board, project)
     subtasks = [
-        _check_subtask(i, item, keys, levels, ceiling, level_name, cfg, errors)
+        _check_subtask(i, item, keys, levels, ceiling, level_name, cfg, prefixes, errors)
         for i, item in enumerate(raw, 1)
     ]
     if errors:
@@ -672,7 +703,7 @@ def _run_hook(ctx: check.Context, project: dict) -> int:
         text, reasons = _read_plan_text(ctx.workflow_dir, ctx.issue_id)
         plan: list[Subtask] = []
         if text is not None:
-            plan, reasons = check_plan(text, project, cfg, _card_level(ctx.card))
+            plan, reasons = check_plan(text, project, cfg, _card_level(ctx.card), ctx.workflow_dir)
         if reasons:
             return _fail(ctx, cfg, project, reasons)
         return _accept(ctx, cfg, project, plan)
@@ -729,6 +760,39 @@ def _budget_lines(port: int, task: str) -> list[str]:
     return lines or ["бюджет недоступен (пустой ответ службы)"]
 
 
+def _forbidden_lines(ctx: check.Context) -> list[str]:
+    """`## Forbidden paths`: what the hook will reject in `paths`, from the same rules as check.py."""
+    head = ["## Forbidden paths", ""]
+    try:
+        rules = check.forbidden_rules(check.load_config(ctx.workflow_dir))
+    except check.CheckError as exc:
+        return [*head, f"правила проекта не читаются ({check._clean(str(exc))[:200]}): список недоступен", ""]
+    lines = [*head, "`paths` не должны касаться ничего из этого списка (шаблоны `*` и `**`): хук отклонит план.", ""]
+    lines += [f"- `{pattern}`" for pattern in rules.closed]
+    lines.append(f"- `{rules.ours}`" + (" (кроме открытого ниже)" if rules.opened else ""))
+    lines += [f"- `{pattern}` (контур контроля, закрыт всегда)" for pattern in rules.contour]
+    lines.append("")
+    if rules.opened:
+        lines.append(f"Открыто внутри `{rules.ours}` ([checks] allow_paths): "
+                     + ", ".join(f"`{pattern}`" for pattern in rules.opened))
+    else:
+        lines.append(f"Внутри `{rules.ours}` ничего не открыто.")
+    return [*lines, ""]
+
+
+def _check_command_lines(ctx: check.Context, project: dict) -> list[str]:
+    board = ctx.workflow_dir.resolve()
+    return [
+        "## Test command", "",
+        "Полный набор тестов проекта — точно эта строка:", "",
+        f"`/bin/bash {board / 'test.sh'}`", "",
+        "## Allowed check commands", "",
+        "`check` подзадачи должен начинаться с одной из этих команд "
+        "(граница — пробел или конец строки; без `&&`, `||`, `;`, `|`, `$(`, `>`, `<`): иначе хук отклонит план.", "",
+        *(f"- `{prefix}`" for prefix in allowed_check_commands(board, project)), "",
+    ]
+
+
 def render_limits(ctx: check.Context, project: dict) -> str:
     levels = project["levels"]["levels"]
     names = list(levels)
@@ -761,7 +825,7 @@ def render_limits(ctx: check.Context, project: dict) -> str:
               f"- plan failures so far: {failures} of {plan['max_failures']} (после этого — needs_human)", "",
               f"## Budget of {ctx.issue_id}", ""]
     lines += _budget_lines(project["project"]["port"], ctx.issue_id)
-    lines += ["", "## Plan file", "",
+    lines += ["", *_check_command_lines(ctx, project), *_forbidden_lines(ctx), "## Plan file", "",
               f"- path: {_agent_path(ctx.issue_id, PLAN_NAME)}",
               "- format: docs/our/DECISIONS.md, entry \"S4-19\" (формат plan.toml)", ""]
     return "\n".join(lines)

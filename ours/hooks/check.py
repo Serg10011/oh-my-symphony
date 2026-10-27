@@ -433,12 +433,33 @@ def _under(path: str, directory: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def forbidden_violations(changed: set[str], cfg: Config) -> list[str]:
-    in_contour = _matcher(CONTROL_CONTOUR)
+@dataclass(frozen=True)
+class ForbiddenRules:
+    """The paths an agent may not change, as `forbidden_violations` applies them."""
+
+    contour: tuple[str, ...]  # forbidden always, allow_paths does not lift them
+    closed: tuple[str, ...]  # forbidden outright: defaults, project list, secrets
+    ours: str  # forbidden except where `opened` matches
+    opened: tuple[str, ...]  # [checks] allow_paths: the exceptions to `ours`
+
+
+def forbidden_rules(cfg: Config) -> ForbiddenRules:
+    """The one place that says what is forbidden; the check and the brief use it."""
     others = tuple(p for p in cfg.forbidden_paths if p != OURS_PATTERN)
-    in_other = _matcher(others + OURS_SECRET_PATTERNS)
-    in_ours = _matcher((OURS_PATTERN,))
-    is_allowed = _matcher(cfg.allow_paths)
+    return ForbiddenRules(
+        contour=CONTROL_CONTOUR,
+        closed=tuple(dict.fromkeys(others + OURS_SECRET_PATTERNS)),
+        ours=OURS_PATTERN,
+        opened=cfg.allow_paths,
+    )
+
+
+def forbidden_violations(changed: set[str], cfg: Config) -> list[str]:
+    rules = forbidden_rules(cfg)
+    in_contour = _matcher(rules.contour)
+    in_other = _matcher(rules.closed)
+    in_ours = _matcher((rules.ours,))
+    is_allowed = _matcher(rules.opened)
     problems = []
     for path in sorted(changed):
         if in_contour(path):
