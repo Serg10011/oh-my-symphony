@@ -14,7 +14,8 @@ project_config.py). Checks, fast ones first (all fast violations are
 collected), the project tests last and only when the fast checks passed:
 
     1. config   <board>/project.toml: [project], [tools], [checks],
-                [timeouts]; <board>/.ours-state/baseline.json (project-doctor)
+                [timeouts]; <board>/.ours-state/baselines.json (project-doctor;
+                S4-25: the history of measures, else baseline.json)
     2. base     <board>/.ours-state/<ID>.base.json, written by worktree.py
                 when the worktree was created; must be an ancestor of HEAD
     3. forbidden paths changed relative to the base
@@ -24,7 +25,9 @@ collected), the project tests last and only when the fast checks passed:
        Verify writes those, its card has no Document stage)
     6. project tests: `/bin/bash <board>/test.sh`, own process group; exit 0
        and the last `PIPELINE_TESTS passed=.. skipped=.. failed=..` line:
-       failed = 0, passed >= baseline, skipped <= baseline. This one check is
+       failed = 0, passed >= baseline, skipped <= baseline. The baseline is
+       the measure of the branching point of the card from the base branch
+       (S4-25), not the latest one. This one check is
        skipped (S4-13) when the tree of the working copy is the tree that
        passed `hook` and was merged by integrate.py (<ID>.merged.json), and
        (S4-16) when every changed path matches [checks] doc_paths (a
@@ -96,6 +99,9 @@ STATE_DIR = pc.STATE_DIR
 TEST_SCRIPT = "test.sh"
 LOG_NAME = "check.log"
 NOTE_HEADING = "Check Failure"
+# S4-25: a note with one of these headings goes to the end of the existing
+# section (the last one, when a card has several), not into a new section.
+APPEND_TO_SECTION = frozenset({"Subtask Progress"})
 # One-shot mark "this turn's content passed the checks" for integrate.py hook.
 PASS_SUFFIX = ".pass.json"
 # One-shot record "this tree was merged into the integration branch" written
@@ -665,8 +671,14 @@ def run_tests(
     return f"test.sh failed (exit {proc.returncode})", tail, summary
 
 
-def summary_violations(summary: dict[str, int] | None, baseline: dict) -> list[str]:
-    """test.sh exited 0: its summary line must exist and hold the baseline."""
+def summary_violations(
+    summary: dict[str, int] | None, baseline: dict | None, effective: Effective | None = None
+) -> list[str]:
+    """test.sh exited 0: its summary line must exist and hold the baseline.
+
+    `baseline` None: no measure applies (S4-25), only failed = 0 is required.
+    `effective` names the measure of a branching point; without it the text
+    is the one of the single baseline.json (`legacy`)."""
     if summary is None:
         return [
             f"test.sh: код 0, но нет строки итогов `{pc.SUMMARY_FORMAT}` "
@@ -675,18 +687,28 @@ def summary_violations(summary: dict[str, int] | None, baseline: dict) -> list[s
     problems = []
     if summary["failed"] > 0:
         problems.append(f"test.sh: failed={summary['failed']} при коде 0")
+    if baseline is None:
+        return problems
     if summary["passed"] < baseline["passed"]:
         problems.append(f"test.sh: passed={summary['passed']} меньше базы {baseline['passed']}")
     if summary["skipped"] > baseline["skipped"]:
         problems.append(f"test.sh: skipped={summary['skipped']} больше базы {baseline['skipped']}")
     if problems:
         sha = str(baseline.get("base_sha", ""))[:12] or "?"
-        problems.append(
-            f"итоги: сейчас {pc.triple(summary)}; база {pc.triple(baseline)} "
-            f"(замер project-doctor на {baseline['base_branch']} @ {sha}). "
-            "Если базовая ветка менялась (тесты добавлены или убраны там), "
-            "перезапусти project-doctor"
-        )
+        if effective is None or effective.match == "legacy":
+            problems.append(
+                f"итоги: сейчас {pc.triple(summary)}; база {pc.triple(baseline)} "
+                f"(замер project-doctor на {baseline['base_branch']} @ {sha}). "
+                "Если базовая ветка менялась (тесты добавлены или убраны там), "
+                "перезапусти project-doctor"
+            )
+        else:
+            problems.append(
+                f"итоги: сейчас {pc.triple(summary)}; замер {pc.triple(baseline)} "
+                f"({baseline['base_branch']} @ {sha}, {effective.match}); точка ответвления "
+                f"карточки {effective.point[:12]}. Сравнение идёт с замером точки ответвления: "
+                "тесты, которые были на ней, не должны выпасть"
+            )
     return problems
 
 
@@ -723,6 +745,9 @@ class Result:
     tests: str = ""  # "skipped" | "full" for a gate that met a merged record; "skipped-docs"
     tests_reason: str = ""  # why the record could not skip the tests
     task_card: bool = False  # the card of a task: full suite, no skips (S4-21)
+    baseline_match: str = ""  # "exact" | "ancestor" | "unknown" | "legacy" (S4-25); "" = not resolved
+    baseline_sha: str = ""
+    baseline_point: str = ""
 
 
 def _inside(path: Path, root: Path) -> bool:
@@ -772,6 +797,31 @@ def try_lock(ctx: Context, wait_s: float):
             time.sleep(POLL_S)
 
 
+@dataclass
+class Baselines:
+    """What the card is compared with: the history (baselines.json) or, when the
+    board has none yet, the single measure of baseline.json (`legacy`)."""
+
+    legacy: dict | None = None
+    records: list[dict] = field(default_factory=list)  # of the base branch, oldest first
+
+
+def load_baselines(board: Path, cfg: Config) -> Baselines:
+    try:
+        history = pc.read_baselines(board)
+    except pc.ProjectError as exc:
+        raise CheckError(f"baseline: {exc}") from None  # never falls back to baseline.json
+    if history is None:
+        return Baselines(legacy=load_baseline(board, cfg))
+    records = [r for r in history if r["base_branch"] == cfg.base_branch]
+    if not records:
+        raise CheckError(
+            f"baseline: в истории замеров нет записей для ветки {cfg.base_branch!r}: "
+            "перезапусти project-doctor"
+        )
+    return Baselines(records=records)
+
+
 def load_baseline(board: Path, cfg: Config) -> dict:
     try:
         baseline = pc.read_baseline(board)
@@ -783,6 +833,73 @@ def load_baseline(board: Path, cfg: Config) -> dict:
             f"{cfg.base_branch!r}: перезапусти project-doctor"
         )
     return baseline
+
+
+@dataclass(frozen=True)
+class Effective:
+    """The measure that applies to the branching point of a card (S4-25)."""
+
+    match: str  # "exact" | "ancestor" | "unknown" | "legacy"
+    record: dict | None
+    point: str = ""
+    reason: str = ""  # why there is none ("unknown")
+
+
+def branching_point(repo: Path, base_branch: str) -> str:
+    """The commit of the base branch the card's branch started from."""
+    try:
+        return git(repo, "merge-base", "HEAD", f"refs/heads/{base_branch}").decode().strip()
+    except CheckError as exc:
+        raise CheckError(f"baseline: точка ответвления от {base_branch!r} не найдена: {exc}") from None
+
+
+def _git_ok(repo: Path, *args: str) -> bool:
+    """Exit 0 of a git query; exit 1 is the answer "no"; anything else is an error."""
+    proc = subprocess.run(
+        ["git", *GIT_SAFE_ARGS, *args], cwd=str(repo), stdin=subprocess.DEVNULL,
+        capture_output=True, timeout=GIT_TIMEOUT_S, env=_git_env(), check=False,
+    )
+    if proc.returncode not in (0, 1):
+        detail = proc.stderr.decode("utf-8", errors="replace").strip()
+        raise CheckError(f"git {args[0]} failed (exit {proc.returncode}): {detail[:300]}")
+    return proc.returncode == 0
+
+
+def effective_baseline(repo: Path, baselines: Baselines, base_branch: str) -> Effective:
+    """Strictly: the record of the point itself, else the nearest record that is an
+    ancestor of the point when no file that changes test results lies between them
+    (post-merge measures again exactly when such a file changes, so the older record
+    is as good as an own one), else none."""
+    if baselines.legacy is not None:
+        return Effective("legacy", baselines.legacy)
+    point = branching_point(repo, base_branch)
+    for record in reversed(baselines.records):
+        if record["base_sha"] == point:
+            return Effective("exact", record, point)
+    nearest: tuple[int, dict] | None = None
+    for record in baselines.records:
+        sha = record["base_sha"]
+        if not _git_ok(repo, "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}"):
+            continue  # a commit this repository does not have: skipped, not an error
+        if not _git_ok(repo, "merge-base", "--is-ancestor", sha, point):
+            continue
+        distance = int(git(repo, "rev-list", "--count", f"{sha}..{point}").decode().strip())
+        if nearest is None or distance <= nearest[0]:
+            nearest = (distance, record)
+    if nearest is None:
+        return Effective("unknown", None, point, "нет записи")
+    record = nearest[1]
+    touched = [
+        path for path in _z(git(repo, "diff", "--name-only", "-z", "--no-renames", record["base_sha"], point))
+        if pc.affects_baseline(path)
+    ]
+    if touched:
+        shown = ", ".join(_clean(path) for path in touched[:5])
+        return Effective(
+            "unknown", None, point,
+            f"между записью {record['base_sha'][:12]} и точкой менялись файлы тестов: {shown}",
+        )
+    return Effective("ancestor", record, point)
 
 
 def merged_path(ctx: Context) -> Path:
@@ -833,6 +950,27 @@ def _docs_only(changed: set[str], cfg: Config) -> str | None:
     return f"tests skipped: only doc paths changed ({len(changed)} files)"
 
 
+def _baseline_marks(effective: Effective | None) -> dict[str, str]:
+    """The Result fields that tell which measure the card was compared with."""
+    if effective is None:
+        return {}
+    return {
+        "baseline_match": effective.match,
+        "baseline_sha": str(effective.record["base_sha"]) if effective.record else "",
+        "baseline_point": effective.point,
+    }
+
+
+def _baseline_extra(result: Result) -> dict[str, str]:
+    """The same as log fields (an unresolved measure adds none)."""
+    if not result.baseline_match:
+        return {}
+    extra = {"baseline_match": result.baseline_match, "baseline_sha": result.baseline_sha}
+    if result.baseline_point:
+        extra["baseline_point"] = result.baseline_point
+    return extra
+
+
 def run_checks(ctx: Context, cfg: Config | None = None) -> Result:
     cfg = cfg or load_config(ctx.workflow_dir)
     # Only the gate reads the record, and it is used up here, passed or not.
@@ -841,10 +979,11 @@ def run_checks(ctx: Context, cfg: Config | None = None) -> Result:
     if task_card:
         merged = None  # taken (used up) above, but never used: the task card is not merged by integrate.py
     reasons: list[str] = []
-    baseline: dict = {}
+    baselines: Baselines | None = None
+    effective: Effective | None = None
     changed: set[str] = set()
     try:
-        baseline = load_baseline(ctx.workflow_dir, cfg)
+        baselines = load_baselines(ctx.workflow_dir, cfg)
     except CheckError as exc:
         reasons.append(str(exc))
     try:
@@ -856,10 +995,17 @@ def run_checks(ctx: Context, cfg: Config | None = None) -> Result:
         changed = changed_paths(repo, base, board_dir)
         reasons += forbidden_violations(changed, cfg)
         reasons += test_violations(repo, base, cfg)
+        if baselines is not None:
+            try:
+                effective = effective_baseline(repo, baselines, cfg.base_branch)
+            except CheckError as exc:
+                reasons.append(str(exc))
     reasons += card_violations(ctx.card, cfg)
+    marks = _baseline_marks(effective)
     if reasons:
-        return Result(False, reasons, "", cfg, task_card=task_card)
+        return Result(False, reasons, "", cfg, task_card=task_card, **marks)
     mark: dict[str, object] = {"task_card": True} if task_card else {}
+    mark.update(marks)
     if task_card:
         mark.update(tests="full", tests_reason=TASK_CARD_FULL_REASON)
     if merged is not None:
@@ -871,12 +1017,16 @@ def run_checks(ctx: Context, cfg: Config | None = None) -> Result:
     if note is not None:
         mark["tests"] = "skipped-docs"
         return Result(True, [], "", cfg, tests_skipped=True, note=note, **mark)
+    assert effective is not None  # no reasons: the baselines were loaded and resolved
+    if effective.match == "unknown":
+        log_event(ctx, ctx.issue_id, ctx.mode, "baseline_unknown", effective.reason,
+                  baseline_point=effective.point, base_branch=cfg.base_branch)
     failure, tail, summary = run_tests(
         ctx.workspace, ctx.workflow_dir / TEST_SCRIPT, cfg, ctx.parent_pid
     )
     if failure is not None:
         return Result(False, [failure], tail, cfg, **mark)
-    problems = summary_violations(summary, baseline)
+    problems = summary_violations(summary, effective.record, effective)
     if problems:
         return Result(False, problems, tail, cfg, **mark)
     return Result(True, [], tail, cfg, **mark)
@@ -1010,21 +1160,79 @@ tracker.append_note(
 """
 
 
+_APPEND_SECTION_CODE = """\
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+sys.path.insert(0, sys.argv[5])
+from check import add_to_section
+from symphony.trackers.file import FileBoardTracker
+from symphony.workflow import TrackerConfig
+root, ident, heading, text = sys.argv[1:5]
+tracker = FileBoardTracker(TrackerConfig(
+    kind="file", endpoint="", api_key="", project_slug="",
+    active_states=("Todo", "In Progress"), terminal_states=("Done", "Cancelled"),
+    board_root=Path(root).resolve(),
+))
+
+
+def mutate(front, body):
+    front["updated_at"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return front, add_to_section(body, heading, text)
+
+
+# Private method of the core: there is no public "append to a section"
+# (DECISIONS, S4-25). It holds the card lock and checks updated_at.
+tracker._mutate_ticket(ident, mutate)
+"""
+
+_SECTION_HEADING_RE = re.compile(r"^#{1,2}\s")
+
+
+def add_to_section(body: str, heading: str, text: str) -> str:
+    """`text` at the end of the last `## <heading>` section of `body` (the section
+    runs to the next `#` / `##` line or the end); no such section: a new one."""
+    text = text.strip()
+    lines = body.split("\n")
+    start = None
+    for index, line in enumerate(lines):
+        if re.fullmatch(rf"##\s+{re.escape(heading)}\s*", line, re.IGNORECASE):
+            start = index
+    if start is None:
+        return "\n\n".join(part for part in (body.strip(), f"## {heading}\n\n{text}") if part)
+    end = next(
+        (i for i in range(start + 1, len(lines)) if _SECTION_HEADING_RE.match(lines[i])), len(lines)
+    )
+    last = end - 1
+    while last > start and not lines[last].strip():
+        last -= 1
+    # A list item follows a list item directly; anything else gets a blank line.
+    glue = [] if lines[last].lstrip().startswith(("- ", "* ")) else [""]
+    return "\n".join([*lines[: last + 1], *glue, text, *lines[last + 1 :]])
+
+
 def append_note(
     ctx: Context, body: str, heading: str = NOTE_HEADING, issue_id: str | None = None
 ) -> str:
     """Append `## <heading>` (default `## Check Failure`) through the tracker API; file fallback.
 
     `issue_id` names another card of the same board (S4-21: the task card gets
-    progress lines from its subtask's hook); default: the card of `ctx`."""
+    progress lines from its subtask's hook); default: the card of `ctx`.
+    A heading in APPEND_TO_SECTION (S4-25) adds `body` to the end of the existing
+    section of that name instead: `## Subtask Progress` stays one section."""
     target = issue_id or ctx.issue_id
     python = os.environ.get("SYMPHONY_PYTHON", "").strip()
     board = ctx.workflow_dir / BOARD_DIR
+    in_section = heading in APPEND_TO_SECTION
     if python and os.access(python, os.X_OK):
+        code, args = (
+            (_APPEND_SECTION_CODE, [str(Path(__file__).resolve().parent)])
+            if in_section else (_APPEND_NOTE_CODE, [])
+        )
         try:
             proc = subprocess.run(
                 # -P: never put the cwd on sys.path (the agent controls it).
-                [python, "-P", "-c", _APPEND_NOTE_CODE, str(board), target, heading, body],
+                [python, "-P", "-c", code, str(board), target, heading, body, *args],
                 cwd=str(ctx.workflow_dir),
                 stdin=subprocess.DEVNULL,
                 capture_output=True,
@@ -1049,7 +1257,10 @@ def _append_note_file(
         # Same per-ticket lock file as the file tracker's mutations.
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
         text = card.read_text(encoding="utf-8")
-        new = f"{text.rstrip()}\n\n## {heading}\n\n{body.strip()}\n"
+        if heading in APPEND_TO_SECTION:
+            new = add_to_section(text, heading, body).rstrip() + "\n"
+        else:
+            new = f"{text.rstrip()}\n\n## {heading}\n\n{body.strip()}\n"
         _write_atomic(card, new.encode("utf-8"))
 
 
@@ -1100,7 +1311,8 @@ def rollback(ctx: Context, result: Result) -> None:
     except Exception as exc:  # noqa: BLE001
         note_via = "failed"
         errors.append(f"cannot append note: {type(exc).__name__}: {exc}")
-    log_event(ctx, ctx.issue_id, ctx.mode, f"rollback:{target}", reason, note=note_via)
+    log_event(ctx, ctx.issue_id, ctx.mode, f"rollback:{target}", reason, note=note_via,
+              **_baseline_extra(result))
     for error in errors:
         log_event(ctx, ctx.issue_id, ctx.mode, "error", error)
         _emit(f"check.py hook: {error}", stream=sys.stderr)
@@ -1162,6 +1374,7 @@ def gate_main() -> int:
             extra["tests"] = result.tests
         if result.tests_reason:
             extra["tests_reason"] = result.tests_reason
+        extra.update(_baseline_extra(result))
         reason = result.note if result.tests_skipped else "; ".join(result.reasons)
         log_event(ctx, issue_id, "gate", "pass" if result.ok else "fail", reason, **extra)
     return 0 if result.ok else 1
@@ -1240,6 +1453,7 @@ def _hook_checked(ctx: Context) -> int:
         extra = {"tests": result.tests} if result.tests else {}
         if result.task_card:
             extra["tests_reason"] = result.tests_reason
+        extra.update(_baseline_extra(result))
         reason = result.note if result.tests_skipped else ""
         log_event(ctx, ctx.issue_id, "hook", "pass", reason, **extra)
         _emit(_format_report("hook", ctx.issue_id, result))

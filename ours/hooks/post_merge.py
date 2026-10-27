@@ -48,12 +48,8 @@ RULES = {
         "prefixes": ("ours/templates/", "ours/prompts/"),
         "files": ("ours/hooks/project_config.py",),
     },
-    "doctor": {
-        "prefixes": ("tests/",),
-        "files": ("conftest.py", "pytest.ini", "pyproject.toml", "uv.lock",
-                  "package.json", "package-lock.json"),
-        "basenames": ("test_*.py", "*_test.py"),
-    },
+    # One rule with check.py (which baseline to trust): project_config.BASELINE_RULE.
+    "doctor": pc.BASELINE_RULE,
 }
 
 EXIT_OK, EXIT_FAIL, EXIT_DEFERRED = 0, 1, 2

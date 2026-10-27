@@ -63,6 +63,7 @@ non_goals = ["Do not change code or prompts"]
 3. `blocked_by` names only subtasks above it in the file. Order the blocks so that each subtask comes after the ones it waits for.
 4. `level`: the lowest level that fits the piece, never above the task's level. `level_reason` says why in one line.
 5. `criteria`: the result itself, checked by reading or by one command. One check signal per criterion. Do not count words, lines, or sentences. At most 5.
+6. `check` proves the result of THIS subtask: what this subtask changes in its own `paths`. Never the result of another subtask, and never a precondition (for example, that a file written by a subtask above exists).
 
 ## Finish
 

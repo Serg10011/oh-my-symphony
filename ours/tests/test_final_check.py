@@ -228,7 +228,7 @@ def test_done_of_a_subtask_writes_a_progress_line_into_the_task_card(
     subtask(env, SUBS[0], monkeypatch, {"a.txt": "a\n"})
     assert run_hook(env, SUBS[0], monkeypatch) == 0
     body = card_body(env, TASK)
-    assert f"## Subtask Progress\n\n- {SUBS[0]} merged (1 of 2)" in body
+    assert f"## Subtask Progress\n\n0 of 2 merged\n\n- {SUBS[0]} merged (1 of 2)" in body
     assert card_state(env, TASK) == "Subtasks"
     assert "## Subtask Progress" not in card_body(env, SUBS[0])  # the line goes to the task, not the subtask
     assert [e["outcome"] for e in events(env)] == ["done", "progress"]

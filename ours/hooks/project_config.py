@@ -12,7 +12,7 @@ A board folder lives outside the code repository:
         wiki/             linked as docs/llm-wiki in a worktree
         worktree-exclude  core.excludesFile of every worktree
         .ours-state/      state of our scripts (base records, baseline.json,
-                          locks, logs)
+                          baselines.json, locks, logs)
 
 Used by ours/bin/project-new, ours/bin/project-render, ours/bin/
 project-doctor, worktree.py and check.py. Standard library only,
@@ -21,6 +21,7 @@ Python >= 3.11.
 
 from __future__ import annotations
 
+import fnmatch
 import json
 import math
 import re
@@ -41,6 +42,7 @@ WIKI_DIR = "wiki"
 EXCLUDE_FILE = "worktree-exclude"
 STATE_DIR = ".ours-state"
 BASELINE_FILE = "baseline.json"
+BASELINES_FILE = "baselines.json"
 # A line of the setup.sh / test.sh stubs; project-doctor refuses while it is there.
 STUB_MARKER = "OURS-STUB"
 DEFAULT_ROOT = Path.home() / "symphony-projects"
@@ -442,6 +444,13 @@ def default_workspace_root(project: dict) -> Path:
     return Path.home() / "symphony_workspaces" / project["project"]["name"]
 
 
+_SHA_RE = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
+
+
+def is_sha(value: object) -> bool:
+    return isinstance(value, str) and _SHA_RE.fullmatch(value) is not None
+
+
 def base_record_path(board: Path, issue_id: str) -> Path:
     return board / STATE_DIR / f"{issue_id}.base.json"
 
@@ -455,7 +464,7 @@ def read_base_record(board: Path, issue_id: str) -> dict:
     except (OSError, ValueError) as exc:
         raise ProjectError(f"запись базы {path} повреждена: {exc}") from None
     sha = data.get("base_sha") if isinstance(data, dict) else None
-    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}([0-9a-f]{24})?", sha):
+    if not is_sha(sha):
         raise ProjectError(f"запись базы {path}: нет корректного base_sha")
     return data
 
@@ -506,6 +515,90 @@ def read_baseline(board: Path) -> dict:
     if not ok:
         raise ProjectError(f"замер базы {path} неполный: перезапусти project-doctor")
     return data
+
+
+# ---------------------------------------------------------------------------
+# history of baselines (S4-25): <board>/.ours-state/baselines.json
+# ---------------------------------------------------------------------------
+
+BASELINES_VERSION = 1
+BASELINES_KEEP = 50
+# What the tests of the project measure: a change to one of these files makes
+# an older baseline stale. One rule for post-merge ("measure again?") and
+# check.py ("trust the older baseline?"). Written for Python projects; another
+# language needs a per-project rule in project.toml (not made yet).
+BASELINE_RULE = {
+    "prefixes": ("tests/", "ours/tests/"),
+    "files": ("conftest.py", "pytest.ini", "pyproject.toml", "uv.lock",
+              "package.json", "package-lock.json"),
+    "basenames": ("test_*.py", "*_test.py", "conftest.py"),
+}
+
+
+def affects_baseline(path: str) -> bool:
+    """Whether a changed file (repository-relative, `/`-separated) can change test results."""
+    rule = BASELINE_RULE
+    return (
+        path.startswith(rule["prefixes"]) or path in rule["files"]
+        or any(fnmatch.fnmatch(Path(path).name, p) for p in rule["basenames"])
+    )
+
+
+def baselines_path(board: Path) -> Path:
+    return board / STATE_DIR / BASELINES_FILE
+
+
+def _check_baseline_record(record: object) -> bool:
+    return (
+        isinstance(record, dict)
+        and isinstance(record.get("base_branch"), str)
+        and is_sha(record.get("base_sha"))
+        and all(
+            isinstance(record.get(key), int) and not isinstance(record.get(key), bool)
+            and record[key] >= 0
+            for key in SUMMARY_KEYS
+        )
+    )
+
+
+def read_baselines(board: Path) -> list[dict] | None:
+    """Records of baselines.json, oldest first; None when the file does not exist."""
+    path = baselines_path(board)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as exc:
+        raise ProjectError(f"история замеров {path} повреждена ({exc}): перезапусти project-doctor") from None
+    if not isinstance(data, dict) or data.get("version") != BASELINES_VERSION:
+        raise ProjectError(f"история замеров {path}: неизвестная версия: перезапусти project-doctor")
+    records = data.get("records")
+    if not isinstance(records, list) or not all(_check_baseline_record(r) for r in records):
+        raise ProjectError(
+            f"история замеров {path}: запись без нужных полей или с неверным base_sha: "
+            "перезапусти project-doctor"
+        )
+    return records
+
+
+def add_baseline(records: list[dict], new: dict) -> list[dict]:
+    """`records` plus `new` at the end: one record per commit of a branch (a
+    repeated measure replaces the old one), the last BASELINES_KEEP kept."""
+    kept = [
+        r for r in records
+        if (r["base_branch"], r["base_sha"]) != (new["base_branch"], new["base_sha"])
+    ]
+    return [*kept, new][-BASELINES_KEEP:]
+
+
+def is_real_baseline(data: dict) -> bool:
+    """A baseline.json whose commit is a real one (not a placeholder of zeros)."""
+    return is_sha(data.get("base_sha")) and set(data["base_sha"]) != {"0"}
+
+
+def baselines_text(records: list[dict]) -> str:
+    return json.dumps({"version": BASELINES_VERSION, "records": records},
+                      ensure_ascii=False, indent=2) + "\n"
 
 
 def recommend_timeouts(setup_s: float, tests_s: float) -> dict[str, int]:
