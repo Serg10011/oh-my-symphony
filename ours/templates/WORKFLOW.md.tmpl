@@ -61,10 +61,19 @@ hooks:
         exit 42
       fi
     done
+    # Limits summary for a manager card in Plan (S4-19): writes
+    # <board>/artifacts/<ID>/work/limits.md, silent for every other card.
+    "$SYMPHONY_PYTHON" {{sh:plan_py}} brief || true
   after_run: |
     # Mechanical checks first: the standard block below exits early when
     # there are no changes. `|| true` keeps bash from exec-ing check.py.
     "$SYMPHONY_PYTHON" {{sh:check_py}} hook || true
+    # Plan hand-in (S4-19): a manager card (label role:manager-plan) that the
+    # agent moved to Subtasks gets its plan.toml checked and, if good, the
+    # subtask cards created; a bad plan sends the card back to Plan. Any other
+    # card is passed over silently. Before the subshell, so that the early
+    # `exit 0` below cannot skip it; `|| true` as above.
+    "$SYMPHONY_PYTHON" {{sh:plan_py}} hook || true
     # The standard block runs in a subshell: its `exit 0` ("no changes") then
     # ends only the subshell, and the integrate.py line after it still runs.
     (

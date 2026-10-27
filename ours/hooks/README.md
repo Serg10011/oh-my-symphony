@@ -1,13 +1,15 @@
 # Хуки конвейера
 
-Здесь шесть программ на Python ≥ 3.11 (только стандартная библиотека, POSIX). Все они вызываются из `WORKFLOW.md`, который собирается из общего шаблона `ours/templates/WORKFLOW.md.tmpl` командой `ours/bin/project-render` — руками строки в `WORKFLOW.md` не вписываются. `$SYMPHONY_WORKFLOW_DIR` для них — папка доски проекта (`~/symphony-projects/<имя>/`), настройки — её `project.toml`.
+Здесь семь программ на Python ≥ 3.11 (только стандартная библиотека, POSIX). Все они вызываются из `WORKFLOW.md`, который собирается из общего шаблона `ours/templates/WORKFLOW.md.tmpl` командой `ours/bin/project-render` — руками строки в `WORKFLOW.md` не вписываются. `$SYMPHONY_WORKFLOW_DIR` для них — папка доски проекта (`~/symphony-projects/<имя>/`), настройки — её `project.toml`.
 
 | Файл | Где вызывается | Что делает |
 |---|---|---|
 | `worktree.py create` | `hooks.after_create` | рабочая копия карточки `symphony/<ID>` от базовой ветки, ссылки в папку доски, запись базы, `setup.sh` |
 | `worktree.py remove` | `hooks.before_remove` | убирает ссылки в папку доски, затем штатная уборка `_worktree_cleanup` |
-| `integrate.py ensure-branch <ЗАДАЧА>` | вручную; позже — хук нарезки | создаёт интеграционную ветку задачи `integration/<ЗАДАЧА>` от базовой, если её нет; существующую не трогает. Как библиотека — для `worktree.py` (S4-11) |
+| `integrate.py ensure-branch <ЗАДАЧА>` | вручную; её же вызывает `plan.py hook` | создаёт интеграционную ветку задачи `integration/<ЗАДАЧА>` от базовой, если её нет; существующую не трогает. Как библиотека — для `worktree.py` (S4-11) |
 | `integrate.py hook` | последняя строка `hooks.after_run` | вливает готовую подзадачу в интеграционную ветку задачи и ставит ей `Done` (S4-12); всегда код 0 |
+| `plan.py hook` | вторая строка `hooks.after_run` | проверяет план `plan.toml`, сданный руководителем переводом карточки в `Subtasks`, и создаёт карточки подзадач; ошибка плана — возврат в `Plan` (S4-19); всегда код 0 |
+| `plan.py brief` | последняя строка `hooks.before_run` | для карточки руководителя в `Plan` кладёт сводку лимитов `limits.md` (S4-19); всегда код 0 |
 | `check.py hook` | первая строка `hooks.after_run` | механические проверки, если карточка в `Done` / `Human Review`; при провале — откат; при успехе пишет отметку `<ID>.pass.json` |
 | `check.py gate` | `agent.done_gate_command` | те же проверки при приёмке Done; код 0 — пропуск; тесты не гоняет повторно, если дерево то же, что уже прошло `hook` и было влито (S4-13) |
 | `summarize.py <junit.xml>` | последняя строка `test.sh` | печатает строку итогов `PIPELINE_TESTS passed=… skipped=… failed=…` по отчёту JUnit XML |
@@ -88,15 +90,31 @@
 
 Где смотреть: `<доска>/.ours-state/check.log` (записи с `"mode": "integrate"`), раздел `## Integration` в карточке, отметка `<доска>/.ours-state/<ID>.pass.json` (существует только между `check.py hook` и `integrate.py hook` одного хода), запись `<ID>.merged.json` (между `integrate.py hook` и следующим `check.py gate`).
 
+## `plan.py`
+
+Нарезка задачи на подзадачи (S4-19). Руководитель — карточка с меткой `role:manager-plan` в статусе `Plan` — пишет план-файл и сдаёт его, переводя карточку в `Subtasks`. Агент карточек сам не создаёт: это делает `plan.py hook` после проверки. Формат `plan.toml` целиком — в `docs/our/DECISIONS.md`, запись «S4-19».
+
+**`plan.py hook`** — вторая строка `after_run` (сразу после `check.py hook`, до подоболочки штатного блока), с `|| true`. Окружение то же, что у `check.py`. Код выхода всегда 0; любая ошибка — событие `error` в журнале и строка в stderr. Срабатывает на карточку в `Subtasks` с меткой `role:manager-plan` и без `## Plan Accepted`; любую другую карточку пропускает молча (карточка в `Subtasks` без метки — событие `skipped`). Карточка блокируется так же, как у `check.py` (`<ID>.lock`).
+
+1. **До разбора плана** проверяется среда; при любой из причин карточка сразу уходит в `needs_human`, попытка плана **не** тратится (событие `rejected` с `needs_human: environment`): интеграция выключена, на доске уже есть карточка `<ЗАДАЧА>-N`, `[levels]` пуст.
+2. **План** читается со стороны доски (`<доска>/artifacts/<ЗАДАЧА>/work/plan.toml`), только как обычный файл до 64 КБ. Проверяются схема, ключи, уровни (не выше уровня задачи; порядок уровней — порядок объявления в `[levels]`), `blocked_by` (только вверх по файлу), пути (не в запрещённых и не в контуре контроля), число подзадач (`[plan] max_subtasks`). Собираются **все** причины.
+3. **Принят:** интеграционная ветка `integration/<ЗАДАЧА>`, карточки `<ЗАДАЧА>-1 … -N` в статусе `In Progress` (метка `worker_label`, `request: <ЗАДАЧА>`, `level`, `blocked_by`), в карточке задачи `## Plan Accepted` и `## Subtask Progress` (`0 of N merged`), статус остаётся `Subtasks`, счётчик провалов обнуляется (событие `accepted`). Сбой посередине: созданные этим запуском карточки удаляются, дальше — как при провале.
+4. **Не принят:** ни одной карточки; `## Plan Failure` (все причины, до 20 строк), счётчик `<доска>/.ours-state/<ЗАДАЧА>.plan.json` +1; меньше `[plan] max_failures` — карточка в `Plan`, иначе в `needs_human` (событие `rejected`).
+
+**`plan.py brief`** — последняя строка `before_run`. Для карточки с меткой в `Plan` (иначе молча) пишет `<доска>/artifacts/<ЗАДАЧА>/work/limits.md`: уровень задачи и разрешённые уровни подзадач (модель, усилие, `max_turns`, `max_state_turns`), `max_subtasks`, провалы плана, бюджет карточки из `GET http://127.0.0.1:<port>/api/v1/issues/<ЗАДАЧА>` (нет ответа за 5 с — «бюджет недоступен»). Только информирует. Всегда код 0.
+
+Где смотреть: записи `check.log` с `"mode": "plan"`, разделы `## Plan Accepted`, `## Plan Failure`, `## Subtask Progress` в карточке задачи.
+
 ## Где смотреть результат
 
 - `<доска>/.ours-state/check.log` — журнал проверок (JSON-строки: время, ID, режим, исход, причина).
 - `<доска>/.ours-state/<ID>.json` — счётчик провалов (сам не сбрасывается).
 - `<доска>/.ours-state/<ID>.base.json` — база карточки.
+- `<доска>/.ours-state/<ЗАДАЧА>.plan.json` — счётчик провалов плана (S4-19); после принятого плана файла нет.
 - `<доска>/.ours-state/<ID>.pass.json` — одноразовая отметка «проверка этого хода пройдена» (S4-12); обычно её нет.
 - `<доска>/.ours-state/<ID>.merged.json` — одноразовая запись «это дерево влито в интеграционную ветку» (S4-13): `tree`, `commit`, `task`, `branch`, `source`, `at`. Её читает и удаляет `check.py gate`; пока шлюз не пришёл, лежит. Обычно её нет.
 - `<доска>/.ours-state/baseline.json` — замер базовой ветки (`project-doctor`): `base_branch`, `base_sha`, `passed`, `skipped`, `failed`, `setup_s`, `tests_s`, `measured_at`.
-- Разделы `## Check Failure` и `## Integration` в карточке; вывод хуков — в `.symphony-workspace-hook-output/<ID>/` рядом с рабочими папками.
+- Разделы `## Check Failure`, `## Integration`, `## Plan Accepted`, `## Plan Failure` и `## Subtask Progress` в карточке; вывод хуков — в `.symphony-workspace-hook-output/<ID>/` рядом с рабочими папками.
 
 ## Тесты
 

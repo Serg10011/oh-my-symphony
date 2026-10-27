@@ -936,14 +936,14 @@ def run_after_run(tmp_path: Path, after_run: str, *, change: bool) -> tuple[list
 def test_after_run_calls_both_hooks_when_nothing_changed(tmp_path: Path) -> None:
     after_run = rendered_after_run(tmp_path)
     calls, ws = run_after_run(tmp_path, after_run, change=False)
-    assert [c.rsplit("/", 1)[-1] for c in calls] == ["check.py hook", "integrate.py hook"]
+    assert [c.rsplit("/", 1)[-1] for c in calls] == ["check.py hook", "plan.py hook", "integrate.py hook"]  # S4-19: plan.py is second
     assert git(ws, "log", "--format=%s").splitlines() == ["base"]  # "no changes": no commit
 
 
 def test_after_run_commits_and_then_calls_integrate(tmp_path: Path) -> None:
     after_run = rendered_after_run(tmp_path)
     calls, ws = run_after_run(tmp_path, after_run, change=True)
-    assert [c.rsplit("/", 1)[-1] for c in calls] == ["check.py hook", "integrate.py hook"]
+    assert [c.rsplit("/", 1)[-1] for c in calls] == ["check.py hook", "plan.py hook", "integrate.py hook"]  # S4-19: plan.py is second
     assert "wip: turn " in git(ws, "log", "-1", "--format=%s")  # maybe after a [no-test] marker
     assert git(ws, "status", "--porcelain") == ""
 

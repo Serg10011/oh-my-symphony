@@ -83,6 +83,11 @@ DEFAULT_INTEGRATION = {"enabled": False, "branch_prefix": "integration/", "worke
 # Prefixes worktree.py owns: a branch under them is renamed or removed by the hook.
 RESERVED_BRANCH_PREFIXES = ("symphony/", "attempts/")
 
+# [plan] (S4-19): plan.py checks the manager's plan.toml. max_failures counts
+# plan rejections before needs_human (like [checks] max_check_failures).
+DEFAULT_PLAN = {"max_subtasks": 5, "max_failures": 2}
+MAX_SUBTASKS_LIMIT = 20
+
 # section -> key -> (type, required)
 _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
     "project": {
@@ -121,6 +126,7 @@ _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
         "branch_prefix": (str, False),
         "worker_label": (str, False),
     },
+    "plan": {"max_subtasks": (int, False), "max_failures": (int, False)},
     "service": {"model": (str, False)},
 }
 # [levels]: `default_level` plus one table per level (TASK-K14). Mirrors the core
@@ -282,7 +288,7 @@ def stall_timeout_ms(tests_s: int) -> int:
 
 
 def validate_project(data: dict) -> dict:
-    """Validate parsed project.toml; fill [timeouts], [limits], [integration] and [agent] defaults."""
+    """Validate parsed project.toml; fill [timeouts], [limits], [integration], [plan] and [agent] defaults."""
     unknown = sorted(set(data) - set(_SCHEMA) - {"levels"})
     if unknown:
         raise ProjectError(f"{PROJECT_FILE}: неизвестный раздел(ы) {', '.join(unknown)}")
@@ -341,6 +347,12 @@ def validate_project(data: dict) -> dict:
     out["timeouts"] = {**DEFAULT_TIMEOUTS, **out["timeouts"]}
     integration = out["integration"] = {**DEFAULT_INTEGRATION, **out["integration"]}
     _check_branch_prefix(integration["branch_prefix"])
+    plan = out["plan"] = {**DEFAULT_PLAN, **out["plan"]}
+    if plan["max_subtasks"] > MAX_SUBTASKS_LIMIT:
+        raise ProjectError(
+            f"{PROJECT_FILE}: [plan] max_subtasks = {plan['max_subtasks']}: "
+            f"допустимо от 1 до {MAX_SUBTASKS_LIMIT}"
+        )
     if integration["enabled"] and agents != 1:
         raise ProjectError(
             f"{PROJECT_FILE}: [agent] max_concurrent_agents = {agents} при [integration] enabled = true: "
@@ -608,6 +620,7 @@ def template_values(board: Path, project: dict) -> dict[str, object]:
         "worktree_py": str(hooks / "worktree.py"),
         "check_py": str(hooks / "check.py"),
         "integrate_py": str(hooks / "integrate.py"),
+        "plan_py": str(hooks / "plan.py"),
         "claude_command": claude,
         "done_gate_command": f'"$SYMPHONY_PYTHON" {q(str(hooks / "check.py"))} gate',
         "gate_ms": timeouts["gate_ms"],
