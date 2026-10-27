@@ -263,6 +263,9 @@ class AgentConfig:
     # Non-Done terminal states (lowercased) whose workspaces neither reconcile
     # nor startup cleanup removes; the snapshot commit still runs. Empty = off.
     preserve_workspace_states: tuple[str, ...] = ()
+    # Terminal states (lowercased) in which a `blocked_by` dependency counts as
+    # resolved. Empty = every terminal state except the failed ones (legacy).
+    dependency_resolving_states: tuple[str, ...] = ()
     # Hard cap on state-local `total_tokens` (input + output across turns
     # while the ticket remains in one state). The counter resets on each
     # state transition, while lifetime totals stay visible in the API. 0 =

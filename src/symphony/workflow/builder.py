@@ -448,6 +448,10 @@ def build_service_config(
         preserve_workspace_states=_validated_preserve_workspace_states(
             agent_raw.get("preserve_workspace_states")
         ),
+        dependency_resolving_states=_validated_dependency_resolving_states(
+            agent_raw.get("dependency_resolving_states"),
+            terminal_states=tracker.terminal_states,
+        ),
         max_total_tokens=_validated_nonnegative_or_default(
             agent_raw.get("max_total_tokens"),
             0,
@@ -1532,6 +1536,31 @@ def _validated_preserve_workspace_states(value: Any) -> tuple[str, ...]:
     if "done" in states:
         raise ConfigValidationError(
             "agent.preserve_workspace_states cannot include Done", value=value
+        )
+    return states
+
+
+def _validated_dependency_resolving_states(
+    value: Any, *, terminal_states: tuple[str, ...]
+) -> tuple[str, ...]:
+    """List of tracker.terminal_states names, lowercased; empty = legacy rule."""
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(
+        isinstance(item, str) and item.strip() for item in value
+    ):
+        raise ConfigValidationError(
+            "agent.dependency_resolving_states must be a list of non-empty strings",
+            value=value,
+        )
+    terminal = {state.strip().lower() for state in terminal_states}
+    states = tuple(item.strip().lower() for item in value)
+    unknown = [item for item in states if item not in terminal]
+    if unknown:
+        raise ConfigValidationError(
+            "agent.dependency_resolving_states must name tracker.terminal_states "
+            f"(unknown: {unknown}; allowed: {sorted(terminal)})",
+            value=value,
         )
     return states
 
