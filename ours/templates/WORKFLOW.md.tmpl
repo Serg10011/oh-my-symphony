@@ -223,7 +223,7 @@ hooks:
   # set, it passes) and the other lanes keep the default contract set.
   stage_contracts: "on"
   budget_exhausted_state: needs_human
-  auto_recover_blocked: false
+  {{raw:quota_lines}}auto_recover_blocked: false
   normalize_legacy_human_review: false
   auto_merge_on_done: false
   auto_merge_push_target: false

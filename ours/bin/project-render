@@ -4,6 +4,10 @@
     project-render <name> [--root <dir>]
 
 Prints the diff between the old and the new file, then writes the new one.
+With [billing] mode = "api" it also writes <board>/claude-settings.json (apiKeyHelper
+and a deny rule on the key folder; mode 600) before WORKFLOW.md, and refuses, leaving
+WORKFLOW.md as it was, when the key file or its folder is not accepted. In every
+other mode it removes a leftover claude-settings.json.
 """
 
 from __future__ import annotations
@@ -36,20 +40,25 @@ def main(argv: list[str] | None = None) -> int:
             )
         new = pc.render_workflow(board, project)
         old = target.read_text(encoding="utf-8") if target.exists() else ""
+        api = pc.billing_mode(project) == "api"
+        # The settings file first when WORKFLOW.md is going to point at it, last when it is not.
+        settings = pc.sync_claude_settings(board, project) if api else "unchanged"
+        if new != old:
+            sys.stdout.writelines(difflib.unified_diff(
+                old.splitlines(keepends=True), new.splitlines(keepends=True),
+                fromfile=f"{target} (было)", tofile=f"{target} (стало)",
+            ))
+            tmp = target.with_name(".WORKFLOW.md.tmp")
+            tmp.write_text(new, encoding="utf-8")
+            tmp.replace(target)
+        if not api:
+            settings = pc.sync_claude_settings(board, project)
     except (pc.ProjectError, OSError) as exc:
         print(f"project-render: отказ: {exc}", file=sys.stderr)
         return 1
-    if new == old:
-        print(f"{target}: без изменений")
-        return 0
-    sys.stdout.writelines(difflib.unified_diff(
-        old.splitlines(keepends=True), new.splitlines(keepends=True),
-        fromfile=f"{target} (было)", tofile=f"{target} (стало)",
-    ))
-    tmp = target.with_name(".WORKFLOW.md.tmp")
-    tmp.write_text(new, encoding="utf-8")
-    tmp.replace(target)
-    print(f"{target}: обновлён")
+    if settings != "unchanged":
+        print(f"{board / pc.CLAUDE_SETTINGS_FILE}: {'записан' if settings == 'written' else 'удалён'}")
+    print(f"{target}: {'обновлён' if new != old else 'без изменений'}")
     return 0
 
 

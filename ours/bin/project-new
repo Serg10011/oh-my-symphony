@@ -209,6 +209,29 @@ max_check_failures = 2         # провалов проверки check.py до
 [service]                # служба под launchd (ours/bin/project-launchd)
 # model = "haiku"              # переменная ANTHROPIC_MODEL службы; без ключа не задаётся
 
+# Оплата ходов агента (E1b). Раздел необязателен; без него — подписка, как всегда.
+#   mode = "plan"  — ходы идут в лимит подписки (вход пользователя в claude); умолчание.
+#   mode = "api"   — ходы оплачиваются API-кредитом: ключ рабочего пространства Console,
+#                    который claude получает только через apiKeyHelper из файла
+#                    <доска>/claude-settings.json (его пишет project-render). Когда кредит
+#                    кончается, одна карточка уходит в needs_human с разделом
+#                    `## Quota Exhausted`, остальные ждут: служба не берёт новые, пока
+#                    WORKFLOW.md не пересобран. Сама доска на подписку не переключается.
+# Как включить API-кредит:
+#   1. В Console создай рабочее пространство этой доски и задай ему потолок трат
+#      (обязательно: это часть страховки); создай в нём ключ.
+#   2. Папка только для ключей (не домашняя и не внутри репозитория, доски, рабочих копий
+#      или папки форка): install -d -m 700 ~/.symphony-keys
+#      Файл: install -m 600 /dev/null ~/.symphony-keys/<имя доски>.key
+#      затем вставь ключ в файл редактором (в чат, в карточки и в git ключ не попадает).
+#   3. Раскомментируй раздел, впиши абсолютный путь и запусти ours/bin/project-render <имя>.
+# Как вернуться на подписку: mode = "plan" (строку api_key_file можно оставить), затем
+# ours/bin/project-render <имя>: файл claude-settings.json удалится. Переменные
+# ANTHROPIC_API_KEY и ANTHROPIC_AUTH_TOKEN в окружении службы запрещены (project-doctor: FAIL).
+# [billing]
+# mode = "api"
+# api_key_file = "/Users/<ты>/.symphony-keys/<имя доски>.key"   # абсолютный путь, без ..
+
 [timeouts]               # заполняет project-doctor по замеру; пока — умолчания
 # tests_s = 900                # таймаут test.sh (check.py hook и gate)
 # gate_ms = 960000             # agent.done_gate_timeout_ms = (tests_s + 60) * 1000
