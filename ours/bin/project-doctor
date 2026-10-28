@@ -8,7 +8,12 @@ Prints a PASS / FAIL / WARN list; exit 0 only without FAIL. Steps:
 1. project.toml parses; [tools] exist and run (`claude --version`); the
    code repository is a git repository with refs/heads/<base>; the board
    folder is not inside git; port and prefix are not taken by another
-   project under the same root; setup.sh and test.sh are not the stubs.
+   project under the same root; the payment mode ([billing], E1b: for `api`
+   the key file and its folder as project-render checks them, and the
+   apiKeyHelper command is run; the key is never printed); no
+   ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN in the environment of the service
+   (launchd.plist of the board) or of this run, in any mode; setup.sh and
+   test.sh are not the stubs.
 2. Trial worktree of refs/heads/<base> (detached, in a temporary folder
    outside the board and the code; no branch is created): setup.sh, then
    test.sh, each with a 3600 s limit in its own process group. test.sh
@@ -32,6 +37,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import plistlib
 import re
 import shutil
 import signal
@@ -51,6 +57,7 @@ SCRIPT_LIMIT_S = 3600
 TOOL_TIMEOUT_S = 60
 GIT_TIMEOUT_S = 120
 TAIL_BYTES = 3000
+HELPER_TIMEOUT_S = 10
 POLL_S = 0.2
 # What a service started by launchd sees (TASK-K11); the rest of the
 # terminal environment is dropped on purpose.
@@ -161,6 +168,64 @@ def check_board(report: Report, board: Path, project: dict) -> None:
             taken = True
     if not taken:
         report.add("PASS", f"порт {p['port']} и префикс {p['id_prefix']} не заняты в {board.parent}")
+
+
+def check_billing(report: Report, board: Path, project: dict) -> None:
+    """The payment mode; for `api` the key file, its folder and the helper (E1b).
+
+    The output of the helper is only matched against the shape of a key, never printed.
+    """
+    if pc.billing_mode(project) != "api":
+        report.add("PASS", "оплата: подписка ([billing] mode = \"plan\")")
+        return
+    problems = pc.billing_key_problems(board, project)
+    for problem in problems:
+        report.add("FAIL", f"[billing] {problem}")
+    if problems:
+        return
+    key_file = project["billing"]["api_key_file"]
+    report.add("PASS", f"оплата: API-кредит; файл ключа {key_file} и его папка приняты")
+    try:
+        proc = subprocess.run(["/bin/sh", "-c", pc.api_key_helper_command(project)],
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              timeout=HELPER_TIMEOUT_S, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        report.add("FAIL", f"apiKeyHelper не запустился или не уложился в {HELPER_TIMEOUT_S} с: "
+                           f"{type(exc).__name__}")
+        return
+    if proc.returncode != 0:
+        report.add("FAIL", f"apiKeyHelper: код {proc.returncode}")
+    elif not pc.API_KEY_RE.fullmatch(proc.stdout):
+        report.add("FAIL", "apiKeyHelper печатает не ключ Anthropic (ожидается одна строка sk-ant-…); "
+                           "вывод не показан")
+    else:
+        report.add("PASS", "apiKeyHelper выдаёт ключ нужного вида (сам ключ не показан; запроса к API нет)")
+
+
+def check_key_env(report: Report, board: Path) -> None:
+    """FAIL for ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN in the service or in this run.
+
+    They are read before apiKeyHelper and before the subscription login: in `plan` mode the
+    turns would quietly go to the API, in `api` mode with a foreign key past the spending cap.
+    Names and places only, never values.
+    """
+    found = [f"{name} в окружении, в котором запущен project-doctor"
+             for name in pc.KEY_ENV_VARS if name in os.environ]
+    plist = board / "launchd.plist"
+    if plist.exists():
+        try:
+            service_env = plistlib.loads(plist.read_bytes()).get("EnvironmentVariables", {})
+        except (OSError, ValueError, plistlib.InvalidFileException) as exc:
+            report.add("WARN", f"{plist.name}: не читается ({type(exc).__name__}), окружение службы не проверено")
+            service_env = {}
+        if isinstance(service_env, dict):
+            found += [f"{name} в разделе EnvironmentVariables файла {plist.name}"
+                      for name in pc.KEY_ENV_VARS if name in service_env]
+    for place in found:
+        report.add("FAIL", f"{place}: переменная главнее apiKeyHelper и входа по подписке, "
+                           "уберите её (значение не показано)")
+    if not found:
+        report.add("PASS", f"в окружении службы и в этом запуске нет {' и '.join(pc.KEY_ENV_VARS)}")
 
 
 def check_scripts(report: Report, board: Path) -> bool:
@@ -416,6 +481,8 @@ def main(argv: list[str] | None = None) -> int:
     tools_ok = check_tools(report, project["tools"])
     repo_ok = check_repo(report, project["project"])
     check_board(report, board, project)
+    check_billing(report, board, project)
+    check_key_env(report, board)
     scripts_ok = check_scripts(report, board)
 
     if tools_ok and repo_ok and scripts_ok and report.fails == 0:

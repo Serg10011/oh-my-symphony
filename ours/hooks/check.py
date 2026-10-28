@@ -18,7 +18,9 @@ collected), the project tests last and only when the fast checks passed:
                 S4-25: the history of measures, else baseline.json)
     2. base     <board>/.ours-state/<ID>.base.json, written by worktree.py
                 when the worktree was created; must be an ancestor of HEAD
-    3. forbidden paths changed relative to the base
+    3. forbidden paths changed relative to the base; an Anthropic API key
+       (`sk-ant-…`) in an added line of any change (E1b: the refusal names
+       path:line, never the line)
     4. existing tests changed relative to the base
     5. card shape: required sections present and non-empty (a subtask,
        see integrate.is_subtask, needs [checks] worker_required_sections:
@@ -134,6 +136,10 @@ GATE_MARGIN_S = 30
 
 # Repository-controlled git settings must not change what the checks see:
 # an fsmonitor hook could report a dirty tree as clean.
+# E1b: findings listed in one refusal; an untracked file bigger than this is not read.
+KEY_FINDINGS_SHOWN = 10
+KEY_SCAN_MAX_BYTES = 8_000_000
+KEY_REFUSAL = "в добавленных строках найден ключ API Anthropic (sk-ant-…): {where}; сама строка не выводится"
 GIT_SAFE_ARGS = ("-c", "core.fsmonitor=false", "-c", "core.quotePath=false")
 GIT_ENV_DROP = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY")
 
@@ -480,6 +486,116 @@ def forbidden_violations(changed: set[str], cfg: Config) -> list[str]:
         elif in_other(path) or (in_ours(path) and not is_allowed(path)):
             problems.append(f"forbidden path changed: {_clean(path)}")
     return problems
+
+
+# ---------------------------------------------------------------------------
+# an API key in the added lines (E1b)
+# ---------------------------------------------------------------------------
+
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+# `-U0 --text` and fixed prefixes: the same output whatever the user's git config says.
+KEY_DIFF_ARGS = (
+    "diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--text",
+    "--src-prefix=a/", "--dst-prefix=b/",
+)
+
+
+def has_api_key(text: str) -> bool:
+    return pc.API_KEY_RE.search(text) is not None
+
+
+def _diff_path(header: str) -> str | None:
+    """Path of a `+++ ` line of a diff; None for /dev/null."""
+    name = header[4:].rstrip("\r")
+    if name == "/dev/null":
+        return None
+    if name.startswith('"') and name.endswith('"'):
+        name = name[1:-1]
+    return name[2:] if name.startswith("b/") else name
+
+
+def diff_key_hits(diff: str) -> list[tuple[str, int]]:
+    """(path, line number) of every added line of a `git diff -U0` that holds an API key.
+
+    The line itself is never returned. A file whose added lines hold a NUL byte is
+    binary and is skipped, like git does without --text.
+    """
+    hits: dict[str, list[int]] = {}
+    binary: set[str] = set()
+    path: str | None = None
+    old_left = new_left = new_line = 0
+    for raw in diff.split("\n"):
+        if old_left > 0 or new_left > 0:
+            if raw.startswith("+"):
+                new_left -= 1
+                if path is not None:
+                    if "\0" in raw:
+                        binary.add(path)
+                    if has_api_key(raw[1:]):
+                        hits.setdefault(path, []).append(new_line)
+                new_line += 1
+                continue
+            if raw.startswith("-"):
+                old_left -= 1
+                continue
+            if raw.startswith("\\"):
+                continue
+            old_left = new_left = 0  # damaged hunk: read the line as a header
+        if raw.startswith("+++ "):
+            path = _diff_path(raw)
+            continue
+        match = _HUNK_RE.match(raw)
+        if match:
+            old_left = int(match.group(1) or 1) if match.group(1) != "0" else 0
+            new_line = int(match.group(2))
+            new_left = int(match.group(3) or 1) if match.group(3) != "0" else 0
+    return sorted((p, n) for p, lines in hits.items() if p not in binary for n in lines)
+
+
+def key_refusals(hits: list[tuple[str, int]]) -> list[str]:
+    """One refusal reason for the findings (empty without findings); no key text in it."""
+    if not hits:
+        return []
+    shown = [f"{_clean(path)}:{line}" for path, line in hits[:KEY_FINDINGS_SHOWN]]
+    if len(hits) > KEY_FINDINGS_SHOWN:
+        shown.append(f"и ещё {len(hits) - KEY_FINDINGS_SHOWN}")
+    return [KEY_REFUSAL.format(where=", ".join(shown))]
+
+
+def untracked_key_hits(repo: Path, board_dir: str) -> list[tuple[str, int]]:
+    hits = []
+    for path in _z(git(repo, "ls-files", "--others", "--exclude-standard", "-z")):
+        if _under(path, board_dir) or _under(path, ".symphony"):
+            continue
+        disk = repo / path
+        try:
+            if disk.is_symlink() or not disk.is_file() or disk.stat().st_size > KEY_SCAN_MAX_BYTES:
+                continue
+            data = disk.read_bytes()
+        except OSError:
+            continue
+        if b"\0" in data:
+            continue
+        for number, line in enumerate(data.decode("utf-8", errors="replace").split("\n"), 1):
+            if has_api_key(line):
+                hits.append((path, number))
+    return hits
+
+
+def key_violations(repo: Path, base: str, board_dir: str) -> list[str]:
+    """Refusal for an API key in the lines added relative to the base: committed, staged,
+    unstaged, untracked (the paths of `changed_paths`; the board and .symphony are left out)."""
+    pathspec = ("--", ".", f":(exclude){board_dir}", ":(exclude).symphony")
+    diffs = (
+        (base, "HEAD", *pathspec),
+        ("--cached", base, *pathspec),
+        (base, *pathspec),
+    )
+    hits: set[tuple[str, int]] = set(untracked_key_hits(repo, board_dir))
+    for args in diffs:
+        text = git(repo, *KEY_DIFF_ARGS, *args).decode("utf-8", errors="replace")
+        hits.update(diff_key_hits(text))
+    return key_refusals(sorted(hits))
 
 
 def test_violations(repo: Path, base: str, cfg: Config) -> list[str]:
@@ -1003,6 +1119,7 @@ def run_checks(ctx: Context, cfg: Config | None = None) -> Result:
         board_dir = os.environ.get("SYMPHONY_BOARD_ROOT_NAME") or BOARD_DIR
         changed = changed_paths(repo, base, board_dir)
         reasons += forbidden_violations(changed, cfg)
+        reasons += key_violations(repo, base, board_dir)
         reasons += test_violations(repo, base, cfg)
         if baselines is not None:
             try:

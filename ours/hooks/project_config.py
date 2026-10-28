@@ -24,14 +24,19 @@ from __future__ import annotations
 import fnmatch
 import json
 import math
+import os
 import re
 import shlex
+import stat
 import sys
+import tempfile
 import tomllib
 from collections.abc import Iterable
 from pathlib import Path
 
 OURS_DIR = Path(__file__).resolve().parents[1]
+# The folder of the fork that holds ours/ (the main folder when run from the service).
+FORK_DIR = OURS_DIR.parent
 TEMPLATE = OURS_DIR / "templates" / "WORKFLOW.md.tmpl"
 PROMPTS_DIR = OURS_DIR / "prompts"
 
@@ -95,6 +100,27 @@ MAX_SUBTASKS_LIMIT = 20
 DELIVERY_REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 DELIVERY_BASE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$")
 
+# [billing] (E1b): how the agent's turns are paid. `plan` = the subscription (the login
+# of the user, nothing is passed); `api` = an API key of a Console workspace, given to
+# `claude` only through `apiKeyHelper` of a settings file of the board.
+BILLING_MODES = ("plan", "api")
+DEFAULT_BILLING = {"mode": "plan"}
+# The path goes into a command for /bin/sh and into a permission rule: a plain alphabet only.
+KEY_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
+# What an Anthropic API key looks like; check.py searches diffs with it too.
+API_KEY_PATTERN = r"sk-ant-[A-Za-z0-9_-]{20,}"
+API_KEY_RE = re.compile(API_KEY_PATTERN)
+KEY_FILE_MAX_BYTES = 1024
+CLAUDE_SETTINGS_FILE = "claude-settings.json"
+# In the environment of the service these beat apiKeyHelper and the subscription login.
+KEY_ENV_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+QUOTA_NOTE = (
+    "API-кредит исчерпан или ключ недоступен (apiKeyHelper) — переключи доску на подписку: "
+    "в project.toml раздел [billing] mode = \"plan\", затем ours/bin/project-render <имя>. "
+    "Остальные карточки ждут: служба не берёт новые, пока WORKFLOW.md не пересобран. "
+    "Автоматически доска на подписку не переключается."
+)
+
 # section -> key -> (type, required)
 _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
     "project": {
@@ -136,6 +162,7 @@ _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
     "plan": {"max_subtasks": (int, False), "max_failures": (int, False)},
     "delivery": {"repo": (str, False), "base": (str, False)},
     "service": {"model": (str, False)},
+    "billing": {"mode": (str, False), "api_key_file": (str, False)},
 }
 # [levels]: `default_level` plus one table per level (TASK-K14). Mirrors the core
 # parser (src/symphony/workflow/levels.py); the core re-checks on WORKFLOW.md load.
@@ -362,6 +389,7 @@ def validate_project(data: dict) -> dict:
             f"допустимо от 1 до {MAX_SUBTASKS_LIMIT}"
         )
     _check_delivery(data.get("delivery"), out["delivery"])
+    out["billing"] = _check_billing(out["billing"])
     if integration["enabled"] and agents != 1:
         raise ProjectError(
             f"{PROJECT_FILE}: [agent] max_concurrent_agents = {agents} при [integration] enabled = true: "
@@ -402,6 +430,31 @@ def _check_delivery(raw: object, delivery: dict) -> None:
         or base.endswith(("/", ".", ".lock"))
     ):
         raise ProjectError(f"{where} base {base!r}: нужно простое имя ветки (например our-main)")
+
+
+def _check_billing(raw: dict) -> dict:
+    """[billing]: `mode` (default plan) and, for `api`, the absolute path of the key file.
+
+    Only the form is checked here: a missing or loose file must not break every hook
+    of the board. The file and its folder are checked by `billing_key_problems`
+    (project-render, project-doctor).
+    """
+    where = f"{PROJECT_FILE}: [billing]"
+    billing = {**DEFAULT_BILLING, **raw}
+    if billing["mode"] not in BILLING_MODES:
+        raise ProjectError(
+            f"{where} mode {billing['mode']!r}: допустимо {' или '.join(repr(m) for m in BILLING_MODES)}"
+        )
+    path = billing.get("api_key_file")
+    if path is None:
+        if billing["mode"] == "api":
+            raise ProjectError(f"{where}: при mode = \"api\" нужен ключ api_key_file (путь к файлу с ключом)")
+        return billing
+    if not KEY_PATH_RE.match(path) or ".." in path.split("/"):
+        raise ProjectError(
+            f"{where} api_key_file {path!r}: нужен абсолютный путь без '..' из букв, цифр и . _ / -"
+        )
+    return billing
 
 
 def _check_turns_cover_attempts(label: str, max_turns: int, max_attempts: int) -> None:
@@ -696,6 +749,151 @@ def ensure_state_dir(board: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# [billing] mode = "api": the key file, the settings file of `claude` (E1b)
+# ---------------------------------------------------------------------------
+
+
+def billing_mode(project: dict) -> str:
+    return project.get("billing", DEFAULT_BILLING)["mode"]
+
+
+def _inside(path: Path, root: Path) -> bool:
+    return path == root or root in path.parents
+
+
+def key_folder(project: dict) -> Path:
+    """The folder of the key file: it holds keys only, one deny rule closes all of it."""
+    return Path(project["billing"]["api_key_file"]).parent
+
+
+def api_key_helper_command(project: dict) -> str:
+    """`apiKeyHelper`: prints the key without spaces and the line feed (a command for /bin/sh)."""
+    return f"/usr/bin/tr -d '[:space:]' < '{project['billing']['api_key_file']}'"
+
+
+def claude_settings_text(project: dict) -> str:
+    """Content of <board>/claude-settings.json: the helper and a deny rule on the key folder."""
+    folder = str(key_folder(project)).lstrip("/")
+    data = {
+        "apiKeyHelper": api_key_helper_command(project),
+        "permissions": {"deny": [f"Read(//{folder}/**)"]},
+    }
+    return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+
+
+def _private(info: os.stat_result) -> bool:
+    return info.st_uid == os.getuid() and not info.st_mode & 0o077
+
+
+def billing_key_problems(board: Path, project: dict, fork_dir: Path | None = None) -> list[str]:
+    """What is wrong with the key file and its folder (in Russian); empty = accepted.
+
+    The file: exists, a regular file (not a link), ours, closed to group and others,
+    up to 1 KB, not empty, outside the code repository, the board folder, the
+    working copies and the fork folder. The folder holds keys only: not the home
+    folder and not a parent of any of those (the deny rule would shut the agent out
+    of its own work), ours, closed to group and others. No link anywhere in the path.
+    Never reads the key.
+    """
+    path = Path(project["billing"]["api_key_file"])
+    folder = key_folder(project)
+    fork = (fork_dir or FORK_DIR).resolve()
+    work = {
+        "репозиторий кода [project] repo": Path(project["project"]["repo"]).resolve(),
+        "папка доски": board.resolve(),
+        "корень рабочих копий": default_workspace_root(project).resolve(),
+        "основная папка форка": fork,
+    }
+    problems: list[str] = []
+    if path.resolve() != path:
+        problems.append(
+            f"путь к ключу {path} содержит символьную ссылку (настоящий путь {path.resolve()}): "
+            "укажи настоящий путь, иначе правило deny не закроет файл"
+        )
+    try:
+        info = path.lstat()
+    except OSError:
+        problems.append(f"файл ключа {path} не найден")
+        info = None
+    if info is not None:
+        if not stat.S_ISREG(info.st_mode):
+            problems.append(f"файл ключа {path}: нужен обычный файл (не ссылка и не папка)")
+        else:
+            if info.st_uid != os.getuid():
+                problems.append(f"файл ключа {path}: владелец не текущий пользователь")
+            if info.st_mode & 0o077:
+                problems.append(
+                    f"файл ключа {path}: права {stat.S_IMODE(info.st_mode):03o} шире 600 "
+                    f"(исправь: chmod 600 {path})"
+                )
+            if info.st_size > KEY_FILE_MAX_BYTES:
+                problems.append(f"файл ключа {path}: больше {KEY_FILE_MAX_BYTES} байт — это не ключ")
+            elif info.st_size == 0:
+                problems.append(f"файл ключа {path} пуст: вставь ключ редактором")
+    for label, where in work.items():
+        if _inside(path.resolve(), where):
+            problems.append(f"файл ключа {path} лежит внутри: {label} ({where}); нужна отдельная папка для ключей")
+        if _inside(where, folder.resolve()):
+            problems.append(
+                f"папка ключей {folder} совпадает с папкой «{label}» ({where}) или содержит её: "
+                "правило deny закрыло бы агенту его собственную работу; папка нужна только для ключей"
+            )
+    if _inside(Path.home().resolve(), folder.resolve()):
+        problems.append(
+            f"папка ключей {folder} — домашняя папка или её родитель: нужна отдельная папка только для "
+            "ключей (например ~/.symphony-keys)"
+        )
+    try:
+        folder_info = folder.lstat()
+    except OSError:
+        problems.append(f"папки ключей {folder} нет")
+    else:
+        if not stat.S_ISDIR(folder_info.st_mode):
+            problems.append(f"папка ключей {folder}: нужна папка")
+        elif not _private(folder_info):
+            problems.append(
+                f"папка ключей {folder}: права {stat.S_IMODE(folder_info.st_mode):03o} или чужой владелец; "
+                f"нужны права без доступа группе и остальным (chmod 700 {folder})"
+            )
+    return problems
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Atomically, with mode 600 from the start."""
+    fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def sync_claude_settings(board: Path, project: dict) -> str:
+    """Make <board>/claude-settings.json match the mode; returns what was done:
+    "written" | "removed" | "unchanged"."""
+    path = board / CLAUDE_SETTINGS_FILE
+    if billing_mode(project) == "api":
+        text = claude_settings_text(project)
+        try:
+            if path.read_text(encoding="utf-8") == text and stat.S_IMODE(path.stat().st_mode) == 0o600:
+                return "unchanged"
+        except (OSError, UnicodeDecodeError):
+            pass
+        _write_private(path, text)
+        return "written"
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return "unchanged"
+    return "removed"
+
+
+# ---------------------------------------------------------------------------
 # WORKFLOW.md rendering
 # ---------------------------------------------------------------------------
 
@@ -737,6 +935,21 @@ def template_values(board: Path, project: dict) -> dict[str, object]:
         + [q(rule) for rule in agent_bash_rules(board, project["agent"]["allowed_bash"])]
         + [f"--add-dir {q(str(board / d))}" for d in (BOARD_DIR, ARTIFACTS_DIR, WIKI_DIR)]
     )
+    quota_lines = ""
+    if billing_mode(project) == "api":
+        problems = billing_key_problems(board, project)
+        if problems:
+            raise ProjectError(
+                f"{PROJECT_FILE}: [billing] mode = \"api\": ключ не принят, WORKFLOW.md не пересобран:\n  - "
+                + "\n  - ".join(problems)
+            )
+        claude += f" --settings {q(str(board / CLAUDE_SETTINGS_FILE))}"
+        quota_lines = (
+            '# [billing] mode = "api": an exhausted credit moves the card to needs_human and holds '
+            "the board until this file changes.\n  "
+            "quota_exhausted_state: needs_human\n"
+            f"  quota_exhausted_note: {json.dumps(QUOTA_NOTE, ensure_ascii=False)}\n  "
+        )
     values: dict[str, object] = {
         "name": p["name"],
         "base": p["base_branch"],
@@ -748,6 +961,7 @@ def template_values(board: Path, project: dict) -> dict[str, object]:
         "integrate_py": str(hooks / "integrate.py"),
         "plan_py": str(hooks / "plan.py"),
         "claude_command": claude,
+        "quota_lines": quota_lines,
         "done_gate_command": f'"$SYMPHONY_PYTHON" {q(str(hooks / "check.py"))} gate',
         "gate_ms": timeouts["gate_ms"],
         "stall_ms": stall_timeout_ms(timeouts["tests_s"]),

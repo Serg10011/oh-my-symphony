@@ -5,7 +5,8 @@
 
 `push` checks that the card is in Human Review with a green full check of the very
 commit that is going to be delivered, that the base branch did not move since, that the
-clone is not behind GitHub; then pushes that commit (and nothing else) to the new branch
+clone is not behind GitHub, that no Anthropic API key is in the added lines of the diff
+or in the title and the description of the PR (E1b); then pushes that commit (and nothing else) to the new branch
 `deliver/<ID>` of the repository named in `[delivery]` of project.toml, and opens a PR
 into the base branch. Local branches and the working copy of the card are never touched.
 `merged` runs after the PR was merged: it writes the one-shot "merged" record (S4-13) that
@@ -491,15 +492,30 @@ class Delivery:
             "source_tree": tree, "commit": commit, "our_main": local_base, "recheck": False,
             "repo": repo, "base": base, "branch": branch, "pr": None, "at": check._now(),
         }
+        description = pr_body(self.id, kind, body, rec)
+        self.refuse_on_key(clone, local_base, commit, title, description)
         if not continuing:
             self.git_push(clone, url, commit, branch)
             self.write_record(board, rec)
             self.say(f"Ветка {branch} отправлена на GitHub ({commit[:12]}).")
         else:
             self.say(f"Ветка {branch} уже на GitHub ({commit[:12]}): пуш пропущен, продолжаю с PR.")
-        self.open_pr(board, rec, title, pr_body(self.id, kind, body, rec))
+        self.open_pr(board, rec, title, description)
         self.finish(project, board, rec, url)
         return EXIT_OK
+
+    def refuse_on_key(self, clone: Path, base: str, commit: str, title: str, description: str) -> None:
+        """Nothing is pushed or opened when an API key is in the diff or in the text of the PR."""
+        done = self.git(clone, *check.KEY_DIFF_ARGS, f"{base}..{commit}")
+        if done.rc != 0:
+            raise Failed(f"git diff {base[:12]}..{commit[:12]} не прошёл (код {done.rc}): "
+                         f"{done.err.strip()[:300]}")
+        reasons = check.key_refusals(check.diff_key_hits(done.out))
+        if reasons:
+            raise Refused(reasons[0])
+        if check.has_api_key(title) or check.has_api_key(description):
+            raise Refused("в заголовке или описании PR найден ключ API Anthropic (sk-ant-…); "
+                          "сам текст не выводится")
 
     def merge_base(self, clone: Path, one: str, two: str) -> str:
         done = self.git(clone, "merge-base", one, two)
