@@ -114,11 +114,22 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> World:
     return World(tmp_path, monkeypatch)
 
 
+def plan_isolation(world: World) -> str:
+    """The keys E4 added to the claude command in the `plan` mode, written out in full."""
+    return (
+        " --setting-sources local --strict-mcp-config --disallowedTools 'mcp__*' "
+        f"--disable-slash-commands --settings {world.settings}"
+    )
+
+
 def legacy_render(world: World) -> str:
-    """What the template gave before E1b: the same template without the one new placeholder."""
+    """What the `plan` mode gave before E1b and E4: the template without the one placeholder of
+    E1b and the claude command without the keys of E4 (E4 changes only those keys)."""
     legacy = world.tmp / "legacy.tmpl"
     legacy.write_text(pc.TEMPLATE.read_text(encoding="utf-8").replace("{{raw:quota_lines}}", ""))
-    return pc.render_workflow(world.board, world.project(), template=legacy)
+    text = pc.render_workflow(world.board, world.project(), template=legacy)
+    assert text.count(plan_isolation(world)) == 1
+    return text.replace(plan_isolation(world), "")
 
 
 # ---------------------------------------------------------------------------
@@ -130,19 +141,21 @@ def legacy_render(world: World) -> str:
 def test_plan_mode_renders_exactly_as_before(world: World, billing: tuple[str, ...]) -> None:
     world.toml(*billing, section=bool(billing))
     text = world.render()
-    assert text == legacy_render(world)
-    assert "quota_exhausted" not in text and "--settings" not in text and "apiKeyHelper" not in text
+    assert text.replace(plan_isolation(world), "") == legacy_render(world)
+    assert "quota_exhausted" not in text and "--bare" not in text and "apiKeyHelper" not in text
+    assert plan_isolation(world) in text
     assert world.project()["billing"]["mode"] == "plan"
 
 
-def test_project_render_in_plan_mode_removes_a_leftover_settings_file(world: World) -> None:
+def test_project_render_in_plan_mode_keeps_the_settings_file_without_the_key_parts(world: World) -> None:
     assert world.render_command().returncode == 0
-    assert world.settings.exists()
+    assert "apiKeyHelper" in world.settings.read_text()
     world.toml('mode = "plan"')
     result = world.render_command()
     assert result.returncode == 0, result.stderr
-    assert not world.settings.exists() and "удалён" in result.stdout
-    assert "--settings" not in (world.board / "WORKFLOW.md").read_text()
+    text = world.settings.read_text()
+    assert "apiKeyHelper" not in text and "symphony-keys" not in text and "записан" in result.stdout
+    assert plan_isolation(world) in (world.board / "WORKFLOW.md").read_text()
     assert "без изменений" in world.render_command().stdout
 
 
@@ -160,14 +173,14 @@ def test_api_mode_writes_settings_command_and_quota_keys(world: World) -> None:
     assert stat.S_IMODE(world.settings.stat().st_mode) == 0o600
     settings = json.loads(world.settings.read_text())
     assert settings["apiKeyHelper"] == f"/usr/bin/tr -d '[:space:]' < '{world.key}'"
-    assert settings["permissions"] == {"deny": [f"Read(/{world.keys}/**)"]}
-    assert set(settings) == {"apiKeyHelper", "permissions"}
+    assert settings["permissions"]["deny"][-1] == f"Read(/{world.keys}/**)"
+    assert set(settings) == {"apiKeyHelper", "permissions", "env"}
     assert KEY not in world.settings.read_text()
 
     text = (world.board / "WORKFLOW.md").read_text()
     cfg = build_service_config(load_workflow(world.board / "WORKFLOW.md"))
-    assert cfg.claude.command.endswith(f"--settings {world.settings}")
-    assert cfg.claude.command.count("--settings") == 1
+    assert cfg.claude.command.endswith(f" --bare --settings {world.settings}")
+    assert cfg.claude.command.count("--settings") == 1 and "--setting-sources" not in cfg.claude.command
     assert cfg.agent.quota_exhausted_state == "needs_human"
     note = cfg.agent.quota_exhausted_note
     assert note == pc.QUOTA_NOTE
@@ -184,7 +197,8 @@ def test_switching_back_to_plan_restores_the_old_workflow(world: World) -> None:
     api_text = (world.board / "WORKFLOW.md").read_text()
     world.toml('mode = "plan"', f'api_key_file = "{world.key}"')
     assert world.render_command().returncode == 0
-    assert (world.board / "WORKFLOW.md").read_text() == legacy_render(world) != api_text
+    plan_text = (world.board / "WORKFLOW.md").read_text()
+    assert plan_text.replace(plan_isolation(world), "") == legacy_render(world) != api_text
 
 
 def test_a_refused_key_leaves_workflow_and_settings_alone(world: World) -> None:

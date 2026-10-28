@@ -78,6 +78,12 @@ DEFAULT_FORBIDDEN_PATHS = (
     ".env.*",
     "**/*.pem",
     "**/*.key",
+    # The agent does not edit the settings and instructions of Claude Code: a later turn (or a
+    # session of a person) would start with foreign rights or instructions (E4).
+    ".claude/**",
+    ".mcp.json",
+    "CLAUDE.md",
+    "AGENTS.md",
 )
 # `ours/**` is the only default pattern that [checks] allow_paths can lift.
 OURS_PATTERN = "ours/**"
