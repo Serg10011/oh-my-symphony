@@ -23,6 +23,7 @@ from ..workflow import ServiceConfig
 from ..workspace import HISTORY_PUSH_FAILED
 from .constants import DONE_GATE_FAILURE_PREFIX, TICK_DEGRADED_AFTER_CONSECUTIVE_FAILURES
 from .release_cycle import is_release_evidence_issue as _is_release_evidence_issue
+from . import quota_hold
 from .entries import RetryEntry, RunningEntry, _IssueDebug
 from .helpers import (
     _config_for_issue_agent,
@@ -290,6 +291,7 @@ def snapshot(self: Orchestrator) -> dict[str, Any]:
             ),
         },
         "rate_limits": self._latest_rate_limits,
+        "dispatch_hold": quota_hold.hold_snapshot(self),
         "workflow": {
             "default_agent_kind": cfg.agent.kind if cfg is not None else "",
             "branch_policy": self._branch_policy_snapshot(cfg),

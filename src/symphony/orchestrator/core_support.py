@@ -148,6 +148,21 @@ def _is_quota_worker_error(reason: str, error: str | None) -> bool:
     )
 
 
+# Claude Code's apiKeyHelper failures ("Your apiKeyHelper script is failing",
+# and "apiKeyHelper failed:" on stderr in `-p` mode): the key cannot be
+# fetched, so retrying is as useless as with an exhausted credit.
+_API_KEY_HELPER_ERROR_MARKERS = (
+    "apikeyhelper script is failing",
+    "apikeyhelper failed",
+)
+
+
+def _is_api_key_helper_error(reason: str, error: str | None) -> bool:
+    detail = f"{reason}: {error}" if error else reason
+    clean = _clean_board_error_message(detail).lower()
+    return any(marker in clean for marker in _API_KEY_HELPER_ERROR_MARKERS)
+
+
 def _worker_error_pause_reason(reason: str, error: str | None) -> str:
     detail = f"{reason}: {error}" if error else reason
     clean = _clean_board_error_message(detail)

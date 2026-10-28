@@ -40,6 +40,7 @@ from .helpers import (
     _rewind_budget_target_state,
     _utc_iso_z,
 )
+from . import quota_hold
 from .parsing import _parse_findings_rows, _parse_touched_files
 from .scheduler import MAX_DEPENDENCY_EDGES, DependencyAnalysis, sort_candidates
 from .run_registry import ReleaseGate
@@ -77,6 +78,7 @@ async def _on_tick(self: Orchestrator) -> None:
             return
         log.warning("workflow_reload_failed", error=str(err))
     assert cfg is not None
+    quota_hold.release_hold_if_workflow_changed(self, cfg)
     # Apply hot-reloadable settings.
     if (
         self._workspace_manager is not None
@@ -799,6 +801,8 @@ def _eligibility_decision(
         decision = self._eligibility_contention_decision(
             issue, cfg, include_global_slots=include_global_slots
         )
+    if decision is None:
+        decision = quota_hold.hold_decision(self, issue)
     return decision or _EligibilityDecision(
         _EligibilityDisposition.READY, "ready", "eligible"
     )

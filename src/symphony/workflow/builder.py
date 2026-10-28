@@ -466,6 +466,13 @@ def build_service_config(
         budget_exhausted_state=_as_str(
             agent_raw.get("budget_exhausted_state"), ""
         ) or "",
+        quota_exhausted_state=_validated_quota_exhausted_state(
+            agent_raw.get("quota_exhausted_state"),
+            terminal_states=tracker.terminal_states,
+        ),
+        quota_exhausted_note=_validated_quota_exhausted_note(
+            agent_raw.get("quota_exhausted_note")
+        ),
         fallback_kinds=_validated_fallback_kinds(
             agent_raw.get("fallback_kinds"), selectable_kinds=selectable_kinds
         ),
@@ -1563,6 +1570,49 @@ def _validated_dependency_resolving_states(
             value=value,
         )
     return states
+
+
+QUOTA_EXHAUSTED_NOTE_MAX_CHARS = 2000
+
+
+def _validated_quota_exhausted_state(
+    value: Any, *, terminal_states: tuple[str, ...]
+) -> str:
+    """A tracker.terminal_states name (as spelled there); empty = legacy pause."""
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ConfigValidationError(
+            "agent.quota_exhausted_state must be a string", value=value
+        )
+    wanted = value.strip().lower()
+    if not wanted:
+        return ""
+    for state in terminal_states:
+        if state.strip().lower() == wanted:
+            return state.strip()
+    raise ConfigValidationError(
+        "agent.quota_exhausted_state must name a tracker.terminal_states entry "
+        f"(unknown: {value!r}; allowed: {sorted(s.strip() for s in terminal_states)})",
+        value=value,
+    )
+
+
+def _validated_quota_exhausted_note(value: Any) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ConfigValidationError(
+            "agent.quota_exhausted_note must be a string", value=value
+        )
+    note = value.strip()
+    if len(note) > QUOTA_EXHAUSTED_NOTE_MAX_CHARS:
+        raise ConfigValidationError(
+            "agent.quota_exhausted_note must be at most "
+            f"{QUOTA_EXHAUSTED_NOTE_MAX_CHARS} characters (got {len(note)})",
+            value=value,
+        )
+    return note
 
 
 def _validated_strict_int(

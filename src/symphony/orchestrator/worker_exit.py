@@ -52,6 +52,7 @@ from ..workflow import ServiceConfig
 from ..workspace import HISTORY_PUSH_FAILED, HistoryGateResult
 from .constants import CONTINUATION_RETRY_DELAY_MS, RETRY_BASE_MS
 from .entries import RunningEntry, _IssueDebug
+from . import quota_hold
 from .helpers import _is_successful_terminal_state, _max_turns_exhausted_target_state
 from .release_cycle import (
     is_release_success_state as _is_release_success_state,
@@ -969,10 +970,24 @@ def _handle_worker_error(
     failure_reason = f"{reason}: {error}" if error else reason
     cleaned_failure = core._clean_board_error_message(failure_reason)
     cfg = orch._workflow_state.current()
-    if _switch_backend_on_quota_error(
+    # A failing apiKeyHelper never goes to `fallback_kinds`: another backend
+    # cannot fix the key, and with `quota_exhausted_state` set it parks the
+    # ticket exactly like an exhausted credit.
+    key_helper_parks = (
+        cfg is not None
+        and bool(cfg.agent.quota_exhausted_state)
+        and core._is_api_key_helper_error(reason, error)
+    )
+    if not key_helper_parks and _switch_backend_on_quota_error(
         orch, cfg, issue_id, entry, debug, reason, error, cleaned_failure
     ):
         pass
+    elif quota_hold.park_on_quota_exhausted(
+        orch, cfg, issue_id, entry, debug, reason, error
+    ):
+        # Parked in `agent.quota_exhausted_state`: no pause, no retry, no
+        # attempt counters touched.
+        return
     elif core._is_retryable_worker_error(orch._entry_agent_kind(entry), reason, error):
         debug.last_error = cleaned_failure
         log.warning(

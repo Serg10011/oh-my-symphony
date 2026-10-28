@@ -527,6 +527,27 @@ Progress → Verify → Document gets each lane's configured backend.
 so a quota-exhausted backend hands the ticket to the next one instead of
 pausing for an operator.
 
+**Exhausted credit.** `agent.quota_exhausted_state` (a name from
+`tracker.terminal_states`, compared case-insensitively, default empty) and the
+optional `agent.quota_exhausted_note` (text of up to 2000 characters) change
+what happens when a turn fails with an exhausted credit ("Credit balance is too
+low", usage/plan limits) or with a failing `apiKeyHelper` ("Your apiKeyHelper
+script is failing", `apiKeyHelper failed:`). Empty keeps the old behaviour: the
+ticket is paused for operator inspection in its working state. When set, the
+order is: `agent.fallback_kinds` first (an `apiKeyHelper` error skips it:
+another backend cannot fix the key); when no fallback is left, the ticket moves
+to `quota_exhausted_state` with a `## Quota Exhausted` note (the backend's
+message, `was: <state before>`, `moved to <state> by
+agent.quota_exhausted_state; no automatic switch`, then the note text). No
+pause, no retry, no attempt counters change; the log gets
+`worker_quota_exhausted_state`. If the tracker write fails, the ticket is
+paused as before (`worker_quota_exhausted_state_failed`). Transient limits
+(429, rate limit, overloaded) still retry in place. After a successful move the
+service also stops picking up new tickets (`dispatch_held_quota`, at most once
+a minute) until the content of `WORKFLOW.md` changes (`dispatch_hold_released`)
+or the service restarts; the hold is in memory only and is shown as
+`dispatch_hold` in `/api/v1/state`. Without the key there is no hold.
+
 **Task levels (model, effort, limits per ticket).** A top-level `levels` block
 maps a level name (`[A-Za-z0-9_-]+`) to optional settings: `claude: {model,
 effort}`, `codex: {model, effort}`, `max_turns` and `max_state_turns`. A
