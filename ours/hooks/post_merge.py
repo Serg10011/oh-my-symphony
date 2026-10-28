@@ -48,7 +48,8 @@ RULES = {
         "prefixes": ("ours/templates/", "ours/prompts/"),
         "files": ("ours/hooks/project_config.py",),
     },
-    # One rule with check.py (which baseline to trust): project_config.BASELINE_RULE.
+    # One rule with check.py (which baseline to trust): project_config.BASELINE_RULE, the
+    # default of a project without [baseline] paths (E2); see ProjectPlan.baseline_rule.
     "doctor": pc.BASELINE_RULE,
 }
 
@@ -180,22 +181,30 @@ class ProjectPlan:
     restart: bool = False
     render: bool = False
     doctor: bool = False
+    # E2: the rule of the project ([baseline] paths); None = RULES["doctor"].
+    baseline_rule: Callable[[str], bool] | None = None
+    # Why the project.toml cannot be used; the project then gets nothing done.
+    refusal: str = ""
 
     @property
     def needed(self) -> bool:
-        return self.restart or self.render or self.doctor
+        return self.restart or self.render or self.doctor or bool(self.refusal)
 
     @property
     def keys(self) -> set[str]:
         keys = set()
         if self.restart or self.render:
             keys.add(self.main_key)
-        if self.doctor:
+        if self.doctor or self.refusal:
             keys.add(self.clone_key)
+        if self.refusal:
+            keys.add(self.main_key)
         return keys
 
     def describe(self) -> list[str]:
         """Human actions after the 'doctor includes render / start is restart' merging."""
+        if self.refusal:
+            return [f"ОТКАЗ: {self.refusal}"]
         if self.doctor:
             return ["остановить службу → project-doctor → запустить службу"]
         out = []
@@ -207,9 +216,12 @@ class ProjectPlan:
 
 
 def classify(plan: ProjectPlan, main: Target, clone: Target) -> None:
+    if plan.refusal:
+        return
     plan.restart = any(matches("restart", f) for f in main.files)
     plan.render = any(matches("render", f) for f in main.files)
-    plan.doctor = any(matches("doctor", f) for f in clone.files)
+    rule = plan.baseline_rule or (lambda f: matches("doctor", f))
+    plan.doctor = any(rule(f) for f in clone.files)
 
 
 def find_projects(root: Path, main: Path, only: list[str]) -> tuple[list[tuple[Path, dict, Path]], list[str]]:
@@ -217,7 +229,15 @@ def find_projects(root: Path, main: Path, only: list[str]) -> tuple[list[tuple[P
     problems: list[str] = []
     main_origin = origin_of(main)
     found = []
-    for board, raw in pc.other_projects(root):
+    unreadable: list[tuple[Path, str]] = []
+    projects = pc.other_projects(root, unreadable)
+    for board, why in unreadable:
+        # Without project.toml neither the repository nor the rule of the project is known:
+        # "measure again: no" would be a guess (E2), so the run is refused.
+        if not only or board.name in only:
+            problems.append(f"проект {board.name}: {why}. Отказ: без project.toml нельзя решить, "
+                            "нужен ли project-doctor; исправь файл и запусти post-merge ещё раз")
+    for board, raw in projects:
         name = raw.get("name", board.name)
         if only and name not in only and board.name not in only:
             continue
@@ -374,6 +394,10 @@ def start_and_wait(ops: Ops, plan: ProjectPlan, say: Callable[[str], None]) -> b
 
 def apply_project(plan: ProjectPlan, ops: Ops, root: Path, say: Callable[[str], None]) -> str:
     """Do what the project needs. Returns DONE / DEFERRED / FAILED."""
+    if plan.refusal:
+        say(f"  ОТКАЗ: {plan.refusal}. Исправь project.toml проекта и запусти ours/bin/post-merge ещё раз; "
+            "для проекта ничего не сделано.")
+        return FAILED
     root_args = ["--root", str(root)]
     state = ops.api_state(plan.port) if (plan.doctor or plan.restart or plan.render) else None
     running = state is not None
@@ -490,7 +514,12 @@ def _run_locked(args, ops: Ops, main: Path, root: Path, state_path: Path, say) -
     for board, raw, repo in projects:
         key = str(repo)
         targets.setdefault(key, Target(key, repo, f"клон проекта {raw.get('name', board.name)}"))
-        plans.append(ProjectPlan(raw.get("name", board.name), board, int(raw.get("port", 0)), str(main), key))
+        plan = ProjectPlan(raw.get("name", board.name), board, int(raw.get("port", 0)), str(main), key)
+        try:
+            plan.baseline_rule = pc.load_baseline_rule(board)
+        except pc.ProjectError as exc:
+            plan.refusal = str(exc)
+        plans.append(plan)
 
     say(f"{'ПЛАН (--dry-run, ничего не меняется)' if dry else 'Обновление'}: основная папка {main}")
     say(f"Проекты этого репозитория: {', '.join(p.name for p in plans) or 'нет'}")

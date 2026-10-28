@@ -31,7 +31,7 @@ import stat
 import sys
 import tempfile
 import tomllib
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 OURS_DIR = Path(__file__).resolve().parents[1]
@@ -301,6 +301,93 @@ def _check_levels(raw: object) -> dict:
     return {"default_level": default, "levels": levels}
 
 
+# ---------------------------------------------------------------------------
+# path patterns (E2): one syntax for [checks] forbidden_paths / test_globs / ... and
+# [baseline] paths. `*` and `?` stay inside one path segment, `**` spans any number of
+# segments (zero included). Patterns are anchored at the repository root and
+# matched case-insensitively (macOS file systems are case-insensitive).
+# ---------------------------------------------------------------------------
+
+# Files that count as tests when [checks] test_globs is not set. With [baseline] every
+# one of the test globs of the board must also be in [baseline] paths (_check_baseline).
+DEFAULT_TEST_GLOBS = (
+    "tests/**",
+    "**/test_*.py",
+    "**/*_test.py",
+    "**/*.test.ts",
+    "**/*.test.tsx",
+    "**/*_test.go",
+    "**/*.spec.*",
+)
+
+
+def _segment_regex(segment: str) -> str:
+    out: list[str] = []
+    i = 0
+    while i < len(segment):
+        char = segment[i]
+        if char == "*":
+            out.append("[^/]*")
+        elif char == "?":
+            out.append("[^/]")
+        elif char == "[":
+            start = i + 1
+            if start < len(segment) and segment[start] in "!^":
+                start += 1
+            if start < len(segment) and segment[start] == "]":
+                start += 1
+            end = segment.find("]", start)
+            if end == -1:
+                out.append(re.escape(char))
+            else:
+                body = segment[i + 1 : end]
+                negate = body[:1] in ("!", "^")
+                if negate:
+                    body = body[1:]
+                body = body.replace("\\", "\\\\")
+                out.append(f"[^/{body}]" if negate else f"[{body}]")
+                i = end
+        else:
+            out.append(re.escape(char))
+        i += 1
+    return "".join(out)
+
+
+def compile_glob(pattern: str) -> re.Pattern[str]:
+    segments: list[str] = []
+    for segment in pattern.replace("\\", "/").split("/"):
+        if segment in ("", "."):
+            continue
+        if segment == "**" and segments and segments[-1] == "**":
+            continue
+        segments.append(segment)
+    if not segments:
+        raise ProjectError(f"пустой шаблон пути (empty glob pattern) {pattern!r}")
+    regex = ""
+    last = len(segments) - 1
+    for index, segment in enumerate(segments):
+        if segment == "**":
+            if index == last:
+                # `a/**` matches `a` itself and everything below it.
+                regex = ".*" if index == 0 else regex[:-1] + "(?:/.*)?"
+            else:
+                regex += "(?:[^/]+/)*"
+        else:
+            regex += _segment_regex(segment)
+            if index < last:
+                regex += "/"
+    return re.compile(regex, re.IGNORECASE | re.DOTALL)
+
+
+def glob_match(path: str, pattern: str) -> bool:
+    return compile_glob(pattern).fullmatch(path) is not None
+
+
+def matcher(patterns: Iterable[str]) -> Callable[[str], bool]:
+    compiled = [compile_glob(p) for p in patterns]
+    return lambda path: any(rx.fullmatch(path) for rx in compiled)
+
+
 def agent_bash_rules(board: Path, allowed_bash: Iterable[str]) -> list[str]:
     """`--allowedTools` rules: the built-in base, then the project's own."""
     base = [f"/bin/bash {board.resolve() / 'test.sh'}", *BASE_ALLOWED_BASH]
@@ -324,7 +411,7 @@ def stall_timeout_ms(tests_s: int) -> int:
 
 def validate_project(data: dict) -> dict:
     """Validate parsed project.toml; fill [timeouts], [limits], [integration], [plan] and [agent] defaults."""
-    unknown = sorted(set(data) - set(_SCHEMA) - {"levels"})
+    unknown = sorted(set(data) - set(_SCHEMA) - {"levels", "baseline"})
     if unknown:
         raise ProjectError(f"{PROJECT_FILE}: неизвестный раздел(ы) {', '.join(unknown)}")
     out: dict[str, dict] = {}
@@ -389,6 +476,7 @@ def validate_project(data: dict) -> dict:
             f"допустимо от 1 до {MAX_SUBTASKS_LIMIT}"
         )
     _check_delivery(data.get("delivery"), out["delivery"])
+    out["baseline"] = _check_baseline(data.get("baseline"), data.get("checks"))
     out["billing"] = _check_billing(out["billing"])
     if integration["enabled"] and agents != 1:
         raise ProjectError(
@@ -430,6 +518,54 @@ def _check_delivery(raw: object, delivery: dict) -> None:
         or base.endswith(("/", ".", ".lock"))
     ):
         raise ProjectError(f"{where} base {base!r}: нужно простое имя ветки (например our-main)")
+
+
+def _check_baseline(raw: object, checks: object) -> dict:
+    """[baseline] paths (E2): {} without the section, else {"paths": [...]}.
+
+    The paths replace the Python rule BASELINE_RULE as a whole. Every test glob of the
+    board ([checks] test_globs, else DEFAULT_TEST_GLOBS) must be in `paths` literally:
+    a file protected as a test must also make post-merge measure again and make an
+    older measure stale.
+    """
+    if raw is None:
+        return {}
+    where = f"{PROJECT_FILE}: [baseline]"
+    if not isinstance(raw, dict):
+        raise ProjectError(f"{where} должен быть разделом")
+    extra = sorted(set(raw) - {"paths"})
+    if extra:
+        raise ProjectError(f"{PROJECT_FILE}: неизвестный ключ(и) в [baseline]: {', '.join(extra)}")
+    if "paths" not in raw:
+        raise ProjectError(f"{PROJECT_FILE}: нет ключа [baseline] paths")
+    paths = raw["paths"]
+    _check_value(f"{where} paths", paths, list)
+    if not paths:
+        raise ProjectError(f"{where} paths: список пуст; перечисли шаблоны файлов, меняющих исход тестов")
+    for pattern in paths:
+        segments = pattern.replace("\\", "/").split("/")
+        if pattern.replace("\\", "/").startswith("/") or ".." in segments:
+            raise ProjectError(
+                f"{where} paths: {pattern!r}: шаблон от корня репозитория кода, "
+                "без ведущего / и без '..'"
+            )
+        try:
+            compile_glob(pattern)
+        except ProjectError as exc:
+            raise ProjectError(f"{where} paths: {pattern!r}: {exc}") from None
+    globs = checks.get("test_globs", list(DEFAULT_TEST_GLOBS)) if isinstance(checks, dict) else list(DEFAULT_TEST_GLOBS)
+    _check_value(f"{PROJECT_FILE}: [checks] test_globs", globs, list)
+    missing = [glob for glob in dict.fromkeys(globs) if glob not in paths]
+    if missing:
+        source = "[checks] test_globs" if isinstance(checks, dict) and "test_globs" in checks else (
+            "шаблоны тестов по умолчанию (в project.toml нет [checks] test_globs)"
+        )
+        raise ProjectError(
+            f"{where} paths: нет шаблонов из {source}: {', '.join(missing)}. "
+            "Файл, который защищён как тест, обязан и вызывать перемер базы, и обесценивать "
+            "старый замер: добавь их в paths (или сузь test_globs)"
+        )
+    return {"paths": list(paths)}
 
 
 def _check_billing(raw: dict) -> dict:
@@ -492,14 +628,21 @@ def load_project(board: Path) -> dict:
     return validate_project(data)
 
 
-def other_projects(root: Path) -> list[tuple[Path, dict]]:
-    """(board folder, raw [project]) of every project.toml under `root`."""
+def other_projects(root: Path, unreadable: list[tuple[Path, str]] | None = None) -> list[tuple[Path, dict]]:
+    """(board folder, raw [project]) of every project.toml under `root`.
+
+    A project.toml that cannot be read is skipped with a warning; with `unreadable` given
+    the caller gets (board folder, reason) instead and decides (post-merge refuses).
+    """
     found = []
     for toml in sorted(root.glob(f"*/{PROJECT_FILE}")):
         try:
             data = tomllib.loads(toml.read_text(encoding="utf-8")).get("project", {})
         except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-            print(f"предупреждение: не читается {toml}: {exc}", file=sys.stderr)
+            if unreadable is None:
+                print(f"предупреждение: не читается {toml}: {exc}", file=sys.stderr)
+            else:
+                unreadable.append((toml.parent, f"не читается {toml}: {exc}"))
             continue
         found.append((toml.parent, data))
     return found
@@ -605,8 +748,9 @@ BASELINES_VERSION = 1
 BASELINES_KEEP = 50
 # What the tests of the project measure: a change to one of these files makes
 # an older baseline stale. One rule for post-merge ("measure again?") and
-# check.py ("trust the older baseline?"). Written for Python projects; another
-# language needs a per-project rule in project.toml (not made yet).
+# check.py ("trust the older baseline?"). Written for Python projects; a project
+# in another language sets its own in project.toml [baseline] paths (E2), which
+# replaces this rule.
 BASELINE_RULE = {
     "prefixes": ("tests/", "ours/tests/"),
     "files": ("conftest.py", "pytest.ini", "pyproject.toml", "uv.lock",
@@ -615,13 +759,43 @@ BASELINE_RULE = {
 }
 
 
-def affects_baseline(path: str) -> bool:
-    """Whether a changed file (repository-relative, `/`-separated) can change test results."""
+def _python_rule(path: str) -> bool:
     rule = BASELINE_RULE
     return (
         path.startswith(rule["prefixes"]) or path in rule["files"]
         or any(fnmatch.fnmatch(Path(path).name, p) for p in rule["basenames"])
     )
+
+
+def paths_rule(paths: Iterable[str] | None) -> Callable[[str], bool]:
+    """The rule "does this file change what the tests measure": [baseline] paths,
+    or the Python rule BASELINE_RULE when there are none (no section)."""
+    return matcher(paths) if paths is not None else _python_rule
+
+
+def affects_baseline(path: str, project: dict | None = None) -> bool:
+    """Whether a changed file (repository-relative, `/`-separated) can change test results.
+
+    `project` is a validated project.toml; its [baseline] paths, when set, replace the
+    Python rule as a whole. For several paths use paths_rule: it compiles the patterns once.
+    """
+    return paths_rule((project or {}).get("baseline", {}).get("paths"))(path)
+
+
+def load_baseline_rule(board: Path) -> Callable[[str], bool]:
+    """The rule of a board read from its project.toml alone (post-merge: a project
+    whose other sections are not valid is still served as before). Raises ProjectError
+    when the file cannot be read or parsed or [baseline] is wrong."""
+    path = board / PROJECT_FILE
+    try:
+        data = tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise ProjectError(f"нет файла {path}") from None
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ProjectError(f"не читается {path}: {exc}") from None
+    except tomllib.TOMLDecodeError as exc:
+        raise ProjectError(f"{path}: ошибка TOML: {exc}") from None
+    return paths_rule(_check_baseline(data.get("baseline"), data.get("checks")).get("paths"))
 
 
 def baselines_path(board: Path) -> Path:
