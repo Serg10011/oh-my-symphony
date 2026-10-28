@@ -60,6 +60,7 @@ import sys
 import tempfile
 import time
 import traceback
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -86,15 +87,6 @@ CONTROL_CONTOUR = ("ours/hooks/**", "ours/bin/**", "ours/templates/**")
 # The default `.env` patterns are anchored at the repository root; inside the
 # zone that allow_paths can open, secret files stay forbidden at any depth.
 OURS_SECRET_PATTERNS = ("ours/**/.env", "ours/**/.env.*")
-DEFAULT_TEST_GLOBS = (
-    "tests/**",
-    "**/test_*.py",
-    "**/*_test.py",
-    "**/*.test.ts",
-    "**/*.test.tsx",
-    "**/*_test.go",
-    "**/*.spec.*",
-)
 DEFAULT_REQUIRED_SECTIONS = ("## Wiki Updates", "## As-Is -> To-Be Report")
 # A subtask has no Document stage: Verify writes these two.
 DEFAULT_WORKER_REQUIRED_SECTIONS = ("## QA Evidence", "## Merge Status")
@@ -164,7 +156,7 @@ class Config:
     gate_timeout_s: int = pc.DEFAULT_TIMEOUTS["gate_ms"] // 1000
     forbidden_paths: tuple[str, ...] = DEFAULT_FORBIDDEN_PATHS
     allow_paths: tuple[str, ...] = ()
-    test_globs: tuple[str, ...] = DEFAULT_TEST_GLOBS
+    test_globs: tuple[str, ...] = pc.DEFAULT_TEST_GLOBS
     allow_modified_tests: tuple[str, ...] = ()
     required_sections: tuple[str, ...] = DEFAULT_REQUIRED_SECTIONS
     worker_required_sections: tuple[str, ...] = DEFAULT_WORKER_REQUIRED_SECTIONS
@@ -172,6 +164,8 @@ class Config:
     integration: bool = False  # [integration] enabled: who is a subtask
     worker_label: str = pc.DEFAULT_INTEGRATION["worker_label"]
     max_check_failures: int = DEFAULT_MAX_CHECK_FAILURES
+    # E2: [baseline] paths; None = the Python rule of project_config.BASELINE_RULE
+    baseline_paths: tuple[str, ...] | None = None
 
 
 def load_config(board: Path) -> Config:
@@ -199,7 +193,7 @@ def load_config(board: Path) -> Config:
         gate_timeout_s=project["timeouts"]["gate_ms"] // 1000,
         forbidden_paths=DEFAULT_FORBIDDEN_PATHS + tuple(checks.get("forbidden_paths", ())),
         allow_paths=allow_paths,
-        test_globs=tuple(checks.get("test_globs", DEFAULT_TEST_GLOBS)),
+        test_globs=tuple(checks.get("test_globs", pc.DEFAULT_TEST_GLOBS)),
         allow_modified_tests=tuple(checks.get("allow_modified_tests", ())),
         required_sections=sections,
         worker_required_sections=worker_sections,
@@ -207,87 +201,26 @@ def load_config(board: Path) -> Config:
         integration=project["integration"]["enabled"],
         worker_label=project["integration"]["worker_label"],
         max_check_failures=checks.get("max_check_failures", DEFAULT_MAX_CHECK_FAILURES),
+        baseline_paths=tuple(project["baseline"]["paths"]) if project["baseline"] else None,
     )
     for pattern in (
         *cfg.forbidden_paths, *cfg.allow_paths, *cfg.test_globs, *cfg.allow_modified_tests,
         *cfg.doc_paths,
     ):
-        compile_glob(pattern)
+        try:
+            pc.compile_glob(pattern)
+        except pc.ProjectError as exc:
+            raise CheckError(f"config: {exc}") from None
     return cfg
 
 
 # ---------------------------------------------------------------------------
-# globs: `*` and `?` stay inside one path segment, `**` spans any number of
-# segments (zero included). Patterns are anchored at the repository root and
-# matched case-insensitively (macOS file systems are case-insensitive).
+# globs: the syntax and the matcher live in project_config.py (one parser for
+# [checks] patterns and for [baseline] paths).
 # ---------------------------------------------------------------------------
 
-
-def _segment_regex(segment: str) -> str:
-    out: list[str] = []
-    i = 0
-    while i < len(segment):
-        char = segment[i]
-        if char == "*":
-            out.append("[^/]*")
-        elif char == "?":
-            out.append("[^/]")
-        elif char == "[":
-            start = i + 1
-            if start < len(segment) and segment[start] in "!^":
-                start += 1
-            if start < len(segment) and segment[start] == "]":
-                start += 1
-            end = segment.find("]", start)
-            if end == -1:
-                out.append(re.escape(char))
-            else:
-                body = segment[i + 1 : end]
-                negate = body[:1] in ("!", "^")
-                if negate:
-                    body = body[1:]
-                body = body.replace("\\", "\\\\")
-                out.append(f"[^/{body}]" if negate else f"[{body}]")
-                i = end
-        else:
-            out.append(re.escape(char))
-        i += 1
-    return "".join(out)
-
-
-def compile_glob(pattern: str) -> re.Pattern[str]:
-    segments: list[str] = []
-    for segment in pattern.replace("\\", "/").split("/"):
-        if segment in ("", "."):
-            continue
-        if segment == "**" and segments and segments[-1] == "**":
-            continue
-        segments.append(segment)
-    if not segments:
-        raise CheckError(f"config: empty glob pattern {pattern!r}")
-    regex = ""
-    last = len(segments) - 1
-    for index, segment in enumerate(segments):
-        if segment == "**":
-            if index == last:
-                # `a/**` matches `a` itself and everything below it.
-                regex = ".*" if index == 0 else regex[:-1] + "(?:/.*)?"
-            else:
-                regex += "(?:[^/]+/)*"
-        else:
-            regex += _segment_regex(segment)
-            if index < last:
-                regex += "/"
-    return re.compile(regex, re.IGNORECASE | re.DOTALL)
-
-
-def glob_match(path: str, pattern: str) -> bool:
-    return compile_glob(pattern).fullmatch(path) is not None
-
-
-def _matcher(patterns: tuple[str, ...]):
-    compiled = [compile_glob(p) for p in patterns]
-    return lambda path: any(rx.fullmatch(path) for rx in compiled)
+glob_match = pc.glob_match
+_matcher = pc.matcher
 
 
 # ---------------------------------------------------------------------------
@@ -988,11 +921,15 @@ def _git_ok(repo: Path, *args: str) -> bool:
     return proc.returncode == 0
 
 
-def effective_baseline(repo: Path, baselines: Baselines, base_branch: str) -> Effective:
+def effective_baseline(
+    repo: Path, baselines: Baselines, base_branch: str,
+    affects: Callable[[str], bool] = pc.affects_baseline,
+) -> Effective:
     """Strictly: the record of the point itself, else the nearest record that is an
     ancestor of the point when no file that changes test results lies between them
     (post-merge measures again exactly when such a file changes, so the older record
-    is as good as an own one), else none."""
+    is as good as an own one), else none. `affects` is the rule of the board
+    ([baseline] paths of project.toml, else the Python rule)."""
     if baselines.legacy is not None:
         return Effective("legacy", baselines.legacy)
     point = branching_point(repo, base_branch)
@@ -1014,7 +951,7 @@ def effective_baseline(repo: Path, baselines: Baselines, base_branch: str) -> Ef
     record = nearest[1]
     touched = [
         path for path in _z(git(repo, "diff", "--name-only", "-z", "--no-renames", record["base_sha"], point))
-        if pc.affects_baseline(path)
+        if affects(path)
     ]
     if touched:
         shown = ", ".join(_clean(path) for path in touched[:5])
@@ -1123,7 +1060,9 @@ def run_checks(ctx: Context, cfg: Config | None = None) -> Result:
         reasons += test_violations(repo, base, cfg)
         if baselines is not None:
             try:
-                effective = effective_baseline(repo, baselines, cfg.base_branch)
+                effective = effective_baseline(
+                    repo, baselines, cfg.base_branch, pc.paths_rule(cfg.baseline_paths)
+                )
             except CheckError as exc:
                 reasons.append(str(exc))
     reasons += card_violations(ctx.card, cfg)
