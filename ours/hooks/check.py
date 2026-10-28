@@ -33,7 +33,11 @@ collected), the project tests last and only when the fast checks passed:
        (S4-16) when every changed path matches [checks] doc_paths (a
        non-empty change set; checks 1-5 always run). Neither skip applies to
        the card of a task (integrate.is_task_card; S4-21): its run is always
-       the full suite, and a failure sends it to needs_human at once.
+       the full suite, and a failure sends it to needs_human at once. The gate
+       of such a card takes only the merged record of its own delivery
+       (`source` = deliver/<ID>, written by `ours/bin/deliver merged`; S4-27).
+       The `hook pass` event names the content (`tree`, `head`) and says
+       `tests` = full | skipped-docs: `ours/bin/deliver` looks for it.
 
 One check per card at a time (<board>/.ours-state/<ID>.lock): a second hook
 skips, the gate waits within its timeout.
@@ -101,12 +105,15 @@ LOG_NAME = "check.log"
 NOTE_HEADING = "Check Failure"
 # S4-25: a note with one of these headings goes to the end of the existing
 # section (the last one, when a card has several), not into a new section.
-APPEND_TO_SECTION = frozenset({"Subtask Progress"})
+APPEND_TO_SECTION = frozenset({"Subtask Progress", "Delivery"})
 # One-shot mark "this turn's content passed the checks" for integrate.py hook.
 PASS_SUFFIX = ".pass.json"
 # One-shot record "this tree was merged into the integration branch" written
 # by integrate.py hook; the gate may then skip the tests for the same tree.
 MERGED_SUFFIX = ".merged.json"
+# `source` of the merged record that `ours/bin/deliver merged` writes (S4-27): the
+# gate of a task card takes only this one, `deliver/<its ID>`.
+DELIVER_PREFIX = "deliver/"
 # Pathspec of the standard after_run block (templates/WORKFLOW.md.tmpl).
 STAGE_PATHSPEC = (".", ":(exclude)kanban", ":(exclude).symphony")
 
@@ -976,8 +983,10 @@ def run_checks(ctx: Context, cfg: Config | None = None) -> Result:
     # Only the gate reads the record, and it is used up here, passed or not.
     merged = _take_merged(ctx) if ctx.mode == "gate" else None
     task_card = is_task_card_file(ctx.card)
-    if task_card:
-        merged = None  # taken (used up) above, but never used: the task card is not merged by integrate.py
+    if task_card and merged is not None and merged.get("source") != f"{DELIVER_PREFIX}{ctx.issue_id}":
+        # taken (used up) above, but not used: integrate.py never merges a task card; only the
+        # record of its own delivery counts (S4-27). A subtask's record or one without `source` does not.
+        merged = None
     reasons: list[str] = []
     baselines: Baselines | None = None
     effective: Effective | None = None
@@ -1012,7 +1021,7 @@ def run_checks(ctx: Context, cfg: Config | None = None) -> Result:
         note, why = _merged_skip(ctx, merged)
         if note is not None:
             return Result(True, [], "", cfg, tests_skipped=True, note=note, tests="skipped")
-        mark = {"tests": "full", "tests_reason": why}
+        mark.update(tests="full", tests_reason=why)
     note = None if task_card else _docs_only(changed, cfg)
     if note is not None:
         mark["tests"] = "skipped-docs"
@@ -1450,7 +1459,12 @@ def _hook_checked(ctx: Context) -> int:
                 _write_pass_mark(ctx, tree, head)
             except OSError as exc:
                 log_event(ctx, ctx.issue_id, "hook", "error", f"cannot write the pass mark: {exc}")
-        extra = {"tests": result.tests} if result.tests else {}
+        # S4-27: `tests` is always there ("full" when test.sh really ran) and the content
+        # that passed is named (`tree`, `head`), so that ours/bin/deliver can find a green check.
+        tests = result.tests or ("" if result.tests_skipped else "full")
+        extra = {"tests": tests} if tests else {}
+        if tree and head:
+            extra.update(tree=tree, head=head)
         if result.task_card:
             extra["tests_reason"] = result.tests_reason
         extra.update(_baseline_extra(result))

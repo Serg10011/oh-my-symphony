@@ -1732,3 +1732,143 @@ def test_stop_tree_real_processes(tmp_path: Path) -> None:
         for proc in spawned:
             proc.wait(timeout=10)
 
+
+
+# --- .deliver and .merge of deliver/<ID> (S4-27) ---------------------------------------
+
+
+def deliver_argv(env: Env, code: str = "OMS-12") -> list[str]:
+    return [sys.executable, f"{env.main}/ours/bin/deliver", "push", code, "--gh", str(env.gh), "--main",
+            str(env.main)]
+
+
+def test_there_are_four_commands() -> None:
+    assert ir.COMMANDS == ("run", "test", "merge", "deliver")
+    assert ir.split_name("OMS-12.deliver") == ("OMS-12", "deliver")
+
+
+def test_unknown_file_message_names_all_four_commands(env: Env) -> None:
+    env.put("OMS-12.push")
+    env.pass_()
+    skipped = env.skipped()
+    assert all(f"<код>.{cmd}" in skipped for cmd in ("run", "test", "deliver", "merge"))
+
+
+def test_deliver_runs_the_step_with_exact_arguments(env: Env) -> None:
+    env.put("OMS-12.deliver")  # no OMS-12.md needed: the command needs no task file
+    env.fake.on("ours/bin/deliver", 0, "Доставлено: PR https://github.com/Serg10011/oh-my-symphony/pull/9")
+    assert env.pass_() is False
+    (call,) = env.fake.calls
+    assert call["argv"] == deliver_argv(env)
+    assert call["cwd"] == env.main and call["timeout"] == ir.DELIVER_TIMEOUT_S == 900
+    assert call["env"] == ir.gh_env(str(env.gh))
+    assert not any(key.startswith("SYMPHONY_") for key in call["env"])
+    log = env.log("OMS-12.deliver.log")
+    assert "Шаг: deliver push" in log and "pull/9" in log and "deliver: доставлено." in log
+    assert env.done() == [f"OMS-12.deliver.{ir.stamp(NOW)}"]
+
+
+@pytest.mark.parametrize(("rc", "needle"), [(1, "ОТКАЗ (код 1): ничего не изменено"),
+                                           (2, "ОШИБКА (код 2)"), (7, "НЕОЖИДАННЫЙ КОД 7")])
+def test_deliver_reports_each_exit_code(env: Env, rc: int, needle: str) -> None:
+    env.put("OMS-12.deliver")
+    env.fake.on("ours/bin/deliver", rc, "Отказ: причина")
+    env.pass_()
+    log = env.log("OMS-12.deliver.log")
+    assert needle in log and "Отказ: причина" in log and "deliver: доставлено" not in log
+
+
+def test_deliver_with_content_is_skipped(env: Env) -> None:
+    env.put("OMS-12.deliver", "push --force")
+    env.pass_()
+    assert env.fake.calls == [] and "OMS-12.deliver" in env.skipped() and "должен быть пустым" in env.skipped()
+
+
+def test_deliver_can_be_repeated_and_the_old_report_is_renamed(env: Env) -> None:
+    env.put("OMS-12.deliver")
+    env.pass_()
+    first = env.log("OMS-12.deliver.log")
+    env.fake.on("ours/bin/deliver", 1, "Отказ: ещё нет")
+    env.put("OMS-12.deliver")
+    env.pass_()
+    rotated = [p for p in env.outbox.iterdir() if p.name.startswith("OMS-12.deliver.") and p.name != "OMS-12.deliver.log"]
+    assert len(rotated) == 1 and rotated[0].name.endswith("Z.log") and rotated[0].read_text() == first
+    assert "ОТКАЗ (код 1)" in env.log("OMS-12.deliver.log")
+    assert len(env.fake.lines("ours/bin/deliver")) == 2
+
+
+def deliver_merge(env: Env, number: int = 7) -> None:
+    env.put("OMS-12.merge", "deliver/OMS-12\n")
+    env.fake.on("pr list", 0, json.dumps([pr(number=number, headRefName="deliver/OMS-12")]))
+
+
+def test_merge_of_a_delivery_branch_runs_merge_then_deliver_merged_then_post_merge(env: Env) -> None:
+    deliver_merge(env)
+    env.pass_()
+    lines = [c["line"] for c in env.fake.calls]
+    assert lines[0].startswith(f"{env.gh} pr list --repo Serg10011/oh-my-symphony --head deliver/OMS-12 "
+                               "--base our-main --state open --json ")
+    assert lines[1] == f"{env.gh} pr merge deliver/OMS-12 --repo Serg10011/oh-my-symphony --merge"
+    assert env.fake.calls[2]["argv"] == [sys.executable, f"{env.main}/ours/bin/deliver", "merged", "OMS-12",
+                                         "--main", str(env.main)]
+    assert env.fake.calls[2]["cwd"] == env.main and env.fake.calls[2]["env"] == ir.gh_env(str(env.gh))
+    assert lines[3] == f"{sys.executable} {env.main}/ours/bin/post-merge --main {env.main}"
+    assert len(lines) == 4
+    log = env.log("OMS-12.merge.log")
+    assert "окно: не нужно — доставка карточки" in log and "Шаг: закрыть окно" not in log
+    assert log.index("PR влит.") < log.index("Шаг: deliver merged") < log.index("Шаг: post-merge")
+    assert "deliver merged: запись «влито» записана." in log and "post-merge: готово" in log
+
+
+def test_a_failed_deliver_merged_is_only_a_report_line(env: Env) -> None:
+    deliver_merge(env)
+    env.fake.on("ours/bin/deliver", 1, "Отказ: слияние уже отмечено")
+    env.pass_()
+    log = env.log("OMS-12.merge.log")
+    assert "deliver merged: НЕ ВЫПОЛНЕНО (код 1)" in log and "Отказ: слияние уже отмечено" in log
+    assert env.fake.lines("post-merge") and "post-merge: готово" in log
+
+
+def test_deliver_merged_does_not_run_when_the_merge_failed(env: Env) -> None:
+    deliver_merge(env)
+    env.fake.on("pr merge", 1, "merge conflict")
+    env.pass_()
+    assert not env.fake.lines("ours/bin/deliver") and not env.fake.lines("post-merge")
+
+
+def test_the_window_of_a_delivered_card_is_never_touched(wenv: Env) -> None:
+    wenv.fake = WinFake(str(wenv.main / "tmp_workspaces" / "inbox" / "OMS-12.md"))
+    path = record_window(wenv, "OMS-12")
+    deliver_merge(wenv)
+    wenv.pass_()
+    f = wenv.fake
+    assert not [e for e in f.journal if e.startswith(("osa", "ps", "kill"))] and f.kills == []
+    assert path.exists()
+    order(f.journal, "merge", "post-merge")
+
+
+@pytest.mark.parametrize(("name", "branch"), [
+    ("OMS-12.merge", "deliver/OMS-13"), ("OMS-12.merge", "deliver/OMS-12-1"), ("OMS-12.merge", "deliver/oms-12"),
+    ("S4-03.merge", "deliver/OMS-12"),
+])
+def test_merge_of_a_delivery_branch_must_match_the_file_name(env: Env, name: str, branch: str) -> None:
+    env.put(name, branch)
+    env.pass_()
+    assert env.fake.calls == [] and name in env.skipped() and "не совпадает с именем файла" in env.skipped()
+
+
+def test_a_dev_branch_is_merged_as_before(wenv: Env) -> None:
+    f = wenv.fake
+    record_window(wenv)
+    merge_env(wenv, [pr()])
+    wenv.pass_()
+    assert not wenv.fake.lines("ours/bin/deliver")
+    order(f.journal, "merge", "osa:check", "ps", "osa:close", "post-merge")
+    assert "Шаг: закрыть окно Claude Code" in wenv.log("S4-03.merge.log")
+
+
+def test_a_dev_branch_in_a_file_of_a_delivered_card_is_still_a_dev_merge(env: Env) -> None:
+    env.put("OMS-12.merge", "dev/OMS-12")
+    env.fake.on("pr list", 0, json.dumps([pr(headRefName="dev/OMS-12")]))
+    env.pass_()
+    assert not env.fake.lines("ours/bin/deliver") and env.fake.lines("post-merge")

@@ -1217,3 +1217,60 @@ def test_hook_ignores_the_merged_record(env: Env) -> None:
     assert env.run("hook").returncode == 0
     assert env.marker.exists()
     assert merged_file(env).exists()
+
+
+# ---------------------------------------------------------------------------
+# the `hook pass` event names the content that passed (S4-27)
+# ---------------------------------------------------------------------------
+
+
+def hook_events(env: Env) -> list[dict]:
+    return [e for e in env.log() if e["mode"] == "hook"]
+
+
+def test_hook_pass_event_names_the_tree_and_the_head_of_a_full_run(env: Env) -> None:
+    write(env.ws / "src" / "app.py", "x = 2\n")
+    env.commit()
+    assert env.run("hook").returncode == 0 and env.marker.exists()
+    (event,) = hook_events(env)
+    assert event["outcome"] == "pass"
+    assert event["tests"] == "full"  # a full run says so (it used to leave the field out)
+    assert event["tree"] == git(env.ws, "rev-parse", "HEAD^{tree}").strip() == pass_mark(env)["tree"]
+    assert event["head"] == git(env.ws, "rev-parse", "HEAD").strip() == pass_mark(env)["head"]
+
+
+def test_hook_pass_event_of_the_light_path_says_skipped_docs_with_the_tree(env: Env) -> None:
+    env.config(test_command=f"touch {env.marker}", doc_paths=["docs/our/**/*.md"])
+    write(env.ws / "docs" / "our" / "NOTE.md", "text\n")
+    env.commit()
+    assert env.run("hook").returncode == 0 and not env.marker.exists()
+    (event,) = hook_events(env)
+    assert event["tests"] == "skipped-docs"
+    assert event["tree"] == git(env.ws, "rev-parse", "HEAD^{tree}").strip()
+    assert event["head"] == git(env.ws, "rev-parse", "HEAD").strip()
+
+
+def test_a_failed_hook_has_no_pass_event_and_the_gate_event_is_unchanged(env: Env) -> None:
+    write(env.ws / "ours" / "x", "violation\n")
+    assert env.run("hook").returncode == 0
+    assert [e["outcome"] for e in hook_events(env)] == ["rollback:In Progress"]
+    env.set_card("Human Review")
+    write(env.ws / "ours" / "x", "")  # still a violation: the gate fails and says nothing new
+    assert env.run("gate").returncode != 0
+    (gate,) = [e for e in env.log() if e["mode"] == "gate"]
+    assert gate["outcome"] == "fail" and "tree" not in gate and "head" not in gate
+
+
+def test_the_gate_event_of_a_full_run_has_no_tests_field(env: Env) -> None:
+    # existing tests (test_light_path.py) rely on the field being absent for a full run
+    assert_passed(env.run("gate"))
+    (gate,) = [e for e in env.log() if e["mode"] == "gate"]
+    assert gate["outcome"] == "pass" and "tests" not in gate and "tree" not in gate
+
+
+def test_a_merged_record_with_another_tree_keeps_the_baseline_marks(env: Env) -> None:
+    put_merged(env, tree="f" * 40)
+    assert_passed(env.run("gate"))
+    (gate,) = [e for e in env.log() if e["mode"] == "gate"]
+    assert gate["tests"] == "full" and gate["tests_reason"] == "tree differs from the merged one"
+    assert gate["baseline_match"] == "legacy"  # the baseline fields used to be lost here

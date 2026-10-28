@@ -90,6 +90,11 @@ RESERVED_BRANCH_PREFIXES = ("symphony/", "attempts/")
 DEFAULT_PLAN = {"max_subtasks": 5, "max_failures": 2}
 MAX_SUBTASKS_LIMIT = 20
 
+# [delivery] (S4-27): where `ours/bin/deliver` pushes the result of a card. The
+# section is optional; without it the board has no delivery.
+DELIVERY_REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+DELIVERY_BASE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,80}$")
+
 # section -> key -> (type, required)
 _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
     "project": {
@@ -129,6 +134,7 @@ _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
         "worker_label": (str, False),
     },
     "plan": {"max_subtasks": (int, False), "max_failures": (int, False)},
+    "delivery": {"repo": (str, False), "base": (str, False)},
     "service": {"model": (str, False)},
 }
 # [levels]: `default_level` plus one table per level (TASK-K14). Mirrors the core
@@ -355,6 +361,7 @@ def validate_project(data: dict) -> dict:
             f"{PROJECT_FILE}: [plan] max_subtasks = {plan['max_subtasks']}: "
             f"допустимо от 1 до {MAX_SUBTASKS_LIMIT}"
         )
+    _check_delivery(data.get("delivery"), out["delivery"])
     if integration["enabled"] and agents != 1:
         raise ProjectError(
             f"{PROJECT_FILE}: [agent] max_concurrent_agents = {agents} при [integration] enabled = true: "
@@ -375,6 +382,26 @@ def validate_project(data: dict) -> dict:
     if limits["max_total_turns"] < limits["max_turns"]:
         raise ProjectError(f"{PROJECT_FILE}: [limits] max_total_turns меньше max_turns")
     return out
+
+
+def _check_delivery(raw: object, delivery: dict) -> None:
+    """[delivery]: both keys or no section; `repo` is `owner/name`, `base` a plain branch name."""
+    if raw is None:
+        return
+    where = f"{PROJECT_FILE}: [delivery]"
+    for key in ("repo", "base"):
+        if key not in delivery:
+            raise ProjectError(f"{where}: нет ключа {key}")
+    repo, base = delivery["repo"], delivery["base"]
+    if not DELIVERY_REPO_RE.match(repo) or any(part in (".", "..") for part in repo.split("/")):
+        raise ProjectError(
+            f"{where} repo {repo!r}: нужна строка вида владелец/имя из букв, цифр и . _ -"
+        )
+    if (
+        not DELIVERY_BASE_RE.match(base) or ".." in base or "//" in base
+        or base.endswith(("/", ".", ".lock"))
+    ):
+        raise ProjectError(f"{where} base {base!r}: нужно простое имя ветки (например our-main)")
 
 
 def _check_turns_cover_attempts(label: str, max_turns: int, max_attempts: int) -> None:
