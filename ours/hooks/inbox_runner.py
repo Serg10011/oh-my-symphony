@@ -1,9 +1,11 @@
 """Command queue for the chat assistant (TASK-S4-02). Logic of ours/bin/inbox-runner.
 
-The service watches <main>/tmp_workspaces/inbox/ and executes exactly three kinds
+The service watches <main>/tmp_workspaces/inbox/ and executes exactly four kinds
 of command files: `<code>.run` (prepare a dev worktree and open Terminal with
-Claude Code), `<code>.test` (run the fixed checks in that worktree) and
-`<code>.merge` (merge a verified PR, then post-merge). Nothing else.
+Claude Code), `<code>.test` (run the fixed checks in that worktree),
+`<code>.deliver` (deliver the card <code> to GitHub: ours/bin/deliver push, S4-27)
+and `<code>.merge` (merge a verified PR, then post-merge; for the branch
+`deliver/<code>` also `ours/bin/deliver merged`). Nothing else.
 
 Security rules (everything here is a constant in code, never read from a file):
 the file content is never executed or put into a shell as is; the command code
@@ -45,7 +47,7 @@ REPO_OWNER = "Serg10011"
 BASE_BRANCH = "our-main"
 REMOTE = "origin"
 BRANCH_PREFIX = "dev/"
-COMMANDS = ("run", "test", "merge")
+COMMANDS = ("run", "test", "merge", "deliver")
 MODELS = ("sonnet", "opus", "haiku")
 DEFAULT_MODEL = "sonnet"
 EFFORTS = ("low", "medium", "high", "xhigh", "max")  # values of `claude --effort`
@@ -63,6 +65,7 @@ SETTLE_S = 2.0
 DEFAULT_INTERVAL_S = 3.0
 GIT_TIMEOUT_S = 120
 POST_MERGE_TIMEOUT_S = 1800
+DELIVER_TIMEOUT_S = 900  # S4-28 will run the full tests in a temporary copy: it grows then
 OSASCRIPT_TIMEOUT_S = 60
 TIMEOUTS = {"ruff": 300, "ours-tests": 1200, "full-tests": 3600, "env": 900}
 
@@ -139,6 +142,8 @@ SELF_FILES = (
     Path(__file__).resolve(),
 )
 POST_MERGE_REL = Path("ours") / "bin" / "post-merge"
+DELIVER_REL = Path("ours") / "bin" / "deliver"
+DELIVER_BRANCH_PREFIX = "deliver/"  # the .merge branch of a delivered card: deliver/<file code>
 
 EXIT_OK, EXIT_FAIL = 0, 1
 
@@ -216,6 +221,8 @@ def parse_content(command: str, text: str) -> tuple[dict | None, str]:
     empty = lines in ([], [""])
     if command == "test":
         return ({}, "") if empty else (None, "файл .test должен быть пустым")
+    if command == "deliver":
+        return ({}, "") if empty else (None, "файл .deliver должен быть пустым")
     if command == "run":
         if empty:
             return {"model": DEFAULT_MODEL, "effort": None}, ""
@@ -225,6 +232,17 @@ def parse_content(command: str, text: str) -> tuple[dict | None, str]:
     if not valid_branch(lines[0]):
         return None, "недопустимое имя ветки"
     return {"branch": lines[0]}, ""
+
+
+def merge_branch_problem(code: str, branch: str) -> str | None:
+    """Why the branch of a `.merge` file does not fit its file name (None when it fits).
+
+    A delivery branch is exactly `deliver/<code>` of the file name: `OMS-12.merge` may merge
+    `deliver/OMS-12` and nothing else under `deliver/`.
+    """
+    if branch.startswith(DELIVER_BRANCH_PREFIX) and branch != DELIVER_BRANCH_PREFIX + code:
+        return f"ветка {branch} не совпадает с именем файла: для {code}.merge нужна {DELIVER_BRANCH_PREFIX}{code}"
+    return None
 
 
 def read_command_file(path: Path, now: float, settle: bool = True) -> tuple[str | None, str]:
@@ -658,6 +676,14 @@ def post_merge_argv(main: Path) -> list[str]:
     return [sys.executable, str(main / POST_MERGE_REL), "--main", str(main)]
 
 
+def deliver_push_argv(main: Path, gh: str, code: str) -> list[str]:
+    return [sys.executable, str(main / DELIVER_REL), "push", code, "--gh", gh, "--main", str(main)]
+
+
+def deliver_merged_argv(main: Path, code: str) -> list[str]:
+    return [sys.executable, str(main / DELIVER_REL), "merged", code, "--main", str(main)]
+
+
 def check_pull_request(raw: str, branch: str) -> tuple[int | None, str]:
     """(PR number, "") when exactly one open PR of this repo from `branch` into our-main exists."""
     try:
@@ -770,7 +796,8 @@ class Runner:
         key = (name, st.st_mtime_ns, st.st_size)
         parsed = split_name(name)
         if parsed is None:
-            self.skip(name, "неизвестный файл: имя не подходит под <код>.run, <код>.test, <код>.merge", key)
+            self.skip(name, ("неизвестный файл: имя не подходит под <код>.run, <код>.test, <код>.deliver, "
+                             "<код>.merge"), key)
             return None
         code, command = parsed
         text, reason = read_command_file(path, self.ops.clock())
@@ -782,6 +809,11 @@ class Runner:
         if params is None:
             self.skip(name, reason, key)
             return None
+        if command == "merge":
+            problem = merge_branch_problem(code, params["branch"])
+            if problem is not None:
+                self.skip(name, problem, key)
+                return None
         if command == "run":
             md = s.inbox / f"{code}.md"
             if not (md.is_file() and not md.is_symlink()):
@@ -796,8 +828,8 @@ class Runner:
         if not self.claim(path, name, text):
             return None
         report_path = s.outbox / f"{code}.{command}.log"
-        if command == "test" and report_path.exists():
-            os.rename(report_path, unique_path(s.outbox / f"{code}.test.{stamp(self.ops.clock())}.log"))
+        if command in ("test", "deliver") and report_path.exists():
+            os.rename(report_path, unique_path(s.outbox / f"{code}.{command}.{stamp(self.ops.clock())}.log"))
         try:
             report = Report(report_path, self.ops.clock)
         except FileExistsError:
@@ -809,6 +841,8 @@ class Runner:
                 self.do_run(report, code, params["model"], params["effort"])
             elif command == "merge":
                 self.do_merge(report, params["branch"], code)
+            elif command == "deliver":
+                self.do_deliver(report, code)
             else:
                 self.do_test(report, code)
         except Exception as exc:  # noqa: BLE001
@@ -920,7 +954,10 @@ class Runner:
             report.line("ОШИБКА: слияние не прошло; post-merge не запускался.")
             return
         report.line("PR влит.")
-        self.close_window(report, code, branch)
+        if branch.startswith(DELIVER_BRANCH_PREFIX):
+            self.deliver_merged(report, branch.removeprefix(DELIVER_BRANCH_PREFIX), env)
+        else:
+            self.close_window(report, code, branch)
         pm = self.step(report, "post-merge", post_merge_argv(s.main), s.main,
                        clean_env(SAFE_PATH, passthrough=("SSH_AUTH_SOCK", "GH_TOKEN", "GITHUB_TOKEN")),
                        POST_MERGE_TIMEOUT_S)
@@ -931,6 +968,20 @@ class Runner:
                         "Запустить ещё раз позже: ours/bin/post-merge.")
         else:
             report.line(f"post-merge: ОШИБКА (код {pm.rc}). PR уже влит; разберитесь по выводу выше.")
+
+    def deliver_merged(self, report: Report, code: str, env: dict[str, str]) -> None:
+        """After merging a delivery PR: no window to close; write the "merged" record for the gate.
+
+        A failure here is only a report line; post-merge goes on regardless.
+        """
+        report.line("окно: не нужно — доставка карточки")
+        done = self.step(report, "deliver merged", deliver_merged_argv(self.s.main, code), self.s.main, env,
+                         DELIVER_TIMEOUT_S)
+        if done.rc == 0:
+            report.line("deliver merged: запись «влито» записана.")
+        else:
+            report.line(f"deliver merged: НЕ ВЫПОЛНЕНО (код {done.rc}); PR уже влит. Шлюз при Done прогонит "
+                        "тесты сам. Причина — в выводе выше.")
 
     def osascript(self, script: str, *args: str) -> Proc:
         return self.ops.proc([self.s.osascript, "-", *args], cwd=None, env=None, timeout=OSASCRIPT_TIMEOUT_S,
@@ -998,6 +1049,22 @@ class Runner:
         if closed.rc != 0:
             detail += f"; osascript close: код {closed.rc}, {closed.out.strip()[:200]}"
         report.line(f"окно не закрыто: {detail}, закрой сам")
+
+    # --- .deliver ----------------------------------------------------------
+
+    def do_deliver(self, report: Report, code: str) -> None:
+        s = self.s
+        done = self.step(report, "deliver push", deliver_push_argv(s.main, s.gh, code), s.main, gh_env(s.gh),
+                         DELIVER_TIMEOUT_S)
+        if done.rc == 0:
+            report.line("deliver: доставлено.")
+        elif done.rc == 1:
+            report.line("deliver: ОТКАЗ (код 1): ничего не изменено, причина в выводе выше.")
+        elif done.rc == 2:
+            report.line("deliver: ОШИБКА (код 2): причина в выводе выше. Если ветка уже на GitHub, "
+                        "повтор .deliver продолжит с PR.")
+        else:
+            report.line(f"deliver: НЕОЖИДАННЫЙ КОД {done.rc}: причина в выводе выше.")
 
     # --- .test -------------------------------------------------------------
 
@@ -1177,7 +1244,7 @@ def serve(settings: Settings, ops: Ops, once: bool = False) -> int:
 
 
 def run(argv: list[str] | None = None, ops: Ops | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="inbox-runner", description="Очередь команд для чата (.run, .test, .merge).")
+    parser = argparse.ArgumentParser(prog="inbox-runner", description="Очередь команд для чата (.run, .test, .deliver, .merge).")
     parser.add_argument("--main", default=None, help="основная папка форка")
     parser.add_argument("--worktree-root", default=DEFAULT_WORKTREE_ROOT, help="каталог рабочих копий разработки")
     parser.add_argument("--interval", type=float, default=DEFAULT_INTERVAL_S, help="период опроса, секунд")
