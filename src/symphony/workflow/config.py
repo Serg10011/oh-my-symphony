@@ -292,6 +292,14 @@ class AgentConfig:
     # decision survives restart and reaches operators reviewing the
     # board. Must match a state your tracker.kind backend can write to.
     budget_exhausted_state: str = ""
+    # Tracker terminal state a ticket moves to when its turn fails with an
+    # exhausted API credit (or a failing apiKeyHelper) and no
+    # `fallback_kinds` backend is left. Empty (legacy) = pause the ticket
+    # for operator inspection. A non-empty value also stops dispatching
+    # other tickets until WORKFLOW.md changes or the service restarts.
+    quota_exhausted_state: str = ""
+    # Extra text appended to the `## Quota Exhausted` ticket note.
+    quota_exhausted_note: str = ""
     # Optional per-state backend routing. Keys are tracker state names
     # lowercased by the parser (e.g. "research"), values are supported
     # agent kinds. Lets cheap/fast agents own light lanes (Research,

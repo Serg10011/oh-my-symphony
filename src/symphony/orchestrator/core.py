@@ -59,6 +59,7 @@ from .constants import (
     TICK_LOOP_MAX_RESTARTS,
 )
 from .dispatch_state import DispatchState
+from .quota_hold import DispatchHold
 from .entries import RetryEntry, RunningEntry, _CodexTotals, _IssueDebug
 from .helpers import _branch_hook_env, resolve_symphony_cli
 from .run_registry import RunRegistry
@@ -131,6 +132,7 @@ from .core_support import (
     _clean_board_error_message as _clean_board_error_message,
     _has_app_release_label as _has_app_release_label,
     _has_retryable_worker_marker as _has_retryable_worker_marker,
+    _is_api_key_helper_error as _is_api_key_helper_error,
     _is_opencode_sigterm_retry as _is_opencode_sigterm_retry,
     _is_quota_worker_error as _is_quota_worker_error,
     _is_retryable_worker_error as _is_retryable_worker_error,
@@ -345,6 +347,10 @@ class Orchestrator:
         self._paused_issue_ids: set[str] = set()
         self._pause_reasons: dict[str, str] = {}
         self._pause_events: dict[str, asyncio.Event] = {}
+        # `agent.quota_exhausted_state` hold: set after a ticket parked on an
+        # exhausted credit, lifted when WORKFLOW.md changes (quota_hold.py).
+        self._dispatch_hold: DispatchHold | None = None
+        self._dispatch_hold_logged_at: float | None = None
         # Rolling EMA of completion `total_tokens` per state. Keys are the
         # lowercased state name (normalize_state). Persisted to
         # `<workflow_dir>/.symphony/token_ema.json` so the soft budget the
