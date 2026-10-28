@@ -195,6 +195,16 @@ max_check_failures = 2         # провалов проверки check.py до
 # должно быть 1: вливание и Done подзадачи рассчитаны на одного агента (одно вливание
 # за раз), иначе project.toml не принимается.
 # max_concurrent_agents = 1
+# Папки рабочей копии, в которые агент не пишет встроенными инструментами (Edit, Write) и
+# перенаправлениями: тесты и проверки запускают их код, а правка там не видна в диффе.
+# Пути от корня рабочей копии, без шаблонов. Умолчание — node_modules и .venv.
+# protected_dirs = ["node_modules", ".venv"]
+# Файл правил проекта в репозитории кода (путь от корня). Строка «читай его первым» попадает в
+# промпт всех этапов; файл должен быть на базовой ветке (project-doctor проверяет). Без ключа
+# правил проекта в промпте нет.
+# project_rules = "docs/agent-rules.md"
+# Карта проекта для руководителя: строка «прочитай перед планом» только в промпте этапа Plan.
+# manager_rules = "docs/project-map.md"
 
 [integration]            # интеграционная ветка задачи (S4-11); пока выключено
 # Подзадачи одной задачи (карточки с меткой worker_label и полем `request: <ЗАДАЧА>`)
@@ -246,7 +256,8 @@ max_check_failures = 2         # провалов проверки check.py до
 #      затем вставь ключ в файл редактором (в чат, в карточки и в git ключ не попадает).
 #   3. Раскомментируй раздел, впиши абсолютный путь и запусти ours/bin/project-render <имя>.
 # Как вернуться на подписку: mode = "plan" (строку api_key_file можно оставить), затем
-# ours/bin/project-render <имя>: файл claude-settings.json удалится. Переменные
+# ours/bin/project-render <имя>: ключ и помощник из claude-settings.json уйдут (сам файл
+# остаётся: запреты на правку и таймаут Bash нужны в обоих режимах). Переменные
 # ANTHROPIC_API_KEY и ANTHROPIC_AUTH_TOKEN в окружении службы запрещены (project-doctor: FAIL).
 # [billing]
 # mode = "api"
@@ -454,7 +465,10 @@ def create(board: Path, args, repo: Path, python: Path, symphony: Path, claude: 
         claude=toml_str(str(claude)),
     ), encoding="utf-8")
     project = pc.load_project(board)
-    (board / "WORKFLOW.md").write_text(pc.render_workflow(board, project), encoding="utf-8")
+    text = pc.render_workflow(board, project)
+    pc.sync_claude_settings(board, project)
+    pc.sync_board_prompts(board, project)
+    (board / "WORKFLOW.md").write_text(text, encoding="utf-8")
 
 
 if __name__ == "__main__":

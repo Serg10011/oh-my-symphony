@@ -10,7 +10,8 @@ Prints a PASS / FAIL / WARN list; exit 0 only without FAIL. Steps:
    folder is not inside git; port and prefix are not taken by another
    project under the same root; the payment mode ([billing], E1b: for `api`
    the key file and its folder as project-render checks them, and the
-   apiKeyHelper command is run; the key is never printed); no
+   apiKeyHelper command is run; the key is never printed); the files of [agent]
+   project_rules / manager_rules are on the base branch; no
    ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN in the environment of the service
    (launchd.plist of the board) or of this run, in any mode; setup.sh and
    test.sh are not the stubs.
@@ -27,7 +28,9 @@ Prints a PASS / FAIL / WARN list; exit 0 only without FAIL. Steps:
    the terminal's PATH must fail here, not at night.
 3. [timeouts] of project.toml from the measured times (only that section
    is edited; `fixed = true` keeps it and prints the recommendation).
-4. project-render, then `<[tools] symphony> doctor` on WORKFLOW.md.
+4. project-render, then the settings file of `claude` and the prompts of the board are
+   compared with what project-render writes (E4), then `<[tools] symphony> doctor` on
+   WORKFLOW.md.
 
 Run it with the orchestrator's Python, like project-new.
 """
@@ -200,6 +203,52 @@ def check_billing(report: Report, board: Path, project: dict) -> None:
                            "вывод не показан")
     else:
         report.add("PASS", "apiKeyHelper выдаёт ключ нужного вида (сам ключ не показан; запроса к API нет)")
+
+
+def check_agent_files(report: Report, board: Path, project: dict) -> None:
+    """The files `project-render` writes for the agent (E4) are what it would write now.
+
+    The settings file of `claude` (Edit deny rules, Bash time limit, per mode) and, with
+    [agent] project_rules / manager_rules, the prompts of the board. Checked after the
+    render step of this run (which rewrites them, and [timeouts] may have just changed):
+    a FAIL means the render did not write them.
+    """
+    path = board / pc.CLAUDE_SETTINGS_FILE
+    try:
+        actual = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        actual = None
+    if actual == pc.claude_settings_text(project):
+        report.add("PASS", f"{pc.CLAUDE_SETTINGS_FILE}: совпадает с тем, что пишет project-render")
+    else:
+        why = "нет файла" if actual is None else "не совпадает с project.toml"
+        report.add("FAIL", f"{path}: {why}; пересобери: project-render {board.name}")
+    stale = []
+    for name, text in pc.board_prompts(project).items():
+        try:
+            if (board / pc.PROMPTS_FOLDER / name).read_text(encoding="utf-8") != text:
+                stale.append(name)
+        except (OSError, UnicodeDecodeError):
+            stale.append(name)
+    if stale:
+        report.add("FAIL", f"промпты доски {board / pc.PROMPTS_FOLDER}: устарели или не созданы "
+                           f"({', '.join(stale)}); пересобери: project-render {board.name}")
+    elif pc.board_prompts_enabled(project):
+        report.add("PASS", "промпты доски (project_rules / manager_rules) совпадают с ours/prompts")
+
+
+def check_rule_files(report: Report, project: dict) -> None:
+    """[agent] project_rules / manager_rules: the file is on the base branch (E4)."""
+    repo, base = Path(project["project"]["repo"]), project["project"]["base_branch"]
+    for key in ("project_rules", "manager_rules"):
+        path = project["agent"].get(key)
+        if path is None:
+            continue
+        if git(repo, "cat-file", "-e", f"refs/heads/{base}:{path}").returncode == 0:
+            report.add("PASS", f"[agent] {key}: {path} есть на ветке {base}")
+        else:
+            report.add("FAIL", f"[agent] {key}: файла {path} нет на базовой ветке {base} "
+                               f"репозитория {repo}; закоммить его в {base} или убери ключ")
 
 
 def check_key_env(report: Report, board: Path) -> None:
@@ -482,6 +531,8 @@ def main(argv: list[str] | None = None) -> int:
     repo_ok = check_repo(report, project["project"])
     check_board(report, board, project)
     check_billing(report, board, project)
+    if repo_ok:
+        check_rule_files(report, project)
     check_key_env(report, board)
     scripts_ok = check_scripts(report, board)
 
@@ -504,6 +555,7 @@ def main(argv: list[str] | None = None) -> int:
             tests_s = pc.load_project(board)["timeouts"]["tests_s"]
             report.add("PASS", f"stall_timeout_ms = {pc.stall_timeout_ms(tests_s)} "
                        f"(max(300 с, tests_s {tests_s} + {pc.STALL_MARGIN_S} с))")
+            check_agent_files(report, board, pc.load_project(board))
         except pc.ProjectError as exc:  # pragma: no cover - render just read the same file
             report.add("FAIL", f"{pc.PROJECT_FILE}: {exc}")
     if rendered and tools_ok:

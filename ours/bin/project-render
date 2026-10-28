@@ -4,10 +4,12 @@
     project-render <name> [--root <dir>]
 
 Prints the diff between the old and the new file, then writes the new one.
-With [billing] mode = "api" it also writes <board>/claude-settings.json (apiKeyHelper
-and a deny rule on the key folder; mode 600) before WORKFLOW.md, and refuses, leaving
-WORKFLOW.md as it was, when the key file or its folder is not accepted. In every
-other mode it removes a leftover claude-settings.json.
+It also writes <board>/claude-settings.json in every mode (E4: the Edit deny rules, the Bash
+time limit and, per mode, apiKeyHelper or the exclusions of the `plan` mode; mode 600) and, with
+[agent] project_rules / manager_rules, the prompts of the board under <board>/prompts (without
+the keys that folder is removed). Both go before WORKFLOW.md, which points at them. With
+[billing] mode = "api" it refuses, leaving every file as it was, when the key file or its
+folder is not accepted.
 """
 
 from __future__ import annotations
@@ -40,9 +42,9 @@ def main(argv: list[str] | None = None) -> int:
             )
         new = pc.render_workflow(board, project)
         old = target.read_text(encoding="utf-8") if target.exists() else ""
-        api = pc.billing_mode(project) == "api"
-        # The settings file first when WORKFLOW.md is going to point at it, last when it is not.
-        settings = pc.sync_claude_settings(board, project) if api else "unchanged"
+        # The files WORKFLOW.md points at first.
+        settings = pc.sync_claude_settings(board, project)
+        prompts = pc.sync_board_prompts(board, project)
         if new != old:
             sys.stdout.writelines(difflib.unified_diff(
                 old.splitlines(keepends=True), new.splitlines(keepends=True),
@@ -51,13 +53,13 @@ def main(argv: list[str] | None = None) -> int:
             tmp = target.with_name(".WORKFLOW.md.tmp")
             tmp.write_text(new, encoding="utf-8")
             tmp.replace(target)
-        if not api:
-            settings = pc.sync_claude_settings(board, project)
     except (pc.ProjectError, OSError) as exc:
         print(f"project-render: отказ: {exc}", file=sys.stderr)
         return 1
     if settings != "unchanged":
-        print(f"{board / pc.CLAUDE_SETTINGS_FILE}: {'записан' if settings == 'written' else 'удалён'}")
+        print(f"{board / pc.CLAUDE_SETTINGS_FILE}: записан")
+    if prompts != "unchanged":
+        print(f"{board / pc.PROMPTS_FOLDER}: {'записаны' if prompts == 'written' else 'удалены'}")
     print(f"{target}: {'обновлён' if new != old else 'без изменений'}")
     return 0
 

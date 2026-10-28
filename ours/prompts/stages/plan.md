@@ -61,7 +61,7 @@ non_goals = ["Do not change code or prompts"]
 1. A subtask is the smallest piece that one check can prove. Keep cutting until each piece has one result and one check; stop there.
 2. `paths`: concrete files or narrow patterns, such as `docs/our/*.md`. Never `**`, `*`, or the repository root. `paths` must not touch anything listed under `## Forbidden paths` in `limits.md`: the hook rejects the plan.
 3. `blocked_by` names only subtasks above it in the file. Order the blocks so that each subtask comes after the ones it waits for.
-4. `level`: the lowest level that fits the piece, never above the task's level. `level_reason` says why in one line.
+4. `level`: the lowest level that fits the piece, never above the task's level. `level_reason` says why in one line. Prefer simple/standard (Haiku). Use complex only for pieces that need cross-module decisions.
 5. `criteria`: the result itself, checked by reading or by one command. One check signal per criterion. Do not count words, lines, or sentences. At most 5.
 6. `check` proves the result of THIS subtask: what this subtask changes in its own `paths`. Never the result of another subtask, and never a precondition (for example, that a file written by a subtask above exists).
 
