@@ -131,7 +131,10 @@ WINDOW_CHECK_REASONS = {
     "no window": "окна с таким номером уже нет",
     "tty mismatch": "в окне нет вкладки с записанным tty (это уже не то окно)",
 }
-TASK_PROMPT = "Выполни задание из файла {path}"
+# After the path comes a space, not a dot: find_roots() does not accept `.` right after the path.
+TASK_PROMPT = ("Выполни задание из файла {path} — когда закончишь (ветка запушена, PR создан) или упрёшься в "
+               "вопрос к Сергею, пришли ему push-уведомление с кратким итогом или вопросом, "
+               "если такой инструмент доступен.")
 
 INBOX_REL = Path("tmp_workspaces") / "inbox"
 OUTBOX_REL = Path("tmp_workspaces") / "outbox"
@@ -658,9 +661,11 @@ def terminal_command(main: Path, worktree_root: Path, code: str, model: str,
     prompt = TASK_PROMPT.format(path=task)
     # the task path has only [A-Za-z0-9._/-], so it is safe inside double quotes
     assert not re.search(r'[\s"$`\\!\']', str(task))
+    assert not re.search(r'["$`\\!]', prompt)
     effort_arg = f"--effort {shlex.quote(effort)} " if effort else ""
+    # the name is written explicitly: it is optional for the flag, and the prompt must not become the name
     return (f"cd {shlex.quote(str(worktree_root / code))} && claude --model {shlex.quote(model)} "
-            f'{effort_arg}"{prompt}"')
+            f'{effort_arg}--remote-control {shlex.quote(code)} "{prompt}"')
 
 
 def pr_list_argv(gh: str, branch: str) -> list[str]:
