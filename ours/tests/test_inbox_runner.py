@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import stat
 import subprocess
@@ -182,12 +183,16 @@ def test_abs_path_rules() -> None:
         assert not ir.valid_abs_path(bad), bad
 
 
+TASK_S403 = "/m/main/tmp_workspaces/inbox/S4-03.md"
+
+
 # --- .run: command building ------------------------------------------------------
 
 
 def test_terminal_command_exact() -> None:
     cmd = ir.terminal_command(Path("/m/main"), Path("/m/wt"), "S4-03", "sonnet")
-    assert cmd == 'cd /m/wt/S4-03 && claude --model sonnet "Выполни задание из файла /m/main/tmp_workspaces/inbox/S4-03.md"'
+    assert cmd == ('cd /m/wt/S4-03 && claude --model sonnet --remote-control S4-03 '
+                   f'"{ir.TASK_PROMPT.format(path=TASK_S403)}"')
 
 
 def test_terminal_command_rejects_unvalidated_parts() -> None:
@@ -210,8 +215,8 @@ def test_run_default_model_order_and_window(env: Env) -> None:
     assert len(f.calls) == 3 and len(f.windows) == 1
     osa, command = f.windows[0]
     assert osa == "/usr/bin/osascript"
-    assert command == (f'cd {env.wroot}/S4-03 && claude --model sonnet '
-                       f'"Выполни задание из файла {env.main}/tmp_workspaces/inbox/S4-03.md"')
+    assert command == (f'cd {env.wroot}/S4-03 && claude --model sonnet --remote-control S4-03 '
+                       f'"{ir.TASK_PROMPT.format(path=f"{env.main}/tmp_workspaces/inbox/S4-03.md")}"')
     assert all(c["argv"][0] == "/usr/bin/git" for c in f.calls)
     assert not (env.inbox / "S4-03.run").exists() and len(env.done()) == 1
     assert "Окно Терминала открыто" in env.log("S4-03.run.log")
@@ -250,8 +255,8 @@ def test_terminal_command_effort() -> None:
     base = ir.terminal_command(Path("/m/main"), Path("/m/wt"), "S4-03", "sonnet")
     assert "--effort" not in base
     cmd = ir.terminal_command(Path("/m/main"), Path("/m/wt"), "S4-03", "sonnet", "high")
-    assert cmd == ('cd /m/wt/S4-03 && claude --model sonnet --effort high '
-                   '"Выполни задание из файла /m/main/tmp_workspaces/inbox/S4-03.md"')
+    assert cmd == ('cd /m/wt/S4-03 && claude --model sonnet --effort high --remote-control S4-03 '
+                   f'"{ir.TASK_PROMPT.format(path=TASK_S403)}"')
     for bad in ("turbo", "high;id", "", "High"):
         with pytest.raises(AssertionError):
             ir.terminal_command(Path("/m/main"), Path("/m/wt"), "S4-03", "sonnet", bad)
@@ -1110,8 +1115,8 @@ def test_command_once_end_to_end(tmp_path: Path) -> None:
     assert git(main, "rev-parse", "--abbrev-ref", "dev/E2E-1") == "dev/E2E-1"
     args = eval(out.read_text())  # noqa: S307 - our own stub wrote a repr of a list of str
     assert args[0] == "-"
-    assert args[1] == (f'cd {tmp_path / "wt" / "E2E-1"} && claude --model haiku '
-                       f'"Выполни задание из файла {main}/tmp_workspaces/inbox/E2E-1.md"')
+    assert args[1] == (f'cd {tmp_path / "wt" / "E2E-1"} && claude --model haiku --remote-control E2E-1 '
+                       f'"{ir.TASK_PROMPT.format(path=f"{main}/tmp_workspaces/inbox/E2E-1.md")}"')
     outbox = main / "tmp_workspaces" / "outbox"
     assert "Окно Терминала открыто" in (outbox / "E2E-1.run.log").read_text()
     assert "нет открытого PR" in (outbox / "E2E-2.merge.log").read_text()
@@ -1627,6 +1632,33 @@ def test_find_roots_needs_claude_and_exact_task_path() -> None:
         ps_row(8, f'claude "Выполни задание из файла {task}"'),
     ]
     assert [r.pid for r in ir.find_roots(rows, task)] == [1, 8]
+
+
+def test_terminal_command_remote_control_name_before_prompt() -> None:
+    for effort in (None, "high"):
+        cmd = ir.terminal_command(Path("/m/main"), Path("/m/wt"), "S4-03", "sonnet", effort)
+        before, _, prompt = cmd.partition(' "')
+        assert before.endswith("--remote-control S4-03")
+        assert prompt.startswith("Выполни задание")
+        assert cmd.count("--remote-control") == 1
+
+
+def test_task_prompt_asks_for_push_and_is_safe_in_double_quotes() -> None:
+    prompt = ir.TASK_PROMPT.format(path=TASK_S403)
+    assert "push-уведомление" in prompt
+    assert not re.search(r'["$`\\!]', prompt)
+    assert "\n" not in prompt
+
+
+def test_find_roots_finds_process_with_remote_control_and_new_prompt() -> None:
+    task = "/m/main/tmp_workspaces/inbox/S4-03.md"
+    cmd = ir.terminal_command(Path("/m/main"), Path("/m/wt"), "S4-03", "opus", "high")
+    claude_cmd = cmd.split(" && ", 1)[1].replace('"', "")  # what `ps` shows: the shell removed the quotes
+    rows = [ps_row(1, claude_cmd), ps_row(2, "claude --remote-control S4-03 nothing")]
+    assert "--remote-control S4-03" in claude_cmd and "push-уведомление" in claude_cmd
+    assert [r.pid for r in ir.find_roots(rows, task)] == [1]
+    # the path is followed by a space in the prompt, never by a dot
+    assert ir.TASK_PROMPT.format(path="P").startswith("Выполни задание из файла P ")
 
 
 def test_find_roots_claude_in_the_path_does_not_count() -> None:
