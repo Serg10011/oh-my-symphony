@@ -317,7 +317,7 @@ def test_allow_paths_does_not_free_them(allow: list[str]) -> None:
 
 
 def test_other_files_stay_open() -> None:
-    assert violated(["docs/claude.md", "src/app.py", "docs/OMS-1/work/a.md"], cfg_with()) == set()
+    assert violated(["docs/claude-notes.md", "src/app.py", "docs/OMS-1/work/a.md"], cfg_with()) == set()
 
 
 @pytest.fixture

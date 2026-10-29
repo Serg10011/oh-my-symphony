@@ -84,6 +84,9 @@ DEFAULT_FORBIDDEN_PATHS = (
     ".mcp.json",
     "CLAUDE.md",
     "AGENTS.md",
+    # Nested rule files too (E4b); `**/` also matches the root.
+    "**/CLAUDE.md",
+    "**/AGENTS.md",
 )
 # `ours/**` is the only default pattern that [checks] allow_paths can lift.
 OURS_PATTERN = "ours/**"
@@ -172,6 +175,8 @@ class Config:
     max_check_failures: int = DEFAULT_MAX_CHECK_FAILURES
     # E2: [baseline] paths; None = the Python rule of project_config.BASELINE_RULE
     baseline_paths: tuple[str, ...] | None = None
+    # E4b: [agent] project_rules / manager_rules: files of the board's rules, forbidden for cards
+    rule_files: tuple[str, ...] = ()
 
 
 def load_config(board: Path) -> Config:
@@ -188,6 +193,7 @@ def load_config(board: Path) -> Config:
     for heading in (*sections, *worker_sections):
         if not re.match(r"^##\s+\S", heading):
             raise CheckError(f"config: required section {heading!r} must start with '## '")
+    agent = project.get("agent") or {}
     allow_paths = tuple(checks.get("allow_paths", ()))
     for pattern in allow_paths:
         if not pattern.strip().startswith("ours/"):
@@ -208,9 +214,10 @@ def load_config(board: Path) -> Config:
         worker_label=project["integration"]["worker_label"],
         max_check_failures=checks.get("max_check_failures", DEFAULT_MAX_CHECK_FAILURES),
         baseline_paths=tuple(project["baseline"]["paths"]) if project["baseline"] else None,
+        rule_files=tuple(agent[key] for key in ("project_rules", "manager_rules") if key in agent),
     )
     for pattern in (
-        *cfg.forbidden_paths, *cfg.allow_paths, *cfg.test_globs, *cfg.allow_modified_tests,
+        *cfg.forbidden_paths, *cfg.rule_files, *cfg.allow_paths, *cfg.test_globs, *cfg.allow_modified_tests,
         *cfg.doc_paths,
     ):
         try:
@@ -406,7 +413,7 @@ def forbidden_rules(cfg: Config) -> ForbiddenRules:
     others = tuple(p for p in cfg.forbidden_paths if p != OURS_PATTERN)
     return ForbiddenRules(
         contour=CONTROL_CONTOUR,
-        closed=tuple(dict.fromkeys(others + OURS_SECRET_PATTERNS)),
+        closed=tuple(dict.fromkeys(others + cfg.rule_files + OURS_SECRET_PATTERNS)),
         ours=OURS_PATTERN,
         opened=cfg.allow_paths,
     )
