@@ -64,6 +64,7 @@ from ..logging import get_logger
 from ..skills import normalize_skill_names
 from ..ticket_markdown import parse_body_dependency_ids
 from ..workflow import TrackerConfig
+from .identifiers import IdentifierLedger
 from .validate import (
     board_edges,
     dangling_blockers,
@@ -99,7 +100,6 @@ _LOCK_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
 _TRACKER_TEMP_NAME_RE = re.compile(
     r"^\.tmp-symphony-ticket-[a-z0-9_]{8}\.tmp$"
 )
-_GENERATED_ID_ATTEMPTS = 100
 _STALE_TEMP_AGE_SECONDS = 60.0
 _TicketMutation = Callable[
     [dict[str, Any], str], tuple[dict[str, Any], str] | None
@@ -694,6 +694,7 @@ class FileBoardTracker:
         if tracker.board_root is None:
             raise LinearUnknownPayload("board_root not configured")
         self._root = tracker.board_root.resolve()
+        self._history_path = tracker.run_history_path or self._root.parent / ".symphony" / "state.db"
         self._active = {s.lower() for s in tracker.active_states}
         self._terminal = {s.lower() for s in tracker.terminal_states}
         self._root.mkdir(parents=True, exist_ok=True)
@@ -708,6 +709,20 @@ class FileBoardTracker:
 
     def _ticket_lock_path(self, identifier: str) -> Path:
         return self._lock_path(identifier)
+
+    @contextmanager
+    def _ticket_lock_under_allocator(self, identifier: str) -> Iterator[None]:
+        """The allocator is already held; never re-lock its filesystem alias."""
+        path = self._ticket_lock_path(identifier)
+        try:
+            same_lock = path.samefile(self._allocator_lock_path())
+        except FileNotFoundError:
+            same_lock = False
+        if same_lock:
+            yield
+        else:
+            with _exclusive_lock(path):
+                yield
 
     def _sweep_stale_temps(self) -> None:
         now = time.time()
@@ -1126,15 +1141,26 @@ class FileBoardTracker:
 
         return self._mutate_ticket(identifier, mutate, missing_ok=True)
 
-    def _next_identifier_unlocked(self, prefix: str) -> str:
-        highest = 0
-        pattern = re.compile(rf"^{re.escape(prefix)}-(\d+)$", re.IGNORECASE)
+    def _identifier_ledger_unlocked(self) -> IdentifierLedger:
+        ledger = IdentifierLedger(self._root)
         for path in self._ticket_paths():
-            match = pattern.match(path.stem)
-            if match:
-                highest = max(highest, int(match.group(1)))
-        return f"{prefix}-{highest + 1}"
-
+            ledger.observe(path.stem)
+            try:
+                front, _ = parse_ticket_file(path)
+            except SymphonyError:
+                continue
+            ledger.observe(
+                front.get("id") or front.get("identifier"),
+                _parse_planning_ref(front.get("symphony_pm")),
+            )
+        if ledger.migrating:
+            # Old trackers left these locks after deletion, including tickets
+            # which never ran. Do not remove them when migrating a board.
+            for path in (self._root / ".locks").glob("*.lock"):
+                if path.stem != "allocator":
+                    ledger.observe(path.stem)
+        ledger.observe_history(self._history_path)
+        return ledger
 
     def create_validated(
         self,
@@ -1163,44 +1189,38 @@ class FileBoardTracker:
         sub-tickets in parallel) could each observe an acyclic board and
         jointly create a cycle — or race the id allocator.
 
-        `identifier=None` allocates `<prefix>-<n+1>` inside the same lock.
+        `identifier=None` allocates the next never-issued number under this lock.
         `validate` is called with the in-lock board snapshot and the resolved
         identifier; raising from it aborts before anything is written.
         """
         with _exclusive_lock(self._allocator_lock_path()):
-            last_error: Exception | None = None
-            attempts = 1 if identifier is not None else _GENERATED_ID_ATTEMPTS
-            for _ in range(attempts):
-                issues = self.scan_all()
-                resolved = (
-                    identifier
-                    if identifier is not None
-                    else self._next_identifier_unlocked(prefix)
+            ledger = self._identifier_ledger_unlocked()
+            resolved = validate_identifier(
+                identifier if identifier is not None else ledger.next_identifier(prefix)
+            )
+            if validate is not None:
+                validate(self.scan_all(), resolved)
+            with self._ticket_lock_under_allocator(resolved):
+                if self.find_path(resolved) is not None:
+                    raise SymphonyError("ticket already exists", identifier=resolved)
+                front = self._new_ticket_front(
+                    identifier=resolved,
+                    title=title,
+                    state=state,
+                    priority=priority,
+                    labels=labels,
+                    agent_kind=agent_kind,
+                    skills=skills,
+                    blocked_by=blocked_by,
+                    request=request,
+                    planning_ref=planning_ref,
+                    level=level,
                 )
-                if validate is not None:
-                    validate(issues, resolved)
-                try:
-                    path = self.create(
-                        identifier=resolved,
-                        title=title,
-                        state=state,
-                        priority=priority,
-                        labels=labels,
-                        description=description,
-                        agent_kind=agent_kind,
-                        skills=skills,
-                        blocked_by=blocked_by,
-                        request=request,
-                        planning_ref=planning_ref,
-                        level=level,
-                    )
-                except SymphonyError as exc:
-                    last_error = exc
-                    if identifier is not None:
-                        raise
-                    continue
+                ledger.reserve(resolved, planning_ref)
+                ledger.save()
+                path = self._root / f"{resolved}.md"
+                write_ticket_atomic(path, front, description)
                 return resolved, path
-        raise last_error or SymphonyError("could not allocate ticket id", prefix=prefix)
 
     def create_with_next_identifier(
         self,
@@ -1218,30 +1238,12 @@ class FileBoardTracker:
         planning_ref: PlanningRef | None = None,
         level: str | None = None,
     ) -> tuple[str, Path]:
-        with _exclusive_lock(self._allocator_lock_path()):
-            last_error: Exception | None = None
-            for _ in range(_GENERATED_ID_ATTEMPTS):
-                identifier = self._next_identifier_unlocked(prefix)
-                try:
-                    path = self.create(
-                        identifier=identifier,
-                        title=title,
-                        state=state,
-                        priority=priority,
-                        labels=labels,
-                        description=description,
-                        agent_kind=agent_kind,
-                        skills=skills,
-                        blocked_by=blocked_by,
-                        request=request,
-                        planning_ref=planning_ref,
-                        level=level,
-                    )
-                except SymphonyError as exc:
-                    last_error = exc
-                    continue
-                return identifier, path
-        raise last_error or SymphonyError("could not allocate ticket id", prefix=prefix)
+        return self.create_validated(
+            identifier=None, prefix=prefix, title=title, state=state,
+            priority=priority, labels=labels, description=description,
+            agent_kind=agent_kind, skills=skills, blocked_by=blocked_by,
+            request=request, planning_ref=planning_ref, level=level,
+        )
 
     def create(
         self,
@@ -1259,26 +1261,12 @@ class FileBoardTracker:
         planning_ref: PlanningRef | None = None,
         level: str | None = None,
     ) -> Path:
-        identifier = validate_identifier(identifier)
-        path = self._root / f"{identifier}.md"
-        with _exclusive_lock(self._ticket_lock_path(identifier)):
-            if self.find_path(identifier) is not None:
-                raise SymphonyError("ticket already exists", identifier=identifier)
-            front = self._new_ticket_front(
-                identifier=identifier,
-                title=title,
-                state=state,
-                priority=priority,
-                labels=labels,
-                agent_kind=agent_kind,
-                skills=skills,
-                blocked_by=blocked_by,
-                request=request,
-                planning_ref=planning_ref,
-                level=level,
-            )
-            write_ticket_atomic(path, front, description)
-            return path
+        return self.create_validated(
+            identifier=identifier, title=title, state=state,
+            priority=priority, labels=labels, description=description,
+            agent_kind=agent_kind, skills=skills, blocked_by=blocked_by,
+            request=request, planning_ref=planning_ref, level=level,
+        )[1]
 
     def _new_ticket_front(
         self,
@@ -1396,10 +1384,13 @@ class FileBoardTracker:
         return path
 
     def delete(self, identifier: str) -> Path:
-        with _exclusive_lock(self._ticket_lock_path(identifier)):
+        with _exclusive_lock(self._allocator_lock_path()), self._ticket_lock_under_allocator(identifier):
             path = self.find_path(identifier)
             if path is None:
                 raise SymphonyError("ticket not found", identifier=identifier)
+            ledger = self._identifier_ledger_unlocked()
+            ledger.observe(identifier)
+            ledger.save()
             path.unlink()
             return path
 

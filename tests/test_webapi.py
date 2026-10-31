@@ -889,6 +889,19 @@ async def test_delete_issue_and_running_guard(client: TestClient) -> None:
     assert (await client.get("/api/v1/issues/SEED-1")).status == 404
 
 
+async def test_deleted_issue_number_is_not_reissued_by_web_board(client: TestClient) -> None:
+    created = await client.post("/api/v1/issues", json={"title": "old task", "prefix": "DEMO"})
+    assert created.status == 201
+    assert (await created.json())["identifier"] == "DEMO-1"
+    assert (await client.delete("/api/v1/issues/DEMO-1", json={})).status == 200
+    new = await client.post("/api/v1/issues", json={"title": "unrelated task", "prefix": "DEMO"})
+    assert new.status == 201
+    assert (await new.json())["identifier"] == "DEMO-2"
+    reused = await client.post("/api/v1/issues", json={"title": "manual reuse", "identifier": "DEMO-1"})
+    assert reused.status == 400
+    assert "already issued" in await reused.text()
+
+
 # ---------------------------------------------------------------------------
 # workflow: states + prompts + branch policy
 # ---------------------------------------------------------------------------
