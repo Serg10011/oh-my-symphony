@@ -1792,7 +1792,7 @@ def test_deliver_runs_the_step_with_exact_arguments(env: Env) -> None:
     assert env.pass_() is False
     (call,) = env.fake.calls
     assert call["argv"] == deliver_argv(env)
-    assert call["cwd"] == env.main and call["timeout"] == ir.DELIVER_TIMEOUT_S == 900
+    assert call["cwd"] == env.main and call["timeout"] == ir.DELIVER_TIMEOUT_S == 9000
     assert call["env"] == ir.gh_env(str(env.gh))
     assert not any(key.startswith("SYMPHONY_") for key in call["env"])
     log = env.log("OMS-12.deliver.log")

@@ -232,7 +232,7 @@ def refuses(env: Env, capsys: pytest.CaptureFixture[str], *needles: str, card_id
     before, remote = env.snapshot(), env.heads()
     assert env.push(card_id) == deliver.EXIT_REFUSED
     out = capsys.readouterr().out
-    assert out.startswith("Отказ: ") and "Ничего не изменено." in out, out
+    assert out.startswith("Отказ: ") and "Ничего не отправлено." in out, out
     for needle in needles:
         assert needle in out, out
     assert env.pushes() == [] and env.creates() == [] and env.heads() == remote
@@ -362,11 +362,11 @@ def test_a_task_card_refuses_a_final_record_of_another_branch(env: Env, capsys: 
     refuses(env, capsys, "не относится к ветке", card_id=TASK)
 
 
-def test_the_base_that_moved_since_the_final_check_refuses_a_task(env: Env, capsys: pytest.CaptureFixture[str]) -> None:
+def test_rechecking_a_task_on_a_moved_base_needs_configured_scripts(env: Env, capsys: pytest.CaptureFixture[str]) -> None:
     env.task()
-    moved = put_file(env.code, "main", "base.txt", "base\n")
+    put_file(env.code, "main", "base.txt", "base\n")
     git(env.code, "push", "-q", str(env.github), "main")  # the clone and GitHub agree: only the final record is old
-    refuses(env, capsys, "ушёл вперёд после зелёной проверки", moved[:12], card_id=TASK)
+    refuses(env, capsys, "повторной проверки", "setup.sh", card_id=TASK)
 
 
 # ---------------------------------------------------------------------------
@@ -391,9 +391,9 @@ def test_refuses_a_branch_that_changed_after_the_check(env: Env, capsys: pytest.
     refuses(env, capsys, "дерево ветки не то, что прошло проверку")
 
 
-def test_refuses_the_light_path(env: Env, capsys: pytest.CaptureFixture[str]) -> None:
+def test_rechecking_the_light_path_needs_configured_scripts(env: Env, capsys: pytest.CaptureFixture[str]) -> None:
     env.ordinary(tests="skipped-docs")
-    refuses(env, capsys, "проверка шла лёгким путём", "полный прогон перед доставкой — S4-28")
+    refuses(env, capsys, "повторной проверки", "setup.sh")
 
 
 def test_refuses_a_pass_without_the_tests_field(env: Env, capsys: pytest.CaptureFixture[str]) -> None:
@@ -432,11 +432,11 @@ def test_other_events_and_other_cards_do_not_decide(env: Env) -> None:
     assert env.push() == deliver.EXIT_OK
 
 
-def test_refuses_when_the_base_moved_past_an_ordinary_card(env: Env, capsys: pytest.CaptureFixture[str]) -> None:
+def test_rechecking_an_ordinary_card_on_a_moved_base_needs_configured_scripts(env: Env, capsys: pytest.CaptureFixture[str]) -> None:
     env.ordinary()
-    moved = put_file(env.code, "main", "base.txt", "base\n")
+    put_file(env.code, "main", "base.txt", "base\n")
     git(env.code, "push", "-q", str(env.github), "main")
-    refuses(env, capsys, "ушёл вперёд после зелёной проверки", moved[:12], "повторная проверка будет в S4-28")
+    refuses(env, capsys, "повторной проверки", "setup.sh")
 
 
 def test_a_base_that_is_an_ancestor_of_the_card_is_fine(env: Env) -> None:
@@ -578,7 +578,7 @@ def test_refusals_and_errors_are_logged_as_events(env: Env, capsys: pytest.Captu
     env.ordinary(tests="skipped-docs")
     assert env.push() == deliver.EXIT_REFUSED
     (event,) = env.events()
-    assert event["outcome"] == "refused" and "лёгким путём" in event["reason"]
+    assert event["outcome"] == "refused" and "setup.sh" in event["reason"]
     env.event(CARD, f"symphony/{CARD}")  # a green full check comes later
     env.behave(list_fail=True)
     assert env.push() == deliver.EXIT_ERROR

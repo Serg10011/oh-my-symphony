@@ -1002,9 +1002,27 @@ def _merged_skip(ctx: Context, merged: dict) -> tuple[str | None, str]:
         current = worktree_tree(ctx.workspace)
     except CheckError as exc:
         return None, f"cannot compute the content tree: {exc}"
+    commit = merged.get("commit")
+    # A delivery may merge a newer base while leaving the card's branch untouched.
+    # Its original tree is eligible only with a verifiable link to the merged D.
+    if merged.get("source") == f"{DELIVER_PREFIX}{ctx.issue_id}" and "source_tree" in merged:
+        source_tree, source_commit = merged.get("source_tree"), merged.get("source_commit")
+        if not all(pc.is_sha(sha) for sha in (source_tree, source_commit, commit)):
+            return None, "delivery record has invalid object IDs"
+        try:
+            actual_source = git(ctx.workspace, "rev-parse", f"{source_commit}^{{tree}}").decode().strip()
+            actual_target = git(ctx.workspace, "rev-parse", f"{commit}^{{tree}}").decode().strip()
+            git(ctx.workspace, "merge-base", "--is-ancestor", source_commit, commit)
+        except CheckError as exc:
+            return None, f"cannot verify delivery provenance: {exc}"
+        if actual_source != source_tree or actual_target != tree:
+            return None, "delivery tree provenance differs"
+        if current not in (source_tree, tree):
+            return None, "tree differs from the delivered source and result"
+        return (f"tests skipped: source tree {source_tree[:12]} was fully checked in delivery "
+                f"{commit[:12]} (tree {tree[:12]}) and merged into {_clean(str(merged.get('branch', '?')))}", "")
     if current != tree:
         return None, "tree differs from the merged one"
-    commit = merged.get("commit")
     where = str(commit)[:12] if commit else "no changes"
     return (
         f"tests skipped: tree {tree[:12]} passed check.py hook and was merged into "

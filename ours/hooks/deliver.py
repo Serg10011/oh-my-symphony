@@ -1,23 +1,23 @@
-"""Delivery of the result of a card to GitHub (TASK-S4-27, part A). Logic of ours/bin/deliver.
+"""Delivery of checked card results to GitHub (S4-27/S4-28). Logic of ours/bin/deliver.
 
     deliver push <ID> [--root DIR] [--main DIR] [--gh PATH]
     deliver merged <ID> [--root DIR] [--main DIR]
 
-`push` checks that the card is in Human Review with a green full check of the very
-commit that is going to be delivered, that the base branch did not move since, that the
-clone is not behind GitHub, that no Anthropic API key is in the added lines of the diff
+`push` requires Human Review and a matching green hook. It checks the original
+commit directly or fully rechecks a candidate built against the current base.
+The clone must not be behind GitHub, and no Anthropic API key may be in the diff
 or in the title and the description of the PR (E1b); then pushes that commit (and nothing else) to the new branch
 `deliver/<ID>` of the repository named in `[delivery]` of project.toml, and opens a PR
 into the base branch. Local branches and the working copy of the card are never touched.
 `merged` runs after the PR was merged: it writes the one-shot "merged" record (S4-13) that
 lets the done gate skip the tests again.
 
-Exit codes: 0 done, 1 refusal (nothing changed), 2 error (see the output). Output is in
+Exit codes: 0 done, 1 refusal (nothing published), 2 error (see the output). Output is in
 Russian. Everything external (gh, the address of the remote repository, git) goes through
 `Ops`, so tests substitute it. Standard library only, Python >= 3.11, POSIX.
 
-Not in this part (S4-28): a base branch that moved since the green check, and a green
-check that went the light way (doc paths) - both are refusals here.
+When the base moved or only doc paths were checked, setup.sh and the full test.sh
+run in a disposable detached worktree. Conflicts and failed checks need a human.
 """
 
 from __future__ import annotations
@@ -42,6 +42,7 @@ import check  # noqa: E402
 import integrate  # noqa: E402
 import post_merge  # noqa: E402
 import project_config as pc  # noqa: E402
+import project_trial  # noqa: E402
 
 EXIT_OK, EXIT_REFUSED, EXIT_ERROR = 0, 1, 2
 
@@ -71,11 +72,18 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}([0-9a-f]{24})?$")
 
 
 class Refused(Exception):
-    """Nothing was changed; the message is the reason (in Russian)."""
+    """Nothing was published by this attempt; the message is the reason."""
 
 
 class Failed(Exception):
     """Something went wrong, possibly after a change; the message says what."""
+
+
+class RecheckStopped(Exception):
+    def __init__(self, reason: str, tail: str = "", files: tuple[str, ...] = ()) -> None:
+        super().__init__(reason)
+        self.tail = tail
+        self.files = files
 
 
 # ---------------------------------------------------------------------------
@@ -221,8 +229,11 @@ def pr_body(card_id: str, kind: str, card_body: str, rec: dict) -> str:
         f"- коммит доставки: {rec['commit']}\n"
         f"- источник: {rec['source']} ({rec['source_commit']})\n"
         f"- {rec['base']} при доставке: {rec['our_main']}\n"
-        "- полный прогон тестов прошёл на этом же дереве до доставки; "
-        f"{rec['base']} с тех пор не сдвигался, повторной проверки не было"
+        + (f"- повторная проверка: полный прогон setup.sh + test.sh; "
+           f"{pc.triple(rec['measure'])}; точка сравнения — {rec['our_main']}"
+           if rec.get("recheck") else
+           "- полный прогон тестов прошёл на этом же дереве до доставки; "
+           f"{rec['base']} с тех пор не сдвигался, повторной проверки не было")
     )
     text = "\n\n".join(parts) + "\n"
     if len(text) > BODY_LIMIT:
@@ -254,7 +265,7 @@ def is_decisive(event: dict) -> bool:
         mode == "gate" and outcome == "fail")
 
 
-def green_check_problem(events: list[dict], source_tree: str) -> str | None:
+def green_check_problem(events: list[dict], source_tree: str, *, allow_docs: bool = False) -> str | None:
     """Why there is no green check of `source_tree` (in Russian), or None when there is one."""
     decisive = [e for e in events if is_decisive(e)]
     if not decisive:
@@ -269,7 +280,7 @@ def green_check_problem(events: list[dict], source_tree: str) -> str | None:
     if tree != source_tree:
         return (f"дерево ветки не то, что прошло проверку ({source_tree[:12]} вместо {tree[:12]}): "
                 "в ветке есть правки после проверки")
-    if last.get("tests") != "full":
+    if last.get("tests") != "full" and not (allow_docs and last.get("tests") == "skipped-docs"):
         return ("проверка шла лёгким путём (tests: " f"{last.get('tests') or 'нет'}): "
                 "полный прогон перед доставкой — S4-28")
     return None
@@ -290,6 +301,7 @@ class Delivery:
         self.say = say
         self.board: Path | None = None
         self.ctx: check.Context | None = None
+        self.card_snapshot: bytes | None = None
         self.env = net_env(gh)
 
     # --- running things ------------------------------------------------------
@@ -323,10 +335,12 @@ class Delivery:
     def push(self) -> int:
         try:
             return self._push()
+        except RecheckStopped as exc:
+            return self.needs_human(exc)
         except Refused as exc:
             self.log("refused", str(exc))
             self.say(f"Отказ: {exc}")
-            self.say("Ничего не изменено.")
+            self.say("Ничего не отправлено.")
             return EXIT_REFUSED
         except Failed as exc:
             return self.fail(str(exc))
@@ -337,6 +351,34 @@ class Delivery:
         self.log("error", reason)
         self.say(f"Ошибка: {reason}")
         return EXIT_ERROR
+
+    def needs_human(self, error: RecheckStopped) -> int:
+        assert self.ctx is not None
+        def clean(text: str) -> str:
+            return pc.API_KEY_RE.sub("<API key hidden>", text)
+        reason, tail = clean(str(error)), clean(error.tail)
+        try:
+            cfg = check.load_config(self.ctx.workflow_dir)
+            project = pc.load_project(self.ctx.workflow_dir)
+            if self.ctx.card.read_bytes() != self.card_snapshot:
+                self.log("refused", reason + "; карточка изменилась, её новое состояние сохранено")
+                self.say(f"Доставка остановлена: {reason}. Карточка изменилась во время проверки; ничего не отправлено.")
+                return EXIT_REFUSED
+        except (check.CheckError, pc.ProjectError, OSError) as exc:
+            return self.fail(f"{reason}; не удалось подготовить перевод в needs_human: {clean(str(exc))}")
+        with env_var("SYMPHONY_PYTHON", self.ops.tracker_python(project)):
+            failure = integrate._board_mv(self.ctx, cfg, integrate.STATE_ESCALATE)
+            lines = ["Повторная проверка доставки остановлена; ничего не отправлено.", "", reason]
+            if error.files:
+                lines += ["", "Файлы с конфликтом:", *[f"- {check._clean(clean(p))}" for p in error.files[:20]]]
+            if tail:
+                lines += ["", "Хвост журнала:", "", tail]
+            if failure:
+                lines += ["", f"Не удалось перевести карточку в needs_human: {clean(failure)}"]
+            integrate._note(self.ctx, lines, NOTE_HEADING)
+        self.log("needs_human", reason, files=clean(", ".join(error.files)), moved="failed" if failure else "needs_human")
+        self.say(f"Доставка остановлена: {reason}. Карточка → needs_human" + (f" не удалась: {clean(failure)}" if failure else "."))
+        return EXIT_ERROR if failure else EXIT_REFUSED
 
     def _push(self) -> int:
         project, board = self.load_board()
@@ -392,14 +434,18 @@ class Delivery:
         if not card.is_file():
             raise Refused(f"нет карточки {pc.BOARD_DIR}/{card.name}")
         try:
+            snapshot = card.read_bytes()
             front = integrate.read_card_front(card, with_title=True)
-            body = check.split_card(card.read_text(encoding="utf-8"))[1]
+            body = check.split_card(snapshot.decode("utf-8"))[1]
+            if card.read_bytes() != snapshot:
+                raise Refused("карточка изменилась во время чтения")
         except (integrate.IntegrateError, OSError, UnicodeDecodeError) as exc:
             raise Refused(f"карточка не читается: {exc}") from None
         if front["state"].lower() != STATE_REVIEW.lower():
             raise Refused(f"карточка в статусе {front['state']!r}, а нужен {STATE_REVIEW!r}")
         if integrate.is_subtask(front, project["integration"]):
             raise Refused(f"{self.id} — подзадача: подзадача доставляется в составе задачи")
+        self.card_snapshot = snapshot
         return front, body
 
     def read_record(self, board: Path) -> dict | None:
@@ -451,10 +497,14 @@ class Delivery:
         if tree is None:
             raise Failed(f"не прочитать дерево коммита {commit[:12]}")
         final = self.final_record(board, source, commit) if kind == "task" else None
-        problem = green_check_problem(
-            parse_check_log(board / pc.STATE_DIR / check.LOG_NAME, self.id), tree)
+        events = parse_check_log(board / pc.STATE_DIR / check.LOG_NAME, self.id)
+        decisive = [event for event in events if is_decisive(event)]
+        problem = green_check_problem(events, tree, allow_docs=True)
         if problem:
             raise Refused(problem)
+        proof = decisive[-1]
+        config_snapshot = (board / pc.PROJECT_FILE).read_bytes()
+        card_snapshot = self.card_snapshot
 
         url = self.ops.remote_url(repo)
         local_base = self.rev(clone, f"refs/heads/{base}^{{commit}}")
@@ -474,35 +524,160 @@ class Delivery:
                 raise Failed(f"git merge-base не прошёл: {ancestor.err.strip()[:300]}")
             moved = ancestor.rc == 1
             then = self.merge_base(clone, local_base, commit) or "?"
-        if moved:
-            raise Refused(f"{base} ушёл вперёд после зелёной проверки ({then[:12]} → {local_base[:12]}): "
-                          "повторная проверка будет в S4-28, пока доставка вручную")
-
         branch = deliver_branch(self.id, base)
         remote_branch = self.remote_ref(clone, url, f"refs/heads/{branch}")
         if continuing:
             self.check_continuation(record, repo, base, branch, commit, remote_branch)
+            if (record.get("source"), record.get("source_tree"), record.get("kind")) != (source, tree, kind):
+                raise Refused("запись доставки не совпадает с исходной веткой, деревом или видом карточки")
+            if record.get("our_main") != local_base:
+                raise Refused("база сдвинулась после пуша: уже опубликованную доставку нужно проверить заново вручную")
+            target = record["commit"]
+            if self.rev(clone, f"{target}^{{commit}}") != target:
+                raise Refused("коммит опубликованной доставки отсутствует в клоне")
+            if any(self.git(clone, "merge-base", "--is-ancestor", parent, target).rc != 0
+                   for parent in (commit, local_base)):
+                raise Refused("опубликованная доставка не содержит источник и принятую базу")
+            if not record.get("recheck") and target != commit:
+                raise Refused("изменённый коммит доставки не имеет повторной проверки")
+            if proof.get("tests") != "full" and not record.get("recheck"):
+                raise Refused("у опубликованной доставки нет полной повторной проверки")
+            if record.get("recheck"):
+                measure = record.get("measure")
+                if (not isinstance(measure, dict) or not pc._check_baseline_record(measure)
+                        or measure["base_sha"] != target or measure.get("comparison_base") != local_base
+                        or measure["failed"] != 0):
+                    raise Refused("повреждён результат повторной проверки опубликованной доставки")
         elif remote_branch is not None:
             raise Refused(f"ветка {branch} уже есть на GitHub ({remote_branch[:12]}): "
                           "удали её на GitHub или реши сам")
-
+        else:
+            target = commit
         title = one_line(f"{self.id}: {front.get('title') or ''}", TITLE_LIMIT)
         rec = record if continuing else {
             "id": self.id, "kind": kind, "source": source, "source_commit": commit,
             "source_tree": tree, "commit": commit, "our_main": local_base, "recheck": False,
             "repo": repo, "base": base, "branch": branch, "pr": None, "at": check._now(),
         }
+        if not continuing and (moved or proof.get("tests") == "skipped-docs"):
+            self.check_recheck_scripts(board)
+            if moved:
+                self.say(f"{base} сдвинулась ({then[:12]} → {local_base[:12]}): собираю коммит доставки.")
+                target = self.merge_candidate(clone, commit, local_base, base)
+            rec.update(commit=target, recheck=True)
+            self.refuse_on_key(clone, local_base, target, title, "")
+            rec["measure"] = self.recheck(project, board, clone, target, local_base)
         description = pr_body(self.id, kind, body, rec)
-        self.refuse_on_key(clone, local_base, commit, title, description)
+        self.refuse_on_key(clone, local_base, target, title, description)
+        self.guard_before_publish(board, clone, source, commit, base, local_base, url,
+                                  config_snapshot, card_snapshot, proof, final)
         if not continuing:
-            self.git_push(clone, url, commit, branch)
+            self.git_push(clone, url, target, branch)
             self.write_record(board, rec)
-            self.say(f"Ветка {branch} отправлена на GitHub ({commit[:12]}).")
+            self.say(f"Ветка {branch} отправлена на GitHub ({target[:12]}).")
         else:
-            self.say(f"Ветка {branch} уже на GitHub ({commit[:12]}): пуш пропущен, продолжаю с PR.")
+            self.say(f"Ветка {branch} уже на GitHub ({target[:12]}): пуш пропущен, продолжаю с PR.")
         self.open_pr(board, rec, title, description)
         self.finish(project, board, rec, url)
         return EXIT_OK
+
+    def check_recheck_scripts(self, board: Path) -> None:
+        for name in ("setup.sh", "test.sh"):
+            path = board / name
+            if not path.is_file() or pc.STUB_MARKER in path.read_text():
+                raise Refused(f"для повторной проверки нужен настроенный {name} в папке доски")
+
+    def merge_candidate(self, clone: Path, source: str, base: str, base_name: str) -> str:
+        # Object IDs are pinned; commit-tree never changes any existing reference.
+        try:
+            tree = integrate._merge_trees(clone, source, base)
+        except integrate.Conflict as exc:
+            raise RecheckStopped(f"слияние с {base_name} даёт конфликт", files=exc.files) from None
+        done = self.git(clone, "-c", f"user.name={integrate.IDENTITY['NAME']}",
+                        "-c", f"user.email={integrate.IDENTITY['EMAIL']}", "commit-tree", tree, "-p", source, "-p", base,
+                        "-m", f"{self.id}: merge {base_name} for delivery")
+        if done.rc != 0 or not SHA_RE.fullmatch(done.out.strip()):
+            raise Failed(f"git commit-tree не прошёл: {done.err.strip()[:300]}")
+        return done.out.strip()
+
+    def quick_checks(self, workspace: Path, base: str, cfg: check.Config) -> None:
+        assert self.ctx is not None
+        changed = check.changed_paths(workspace, base, pc.BOARD_DIR)
+        reasons = (check.forbidden_violations(changed, cfg) + check.key_violations(workspace, base, pc.BOARD_DIR)
+                   + check.test_violations(workspace, base, cfg) + check.card_violations(self.ctx.card, cfg))
+        if reasons:
+            raise RecheckStopped("; ".join(reasons))
+
+    def recheck(self, project: dict, board: Path, clone: Path, target: str, base: str) -> dict:
+        try:
+            cfg = check.load_config(board)
+            baselines = check.load_baselines(board, cfg)
+        except (check.CheckError, pc.ProjectError) as exc:
+            raise Refused(f"повторная проверка не настроена: {exc}") from None
+        folder = Path(tempfile.mkdtemp(prefix="ours-deliver-")).resolve()
+        workspace = folder / "worktree"
+        added = False
+        try:
+            if folder.is_relative_to(board.resolve()) or folder.is_relative_to(clone.resolve()):
+                raise Refused("временная папка доставки должна быть вне доски и репозитория; проверь TMPDIR")
+            done = self.git(clone, "worktree", "add", "--detach", str(workspace), target)
+            if done.rc != 0:
+                raise Failed(f"не создать временную копию доставки: {done.err.strip()[:300]}")
+            added = True
+            effective = check.effective_baseline(workspace, baselines, cfg.base_branch,
+                                                 pc.paths_rule(cfg.baseline_paths))
+            if effective.point and effective.point != base:
+                raise Refused("база сдвинулась во время подготовки проверки")
+            self.quick_checks(workspace, base, cfg)
+            expected_tree = self.rev(clone, f"{target}^{{tree}}")
+            env = project_trial.script_env(project["tools"]["python"], board)
+            times = {}
+            for name in ("setup.sh", "test.sh"):
+                self.say(f"  повторная проверка: {name} (предел {project_trial.SCRIPT_LIMIT_S} с)")
+                code, elapsed, tail, summary = project_trial.run_script(
+                    board / name, workspace, env, project_trial.SCRIPT_LIMIT_S)
+                times[name] = round(elapsed, 1)
+                if code is None or code != 0:
+                    detail = "таймаут" if code is None else f"код {code}"
+                    raise RecheckStopped(f"{name}: {detail}", tail)
+                self.quick_checks(workspace, base, cfg)
+                if self.rev(workspace, "HEAD^{commit}") != target or check.worktree_tree(workspace) != expected_tree:
+                    raise RecheckStopped(f"{name} изменил проверяемое дерево; результат не будет отправлен", tail)
+            reasons = check.summary_violations(summary, effective.record, effective)
+            if reasons:
+                raise RecheckStopped("; ".join(reasons), tail)
+            measure = {"base_branch": cfg.base_branch, "base_sha": target, **summary,
+                       "setup_s": times["setup.sh"], "tests_s": times["test.sh"], "measured_at": check._now(),
+                       "delivery": self.id, "comparison_base": base, "comparison_match": effective.match,
+                       "comparison_sha": effective.record["base_sha"] if effective.record else None}
+        finally:
+            if added:
+                removed = self.git(clone, "worktree", "remove", "--force", str(workspace))
+                if removed.rc != 0:
+                    shutil.rmtree(folder, ignore_errors=True)
+                    self.git(clone, "worktree", "prune")
+                    raise Failed(f"git не смог убрать временную копию: {removed.err.strip()[:300]}")
+            shutil.rmtree(folder)
+        project_trial.record_measure(board, measure)
+        self.log("rechecked", pc.triple(summary), commit=target, base_tip=base, tests="full")
+        return measure
+
+    def guard_before_publish(self, board: Path, clone: Path, source: str, source_commit: str,
+                             base: str, base_tip: str, url: str, config: bytes, card: bytes,
+                             proof: dict, final: dict | None) -> None:
+        if self.rev(clone, f"refs/heads/{source}^{{commit}}") != source_commit:
+            raise Refused("ветка карточки сдвинулась во время доставки")
+        if self.rev(clone, f"refs/heads/{base}^{{commit}}") != base_tip:
+            raise Refused("база в клоне сдвинулась во время доставки")
+        if (board / pc.PROJECT_FILE).read_bytes() != config or self.ctx.card.read_bytes() != card:
+            raise Refused("настройки или карточка изменились во время доставки")
+        decisive = [e for e in parse_check_log(board / pc.STATE_DIR / check.LOG_NAME, self.id) if is_decisive(e)]
+        if not decisive or decisive[-1] != proof:
+            raise Refused("запись зелёной проверки изменилась во время доставки")
+        if final is not None and self.final_record(board, source, source_commit) != final:
+            raise Refused("итоговая проверка задачи изменилась во время доставки")
+        if self.remote_ref(clone, url, f"refs/heads/{base}") != base_tip:
+            raise Refused("база на GitHub сдвинулась во время доставки; повтори после post-merge")
 
     def refuse_on_key(self, clone: Path, base: str, commit: str, title: str, description: str) -> None:
         """Nothing is pushed or opened when an API key is in the diff or in the text of the PR."""
@@ -531,8 +706,10 @@ class Delivery:
         if remote_branch != record.get("commit"):
             raise Refused(f"ветка {branch} на GitHub указывает на {remote_branch[:12]}, "
                           f"а в записи доставки {str(record.get('commit'))[:12]}")
-        if commit != record.get("commit"):
+        if commit != record.get("source_commit"):
             raise Refused("ветка карточки сдвинулась после пуша: удали запись доставки и доставь заново")
+        if not SHA_RE.fullmatch(str(record.get("commit", ""))):
+            raise Refused("в записи доставки повреждён коммит")
 
     def git_push(self, clone: Path, url: str, commit: str, branch: str) -> None:
         refspec = f"{commit}:refs/heads/{branch}"
@@ -614,7 +791,7 @@ class Delivery:
             f"- коммит доставки: {rec['commit']}",
             f"- источник: {rec['source']} ({rec['source_commit']})",
             f"- {rec['base']} при доставке: {rec['our_main']}",
-            "- повторной проверки не было",
+            f"- повторная проверка: {pc.triple(rec['measure'])}" if rec.get("recheck") else "- повторной проверки не было",
         ])
         try:
             with env_var("SYMPHONY_PYTHON", self.ops.tracker_python(project)):
@@ -678,7 +855,15 @@ class Delivery:
             if tree is None:
                 raise Failed(f"в клоне {clone} нет коммита доставки {commit}: "
                              "запусти ours/bin/post-merge и повтори deliver merged")
-            written = integrate._write_merged(self.ctx, None, rec["base"], f"{DELIVER_PREFIX}{self.id}", tree, commit)
+            source_commit = rec.get("source_commit")
+            source_tree = self.rev(clone, f"{source_commit}^{{tree}}") if pc.is_sha(source_commit) else None
+            if source_tree is None or source_tree != rec.get("source_tree"):
+                raise Refused("в записи доставки повреждено исходное дерево")
+            ancestor = self.git(clone, "merge-base", "--is-ancestor", source_commit, commit)
+            if ancestor.rc != 0:
+                raise Refused("коммит доставки не содержит исходный коммит карточки")
+            written = integrate._write_merged(self.ctx, None, rec["base"], f"{DELIVER_PREFIX}{self.id}", tree, commit,
+                                              source_commit=source_commit, source_tree=source_tree)
             if written != "written":
                 raise Failed("запись «влито» не записана")
             rec["merged_at"] = check._now()
