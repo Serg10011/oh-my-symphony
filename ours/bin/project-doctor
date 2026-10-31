@@ -43,11 +43,9 @@ import os
 import plistlib
 import re
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
-import time
 import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,17 +53,12 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 
 import project_config as pc  # noqa: E402
+import project_trial  # noqa: E402
+from project_trial import SCRIPT_LIMIT_S, TAIL_BYTES, run_script, script_env  # noqa: E402
 
-SCRIPT_LIMIT_S = 3600
 TOOL_TIMEOUT_S = 60
 GIT_TIMEOUT_S = 120
-TAIL_BYTES = 3000
 HELPER_TIMEOUT_S = 10
-POLL_S = 0.2
-# What a service started by launchd sees (TASK-K11); the rest of the
-# terminal environment is dropped on purpose.
-RESTRICTED_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
-PASSED_ENV = ("HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "TMPDIR")
 PATH_HINT = ("скрипты должны сами задавать инструменты полными путями (node, npm, python …), "
              "а не полагаться на PATH терминала")
 # WARN lines of `symphony doctor` that every board of ours shows (REPORT-11).
@@ -300,44 +293,6 @@ def check_scripts(report: Report, board: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def script_env(python: str, board: Path) -> dict[str, str]:
-    """Environment of setup.sh / test.sh in the trial: short PATH, no terminal leftovers."""
-    env = {"PATH": RESTRICTED_PATH}
-    env.update({key: os.environ[key] for key in PASSED_ENV if key in os.environ})
-    env.update(SYMPHONY_PYTHON=python, SYMPHONY_WORKFLOW_DIR=str(board))
-    return env
-
-
-def run_script(script: Path, cwd: Path, env: dict[str, str], limit_s: float):
-    """(exit code or None on timeout, seconds, tail, summary) of one script."""
-    with tempfile.TemporaryFile() as out:
-        started = time.monotonic()
-        proc = subprocess.Popen(["/bin/bash", str(script)], cwd=str(cwd), env=env,
-                                stdin=subprocess.DEVNULL, stdout=out,
-                                stderr=subprocess.STDOUT, start_new_session=True)
-        try:
-            while proc.poll() is None and time.monotonic() - started < limit_s:
-                time.sleep(POLL_S)
-        finally:
-            # Decide before the kill: afterwards the leader is dead and a
-            # timeout would look like "exit code -9".
-            timed_out = proc.poll() is None
-            # Same as check.py: the whole group dies, on timeout and after a
-            # finished run (stragglers).
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                pass
-            proc.wait()
-        elapsed = time.monotonic() - started
-        size = out.seek(0, os.SEEK_END)
-        out.seek(max(0, size - TAIL_BYTES))
-        tail = out.read().decode("utf-8", errors="replace")
-        out.seek(0)
-        summary = pc.find_summary(out)
-    return (None if timed_out else proc.returncode), elapsed, tail, summary
-
-
 def trial(report: Report, board: Path, project: dict) -> dict | None:
     """Measure setup.sh and test.sh on refs/heads/<base>; baseline or None."""
     repo, base = Path(project["project"]["repo"]), project["project"]["base_branch"]
@@ -401,6 +356,11 @@ def write_atomic(path: Path, text: str) -> None:
 
 
 def update_history(report: Report, board: Path, baseline: dict) -> None:
+    with project_trial.history_lock(board):
+        _update_history(report, board, baseline)
+
+
+def _update_history(report: Report, board: Path, baseline: dict) -> None:
     """Add the measure to baselines.json; the first record may come from the
     baseline.json of the time before the history."""
     try:

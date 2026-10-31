@@ -490,10 +490,13 @@ def _head(task: str, branch: str, source: str) -> list[str]:
 
 
 def _write_merged(ctx: check.Context, task: str, branch: str, source: str, tree: str,
-                  commit: str | None) -> str:
+                  commit: str | None, *, source_commit: str | None = None,
+                  source_tree: str | None = None) -> str:
     """The one-shot record check.py gate reads; "written" or "failed"."""
     payload = {"tree": tree, "commit": commit, "task": task, "branch": branch,
                "source": source, "at": check._now()}
+    if source_commit is not None or source_tree is not None:
+        payload.update(source_commit=source_commit, source_tree=source_tree)
     try:
         check.ensure_state_dir(ctx.state_dir)
         check._write_atomic(

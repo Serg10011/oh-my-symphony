@@ -65,7 +65,7 @@ SETTLE_S = 2.0
 DEFAULT_INTERVAL_S = 3.0
 GIT_TIMEOUT_S = 120
 POST_MERGE_TIMEOUT_S = 1800
-DELIVER_TIMEOUT_S = 900  # S4-28 will run the full tests in a temporary copy: it grows then
+DELIVER_TIMEOUT_S = 9000  # Two 3600s scripts, then network operations and cleanup (S4-28).
 OSASCRIPT_TIMEOUT_S = 60
 TIMEOUTS = {"ruff": 300, "ours-tests": 1200, "full-tests": 3600, "env": 900}
 

@@ -909,12 +909,22 @@ def read_baselines(board: Path) -> list[dict] | None:
 
 def add_baseline(records: list[dict], new: dict) -> list[dict]:
     """`records` plus `new` at the end: one record per commit of a branch (a
-    repeated measure replaces the old one), the last BASELINES_KEEP kept."""
+    repeated measure replaces the old one). Keep BASELINES_KEEP base measures
+    and BASELINES_KEEP delivery candidates independently (S4-28)."""
     kept = [
         r for r in records
         if (r["base_branch"], r["base_sha"]) != (new["base_branch"], new["base_sha"])
     ]
-    return [*kept, new][-BASELINES_KEEP:]
+    ordered = [*kept, new]
+
+    def candidate(record: dict) -> bool:
+        return bool(record.get("delivery")) and record.get("comparison_base") != record["base_sha"]
+
+    # Rechecks of unmerged work must not evict the base measurements cards use.
+    bases = [record for record in ordered if not candidate(record)][-BASELINES_KEEP:]
+    deliveries = [record for record in ordered if candidate(record)][-BASELINES_KEEP:]
+    retained = {id(record) for record in [*bases, *deliveries]}
+    return [record for record in ordered if id(record) in retained]
 
 
 def is_real_baseline(data: dict) -> bool:
