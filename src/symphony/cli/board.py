@@ -200,7 +200,7 @@ def cmd_new(args: argparse.Namespace) -> int:
     fbt = FileBoardTracker(tracker)
     requested_state = args.state or (tracker.active_states[0] if args.root is None else "Todo")
     try:
-        identifier = validate_identifier(args.id)
+        identifier = validate_identifier(args.id) if args.id is not None else None
     except SymphonyError as exc:
         print(f"error: {_operator_message(exc)}", file=sys.stderr)
         return 1
@@ -236,6 +236,7 @@ def cmd_new(args: argparse.Namespace) -> int:
         # calls must not each see an acyclic board and jointly create a cycle.
         _, path = fbt.create_validated(
             identifier=identifier,
+            prefix=args.prefix,
             validate=_validate,
             title=args.title,
             state=state,
@@ -449,8 +450,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_new = sub.add_parser("new", help="create a ticket")
     add_workflow_args(p_new)
-    p_new.add_argument("id", help="ticket identifier (e.g. DEV-001)")
+    p_new.add_argument("id", nargs="?", help="explicit unused identifier; omit for automatic allocation")
     p_new.add_argument("title", help="ticket title")
+    p_new.add_argument("--prefix", default="TASK", help="prefix for automatic IDs (default: TASK)")
     p_new.add_argument("--state", default=None)
     p_new.add_argument("--priority", type=int, default=None)
     p_new.add_argument("--labels", default=None, help="comma-separated labels")

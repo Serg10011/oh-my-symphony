@@ -9,6 +9,8 @@ import pytest
 from symphony.cli import board as board_cli
 from symphony.workflow import SUPPORTED_AGENT_KINDS
 from symphony.trackers.file import parse_ticket_file
+from symphony.trackers.file import FileBoardTracker
+from symphony.cli.board import _tracker_from_root
 
 
 @pytest.mark.parametrize("root_override", [False, True])
@@ -94,3 +96,15 @@ def test_board_new_root_overrides_existing_workflow(
     assert ticket.exists()
     assert f"kind: {agent_kind}" in ticket.read_text(encoding="utf-8")
     assert not (workflow_board / "CLI-ROOT.md").exists()
+
+
+def test_board_new_automatic_id_survives_deletion_and_rejects_manual_reuse(tmp_path, capsys):
+    root = tmp_path / "board"
+    options = ["--root", str(root), "--workflow", str(tmp_path / "missing.md")]
+    assert board_cli.main(["new", *options, "--prefix", "OMS", "First task"]) == 0
+    FileBoardTracker(_tracker_from_root(root)).delete("OMS-1")
+    assert board_cli.main(["new", *options, "--prefix", "OMS", "Second task"]) == 0
+    assert (root / "OMS-2.md").exists()
+    assert board_cli.main(["new", *options, "OMS-1", "Different task"]) == 1
+    assert "already issued" in capsys.readouterr().err
+    assert not (root / "OMS-1.md").exists()

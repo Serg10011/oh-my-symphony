@@ -260,6 +260,7 @@ def build_service_config(
         archive_after_days=archive_after_days,
         email=tracker_email,
         network_timeout_seconds=network_timeout_seconds,
+        run_history_path=base_dir / ".symphony" / "state.db",
     )
 
     polling_raw = cfg.get("polling") or {}

@@ -85,6 +85,8 @@ class TrackerConfig:
     # Timeout used by Jira/Linear HTTP clients for each network operation.
     # File tracker ignores this field.
     network_timeout_seconds: float = 30.0
+    # Internal file-tracker context, derived from WORKFLOW.md, not a YAML option.
+    run_history_path: Path | None = None
 
 
 @dataclass(frozen=True)

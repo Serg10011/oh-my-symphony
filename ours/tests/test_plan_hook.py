@@ -790,6 +790,25 @@ def test_a_failure_on_the_second_card_removes_the_first(env: Env, monkeypatch: p
     assert [e["outcome"] for e in env.events()] == ["rejected"]
 
 
+def test_partial_creation_does_not_reuse_retired_ids_on_retry(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+    env.use_symphony(BREAK_ON_SECOND)
+    env.task_card()
+    env.plan(plan_text(sub("a"), sub("b")))
+    assert env.hook(monkeypatch) == 0
+    assert env.cards() == []
+    ledger = env.kanban / ".symphony-identifiers.json"
+    assert "oms-9-1" in json.loads(ledger.read_text())["issued"]
+
+    env.symphony = str(REAL_SYMPHONY)
+    env.write_project()
+    env.task_card()
+    assert env.hook(monkeypatch) == 0
+    assert env.cards() == []
+    assert "already issued" in env.body()
+    assert env.state() == "needs_human"
+    assert env.counter() == 2
+
+
 def test_only_the_cards_of_this_run_are_removed(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
     env.use_symphony(BREAK_ON_SECOND)
     env.task_card()
