@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "name": "eve",
+  "machine_test_lock": true,
+  "files": {
+    "test.sh": {"mode": "0755", "adopt_sha256": ["d33e82eef74a2f244891493430a5ffc334fdff3e98bb941426eacd387a0e74e9"]},
+    "bin/junit-merge.py": {"mode": "0755", "adopt_sha256": ["256191d94ca826f182c2650c80b41d6f4db007472acc9a4568d6943790f9ff73"]},
+    "bin/test-lock.py": {"mode": "0644", "adopt_sha256": []}
+  },
+  "legacy_directory_lock_sha256": ["d33e82eef74a2f244891493430a5ffc334fdff3e98bb941426eacd387a0e74e9"]
+}
