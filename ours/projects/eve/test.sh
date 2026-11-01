@@ -213,7 +213,7 @@ if [ "$rc2" -ne 0 ]; then
   exit "$rc2"
 fi
 
-# check.py only shows the output tail on failure; also retain FLAKY in the board log.
+# check.py shows FLAKY warnings in successful reports; retain them in the board log too.
 mkdir -p "$BOARD_DIR/log" 2>/dev/null
 echo "$merge_out" | grep '^FLAKY: ' | while IFS= read -r line; do
   echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $(basename "$PWD") $line" >> "$BOARD_DIR/log/flaky.log"
