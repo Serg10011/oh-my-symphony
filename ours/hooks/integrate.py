@@ -19,8 +19,8 @@ $SYMPHONY_WORKFLOW_DIR. Exit codes: 0 done, 1 refusal with a reason,
 Last line of hooks.after_run (TASK-S4-12). Merges the finished subtask into
 its integration branch and moves its card to Done (see hook_main). Always
 exits 0; the outcome is in <board>/.ours-state/check.log (mode "integrate")
-and in the `## Integration` section of the card. A card that is not in Human
-Review is passed over silently (no log line: the hook runs after every turn).
+and in the `## Integration` section of the card. Merging is host-owned;
+Human Review remains accepted for old prompts and existing cards.
 After Done it leaves <board>/.ours-state/<ID>.merged.json (S4-13): the tree
 that was merged, so that the done gate does not run the tests a second time.
 Then (S4-21) it writes `- <ID> merged (k of N)` into `## Subtask Progress` of the
@@ -275,6 +275,7 @@ def ensure_integration_branch(repo: Path, branch: str, base_branch: str) -> tupl
 
 MODE = "integrate"
 STATE_REVIEW = "Human Review"
+STATE_MERGING = "Merging"
 STATE_DONE = "Done"
 STATE_ESCALATE = "needs_human"
 NOTE_HEADING = "Integration"
@@ -436,7 +437,7 @@ def _run_hook(ctx: check.Context, project: dict) -> int:
     if not integration["enabled"]:
         return 0
     front = read_card_front(ctx.card, with_title=True)
-    if front["state"].lower() != STATE_REVIEW.lower():
+    if front["state"].lower() not in {STATE_REVIEW.lower(), STATE_MERGING.lower()}:
         return 0  # silent: after_run runs after every turn of every card
     task = task_of(front, project, ctx.issue_id)
     if task is None:
@@ -449,6 +450,10 @@ def _run_hook(ctx: check.Context, project: dict) -> int:
     if lock is None:
         return _skip(ctx, "проверка или шлюз этой карточки ещё идёт (блокировка занята)")
     with lock:
+        front = read_card_front(ctx.card, with_title=True)
+        if (front["state"].lower() not in {STATE_REVIEW.lower(), STATE_MERGING.lower()}
+                or task_of(front, project, ctx.issue_id) != task):
+            return _skip(ctx, "карточка изменилась во время ожидания блокировки")
         code, done = _integrate(ctx, project, front, task)
     # Every lock of this merge is released: the final check takes its own (flock
     # does not nest: a second open of the same lock file in this process waits
@@ -947,9 +952,10 @@ def _finish_locked(tctx: check.Context, cfg: check.Config | None, project: dict,
 # CLI
 # ---------------------------------------------------------------------------
 
-USAGE = ("использование: integrate.py ensure-branch <ЗАДАЧА> [--board <папка доски>] | "
+USAGE = ("использование: integrate.py resume-subtask <ПОДЗАДАЧА> [--board <папка доски>] | "
+         "integrate.py ensure-branch <ЗАДАЧА> [--board <папка доски>] | "
          "integrate.py finish-task <ЗАДАЧА> [--board <папка доски>] | integrate.py hook")
-COMMANDS = ("ensure-branch", "finish-task")
+COMMANDS = ("ensure-branch", "finish-task", "resume-subtask")
 
 
 def _parse(args: list[str]) -> tuple[str, str, Path] | None:
@@ -996,6 +1002,66 @@ def finish_task_command(task: str, board: Path) -> int:
     return 0 if ok else 1
 
 
+def resume_subtask_command(issue_id: str, board: Path) -> int:
+    """Recheck a committed pending subtask and finish integration without an agent."""
+    import worktree
+
+    check.validate_issue_id(issue_id)
+    project = pc.load_project(board)
+    check_task_id(issue_id, project)
+    ctx = _task_ctx(board, project, issue_id)
+    repo = Path(project["project"]["repo"])
+    done = False
+    with worktree.worktree_lock(worktree.common_dir(repo)):
+        lock = check.try_lock(ctx, LOCK_WAIT_S)
+        if lock is None:
+            raise IntegrateError("проверка или сборка этой карточки ещё идёт")
+        with lock:
+            front = read_card_front(ctx.card, with_title=True)
+            task = task_of(front, project, issue_id)
+            if task is None:
+                raise IntegrateError("карточка не подзадача включённой интеграции")
+            if front["state"].lower() == STATE_DONE.lower():
+                say(f"{issue_id}: уже Done; повторная сборка не выполнялась")
+                return 0
+            if front["state"].lower() not in {STATE_MERGING.lower(), STATE_REVIEW.lower()}:
+                raise IntegrateError("продолжение допустимо только из Merging или прежнего Human Review")
+            ws = ctx.workspace.resolve()
+            if (not ws.is_dir() or _git_out(ws, "rev-parse", "--show-toplevel") != str(ws)
+                    or worktree.common_dir(ws) != worktree.common_dir(repo)
+                    or _git_out(ws, "symbolic-ref", "--short", "HEAD") != f"symphony/{issue_id}"):
+                raise IntegrateError("рабочая копия не принадлежит ветке и репозиторию подзадачи")
+            if pc.read_base_record(board, issue_id).get("task") != task:
+                raise IntegrateError("запись базы не соответствует родительской задаче")
+            if _dirty_files(ws):
+                raise IntegrateError("рабочая копия содержит несохранённые изменения; сначала проверь и закоммить их")
+            # A proof from a killed hook must never authorize this explicit retry.
+            check.pass_path(ctx).unlink(missing_ok=True)
+            tree = _git_out(ws, "rev-parse", "HEAD^{tree}")
+            head = _git_out(ws, "rev-parse", "HEAD")
+            cfg = check.load_config(board)
+            result = check.run_checks(ctx, cfg)
+            tests = result.tests or ("skipped" if result.tests_skipped else "full")
+            check.log_event(ctx, issue_id, "hook", "pass" if result.ok else "fail",
+                            result.note if result.ok else "; ".join(result.reasons),
+                            tree=tree, head=head, tests=tests, **check._baseline_extra(result))
+            if not result.ok:
+                _note(ctx, result.reasons, "Check Failure")
+                failure = _board_mv(ctx, cfg, STATE_ESCALATE)
+                raise IntegrateError("повторная проверка не пройдена; " + (failure or "карточка → needs_human"))
+            fresh = read_card_front(ctx.card, with_title=True)
+            if fresh != front:
+                raise IntegrateError("карточка изменилась во время повторной проверки; сборка отменена")
+            check._write_pass_mark(ctx, tree, head)
+            _, done = _integrate(ctx, project, front, task)
+    # finish_task takes the same worktree lock; never call it while holding ours.
+    if done:
+        _signal_task(ctx, project, task)
+        say(f"{issue_id}: проверки и сборка завершены, карточка → Done")
+        return 0
+    raise IntegrateError("сборка не завершена; причина в check.log и разделе Integration карточки")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = sys.argv[1:] if argv is None else argv
     if args == ["hook"]:
@@ -1008,10 +1074,12 @@ def main(argv: list[str] | None = None) -> int:
 
     command, task, board = parsed
     try:
+        if command == "resume-subtask":
+            return resume_subtask_command(task, board)
         if command == "finish-task":
             return finish_task_command(task, board)
         return ensure_branch_command(task, board)
-    except (IntegrateError, pc.ProjectError, worktree.HookError) as exc:
+    except (IntegrateError, pc.ProjectError, worktree.HookError, check.CheckError, check.Orphaned, OSError) as exc:
         print(f"integrate.py: отказ: {exc}", file=sys.stderr)
         return 1
 

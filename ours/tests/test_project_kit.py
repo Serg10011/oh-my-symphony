@@ -145,7 +145,7 @@ def test_rendered_workflow_is_accepted_by_the_core(kit: Kit) -> None:
     assert kit.new().returncode == 0
     cfg = build_service_config(load_workflow(kit.board / "WORKFLOW.md"))
     a = cfg.agent
-    assert cfg.tracker.terminal_states == ("Human Review", "needs_human", "Subtasks", "Done", "Blocked", "Archive")
+    assert cfg.tracker.terminal_states == ("Human Review", "needs_human", "Subtasks", "Merging", "Done", "Blocked", "Archive")
     assert cfg.tracker.active_states == ("Todo", "Plan", "In Progress", "Verify", "Document")
     assert a.stage_contracts_enabled(cfg.tracker.active_states)
     assert (a.kind, a.max_concurrent_agents, a.budget_exhausted_state) == ("claude", 1, "needs_human")
@@ -153,7 +153,7 @@ def test_rendered_workflow_is_accepted_by_the_core(kit: Kit) -> None:
                 or a.auto_merge_on_done or a.auto_merge_push_target)
     assert a.auto_commit_on_done
     assert a.feature_base_branch == a.auto_merge_target_branch == "dev"
-    assert a.preserve_workspace_states == ("human review", "needs_human", "subtasks")
+    assert a.preserve_workspace_states == ("human review", "needs_human", "subtasks", "merging")
     assert a.done_gate_command == f'"$SYMPHONY_PYTHON" {OURS / "hooks" / "check.py"} gate'
     assert a.done_gate_timeout_ms == 960000 and cfg.hooks.timeout_ms == 1200000
     assert cfg.wiki.sweep_every_n == 0 and cfg.server.port == 9971

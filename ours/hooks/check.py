@@ -120,7 +120,7 @@ DELIVER_PREFIX = "deliver/"
 # Pathspec of the standard after_run block (templates/WORKFLOW.md.tmpl).
 STAGE_PATHSPEC = (".", ":(exclude)kanban", ":(exclude).symphony")
 
-CHECKED_STATES = frozenset({"done", "human review"})
+CHECKED_STATES = frozenset({"done", "human review", "merging"})
 ROLLBACK_STATES = frozenset({"In Progress", "needs_human"})
 STATE_RETRY = "In Progress"
 STATE_ESCALATE = "needs_human"
@@ -1504,6 +1504,14 @@ def hook_main() -> int:
                   "another check of this card is running; card left as is")
         return 0
     with lock:
+        if state.lower() == "merging":
+            try:
+                cfg = load_config(ctx.workflow_dir)
+                if not is_subtask_card(ctx.card, cfg):
+                    raise CheckError("Merging is only for integration subtasks (worker label + request)")
+            except CheckError as exc:
+                log_event(ctx, ctx.issue_id, "hook", "error", str(exc))
+                return 0
         return _hook_checked(ctx)
 
 

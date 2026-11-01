@@ -20,7 +20,7 @@ This ticket depends on:
 
 ## Production pipeline (4 active stages)
 
-Honour the gate matching `{{ issue.state }}`. One stage = one transition; never jump ahead (one exception: a subtask goes from Verify straight to `Human Review`, see Verify step 9).
+Honour the gate matching `{{ issue.state }}`. One stage = one transition; never jump ahead (one exception: a subtask goes from Verify straight to `Merging`, see Verify step 9).
 
 ```
   Todo  ->  In Progress  ->  Verify  ->  Document  ->  Human Review  ->  Done (set by a human)
@@ -28,7 +28,7 @@ Honour the gate matching `{{ issue.state }}`. One stage = one transition; never 
                  |              |          |
                  +--------------+------------- Verify/Document defects rewind here
 
-  subtask (role:worker + request): Verify -> Human Review (no Document)
+  subtask (integration enabled, role:worker + request): Verify -> Merging -> Done (host, no Document)
   manager (role:manager-plan): Plan -> Subtasks -> Verify -> Document -> Human Review
 ```
 
@@ -66,6 +66,7 @@ Caps: `## Security Audit` exactly 7 rows; `## As-Is -> To-Be Report` <= 20 lines
 
 - Never skip Verify. Never mark `Done` without `## QA Evidence`, `## Merge Status`, `## Wiki Updates`, and `## As-Is -> To-Be Report` (a subtask needs only the first two: its documentation is written by the task card, see Verify step 9).
 - Document ends in `Human Review`: that is the normal completion path of this pipeline. Never set `Done` yourself: only a human sets it, through Confirm done (`confirm_done`).
+- `Merging` is a host-owned subtask state. Do not run an agent there or move the card to `Done`; the host checks and integrates it. A parent still ends in `Human Review`.
 - Never silence failing tests, hide errors, or add fake success paths. Fix the root cause or move the ticket to `Blocked`.
 - Test budget: how often tests may run is set by the stage prompt (`Test budget` in In Progress and Verify); the host runs the full suite once per pass.
 - Return policy: Verify and Document rewind a card only for a substantive violation or breakage, as the stage prompts define; minor remarks go to `## Review Notes`.

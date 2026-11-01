@@ -64,11 +64,11 @@ def test_the_core_accepts_the_rendered_workflow_with_the_new_states(kit: Kit) ->
     cfg = core_cfg(kit.board)
     assert cfg.tracker.active_states == NEW_ACTIVE
     assert cfg.tracker.terminal_states == (
-        "Human Review", "needs_human", "Subtasks", "Done", "Blocked", "Archive",
+        "Human Review", "needs_human", "Subtasks", "Merging", "Done", "Blocked", "Archive",
     )
     assert cfg.prompts.stage_paths["plan"] == PROMPTS / "stages" / "plan.md"
     assert cfg.prompts.stage_paths["todo"] == PROMPTS / "stages" / "todo.md"
-    assert cfg.agent.preserve_workspace_states == ("human review", "needs_human", "subtasks")
+    assert cfg.agent.preserve_workspace_states == ("human review", "needs_human", "subtasks", "merging")
 
 
 def test_the_board_is_created_in_todo_and_moves_to_the_new_states(kit: Kit) -> None:
