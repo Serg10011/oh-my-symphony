@@ -1,0 +1,139 @@
+{
+  "task": "S4-43",
+  "date": "2026-11-02",
+  "captured_at": "2026-11-01T21:58:14.009609+00:00",
+  "base": "0c3c9520fc75accdf853227a1bbe61ffee168e89",
+  "implementation_commit": "581d1385812210543e650c45a1748f8f308001c4",
+  "executor": {
+    "model": "gpt-6.1-sol",
+    "effort": "max",
+    "profile_changed": false
+  },
+  "runs": {
+    "target_initial": {
+      "tests": 23,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 23,
+      "seconds": 2.661
+    },
+    "target_before_filter_guard": {
+      "tests": 30,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 30,
+      "seconds": 3.99
+    },
+    "full_interrupted": {
+      "tests": 524,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 524,
+      "seconds": 180.834,
+      "status": "interrupted",
+      "exit_code": 2,
+      "reason": "Остановлен после обнаружения запуска внешнего фильтра обычным Git status; не полный успешный прогон"
+    },
+    "target_final": {
+      "tests": 33,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 33,
+      "seconds": 4.982
+    },
+    "full_final": {
+      "tests": 1677,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 1677,
+      "seconds": 483.694
+    }
+  },
+  "source_sha256": {
+    "ours/bin/workspace-report": "c78ced18af96ed7c4ba102529b5ff2cd38a8ac965791a917c6c0a4366e851447",
+    "ours/hooks/workspace_report.py": "3e9683795fd8f7bdf83f0719cf4be9c65d46d9de15b0fcb0882c79d91ab85626",
+    "ours/tests/test_workspace_report.py": "752283b4a5c9582e39e0ad216bccee7d38aac850f3c1b3ef39921b83c533e4e2"
+  },
+  "ruff_ours": "PASS",
+  "native_git_filter_repro": [
+    {
+      "mode": "same_content",
+      "configured_filter_executed": true
+    },
+    {
+      "mode": "same_size",
+      "configured_filter_executed": true
+    }
+  ],
+  "live_readonly_proof": {
+    "status": "PASS",
+    "complete": true,
+    "readonly": true,
+    "deletion_assessed": false,
+    "protected_paths_checked": 293,
+    "changed_paths": [],
+    "worktrees": 4,
+    "independent_repositories": 4,
+    "service_metadata_entries": 6,
+    "ignored_entries": 8,
+    "services_before": {
+      "oms": {
+        "rc": 0,
+        "pid": 20859
+      },
+      "eve": {
+        "rc": 113,
+        "pid": null
+      },
+      "inbox-runner": {
+        "rc": 0,
+        "pid": 57583
+      }
+    },
+    "services_after": {
+      "oms": {
+        "rc": 0,
+        "pid": 20859
+      },
+      "eve": {
+        "rc": 113,
+        "pid": null
+      },
+      "inbox-runner": {
+        "rc": 0,
+        "pid": 57583
+      }
+    },
+    "state_before": {
+      "counts": {
+        "running": 0,
+        "retrying": 0
+      },
+      "dispatch_hold": null
+    },
+    "state_after": {
+      "counts": {
+        "running": 0,
+        "retrying": 0
+      },
+      "dispatch_hold": null
+    }
+  },
+  "existing_tests_changed": false,
+  "core_changed": false,
+  "new_dependencies": false,
+  "anthropic_models_limits_billing_changed": false,
+  "real_agents_started": false,
+  "new_pipeline_jobs": false,
+  "runtime_applied": false,
+  "service_restart": false,
+  "deletion_implemented": false,
+  "archive": "/Users/helloworld10011/symphony-projects/.backups/s4-43-development-20261102-005814",
+  "local_links_checked": 97,
+  "diff_check": "PASS"
+}
