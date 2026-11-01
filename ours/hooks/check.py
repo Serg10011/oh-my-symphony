@@ -1433,7 +1433,11 @@ def _format_report(mode: str, issue_id: str, result: Result) -> str:
         lines.append(f"- {_clean(result.note)}")
     if result.task_card:
         lines.append(f"- {TASK_CARD_FULL_REASON}")
-    if not result.ok and result.tail.strip():
+    if result.ok:
+        flaky_lines = [line for line in result.tail.splitlines() if line.startswith("FLAKY:")]
+        if flaky_lines:
+            lines += ["--- flaky test warnings ---", *flaky_lines]
+    elif result.tail.strip():
         lines += ["--- test output (tail) ---", result.tail.rstrip()]
     return "\n".join(lines)
 

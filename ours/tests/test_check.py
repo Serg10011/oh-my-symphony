@@ -449,6 +449,53 @@ def test_test_command_output_tail_is_bounded(env: Env) -> None:
     assert len(result.stdout) < check.TAIL_BYTES + 1000
 
 
+@pytest.mark.parametrize("mode", ["hook", "gate"])
+def test_success_report_without_flaky_lines_stays_clean(env: Env, mode: str) -> None:
+    env.config(test_command="echo ordinary-test-noise")
+
+    result = env.run(mode)
+
+    assert_passed(result)
+    assert result.stdout.splitlines() == [f"check.py {mode}: PASS ({ID})"]
+
+
+@pytest.mark.parametrize("mode", ["hook", "gate"])
+def test_success_report_shows_only_flaky_lines_in_order(env: Env, mode: str) -> None:
+    env.config(
+        test_command=(
+            "printf '%s\\n' 'ordinary test output' 'FLAKY: first.py (retried)' "
+            "'middle FLAKY: ignored' 'FLAKY: second.py (retried)' "
+            "'FLAKY: first.py (retried)' 'more test output'"
+        )
+    )
+
+    result = env.run(mode)
+
+    assert_passed(result)
+    assert result.stdout.splitlines() == [
+        f"check.py {mode}: PASS ({ID})",
+        "--- flaky test warnings ---",
+        "FLAKY: first.py (retried)",
+        "FLAKY: second.py (retried)",
+        "FLAKY: first.py (retried)",
+    ]
+
+
+def test_failed_report_keeps_full_tail_without_duplicate_flaky_section(env: Env) -> None:
+    env.config(test_command="printf '%s\\n' 'before failure' 'FLAKY: flaky.py'; exit 1")
+
+    result = env.run("gate")
+
+    assert_refused(result, "test.sh failed (exit 1)")
+    assert result.stdout.splitlines() == [
+        f"check.py gate: FAIL ({ID})",
+        "- test.sh failed (exit 1)",
+        "--- test output (tail) ---",
+        "before failure",
+        "FLAKY: flaky.py",
+    ]
+
+
 def _alive(pid: int) -> bool:
     status = Path(f"/proc/{pid}/status")
     if status.exists():

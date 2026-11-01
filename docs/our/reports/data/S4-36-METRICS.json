@@ -1,0 +1,152 @@
+{
+  "task": "S4-36",
+  "date": "2026-11-01",
+  "base": "22b692f85c6b333d6038e593fb95f833fe535619",
+  "common_spec_sha256": "7579a9fe4827155b9873892038709d726299130bab9edf7ca53b39b42421744c",
+  "A_architect": {
+    "start": "2026-11-01T10:46:53.578433+00:00",
+    "end": "2026-11-01T10:57:43.297816+00:00",
+    "wall_seconds": 649.719383,
+    "model": "gpt-6.1-sol",
+    "effort": "max",
+    "usage": {
+      "input_tokens": 1528831,
+      "cached_input_tokens": 1516032,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 16537,
+      "reasoning_output_tokens": 8787,
+      "total_tokens": 1545368,
+      "noncached_input_tokens": 12799,
+      "standard_credit_equivalent": 8.56428
+    },
+    "raw_unaligned_snapshot_delta": {
+      "input_tokens": 1501612,
+      "cached_input_tokens": 1481600,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 17547,
+      "reasoning_output_tokens": 8787,
+      "total_tokens": 1519159,
+      "noncached_input_tokens": 20012,
+      "standard_credit_equivalent": 9.09135
+    },
+    "usage_event_count": 19
+  },
+  "B_developer": {
+    "model": "gpt-6-luna",
+    "effort": "max",
+    "usage": {
+      "input_tokens": 5848522,
+      "cached_input_tokens": 5706752,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 52266,
+      "reasoning_output_tokens": 33484,
+      "total_tokens": 5900788,
+      "noncached_input_tokens": 141770,
+      "standard_credit_equivalent": 2.434438
+    },
+    "usage_event_count": 63,
+    "turn_wall_seconds": 1334.619,
+    "completed_at": "2026-11-01T11:21:39.260Z",
+    "fresh_thread": true
+  },
+  "B_architect_overhead": {
+    "start": "2026-11-01T10:58:35.204901+00:00",
+    "end": "2026-11-01T11:23:17.558708+00:00",
+    "wall_seconds": 1482.353807,
+    "model": "gpt-6.1-sol",
+    "effort": "max",
+    "usage": {
+      "input_tokens": 3958579,
+      "cached_input_tokens": 3921920,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 25849,
+      "reasoning_output_tokens": 16590,
+      "total_tokens": 3984428,
+      "noncached_input_tokens": 36659,
+      "standard_credit_equivalent": 18.1
+    },
+    "raw_unaligned_snapshot_delta": {
+      "input_tokens": 3901304,
+      "cached_input_tokens": 3864960,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 25611,
+      "reasoning_output_tokens": 17034,
+      "total_tokens": 3926915,
+      "noncached_input_tokens": 36344,
+      "standard_credit_equivalent": 17.88235
+    },
+    "usage_event_count": 32
+  },
+  "B_total": {
+    "wall_seconds": 1482.353807,
+    "usage": {
+      "input_tokens": 9807101,
+      "cached_input_tokens": 9628672,
+      "cache_write_input_tokens": 0,
+      "output_tokens": 78115,
+      "reasoning_output_tokens": 50074,
+      "total_tokens": 9885216,
+      "noncached_input_tokens": 178429,
+      "standard_credit_equivalent": 20.534438
+    }
+  },
+  "B_over_A_standard_credit_ratio": 2.3976841018742965,
+  "B_architect_share": 0.8814460858388236,
+  "break_even_architect_credit_budget": 6.129842,
+  "rates_per_million": {
+    "gpt-6.1-sol": {
+      "input": 50,
+      "cached": 2.5,
+      "output": 250
+    },
+    "gpt-6-luna": {
+      "input": 2.5,
+      "cached": 0.25,
+      "output": 12.5
+    }
+  },
+  "rates_source": "https://learn.chatgpt.com/docs/pricing",
+  "rate_mode": "Standard normalization; NOT actual subscription debit",
+  "boundary_method": "First token_count following each capture, less than 2 seconds later; includes the tool-issuing response.",
+  "shared_setup_and_final_publication_excluded": true,
+  "source_a_shown_to_luna": false,
+  "implementation_corrections": 0,
+  "environment_guidance_messages": 1,
+  "comment_feedback_messages": 1,
+  "environment_first_run_seconds": 395.1,
+  "limitations": [
+    "One small task, not a general model benchmark.",
+    "Architect context grew during sequential A then B; B includes this order effect.",
+    "A reused a prepared virtual environment; B created its own environment.",
+    "B includes a redundant full sandbox run despite upfront permission guidance; this is workflow overhead, not a product defect.",
+    "B includes all architect monitoring, diagnostics, review and measurement activity inside its boundaries.",
+    "Credit equivalent is conditional Standard pricing, not exact subscription consumption or money paid."
+  ],
+  "candidate_commits": {
+    "A": {
+      "commit": "b9f34b108b97272ade3566b37767d75acf6bc66b",
+      "branch": "codex/flaky-report-self",
+      "worktree": "/Users/helloworld10011/.codex/worktrees/symphony-handover/oh-my-symphony"
+    },
+    "B": {
+      "commit": "d40af0ba9692dcc3b05a07b19243ca2365a7b0ab",
+      "branch": "codex/flaky-report-luna",
+      "worktree": "/Users/helloworld10011/.codex/worktrees/f720/oh-my-symphony"
+    }
+  },
+  "selected_attempt": "B",
+  "selected_branch": "codex/flaky-report-comparison",
+  "artifact_archive": "~/symphony-projects/.backups/s4-36-experiment-20261101/",
+  "pull_request": {
+    "number": 66,
+    "url": "https://github.com/Serg10011/oh-my-symphony/pull/66",
+    "state": "open",
+    "accepted_by_sergey": true,
+    "merged": false,
+    "applied": false,
+    "accepted_head": "6ef39cf0ac8123fbc82f00f2a6058ec1380f6886",
+    "approval_date": "2026-11-01"
+  },
+  "final_lifecycle_result": "/Users/helloworld10011/symphony-projects/.backups/s4-35-36-apply-20261101-144707/result.json",
+  "pull_request_state_recorded_before_merge": true
+}
