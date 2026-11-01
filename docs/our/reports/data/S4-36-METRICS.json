@@ -136,5 +136,13 @@
   },
   "selected_attempt": "B",
   "selected_branch": "codex/flaky-report-comparison",
-  "artifact_archive": "~/symphony-projects/.backups/s4-36-experiment-20261101/"
+  "artifact_archive": "~/symphony-projects/.backups/s4-36-experiment-20261101/",
+  "pull_request": {
+    "number": 66,
+    "url": "https://github.com/Serg10011/oh-my-symphony/pull/66",
+    "state": "open",
+    "accepted_by_sergey": false,
+    "merged": false,
+    "applied": false
+  }
 }
