@@ -317,3 +317,42 @@ def test_staging_refuses_a_workflow_that_would_dispatch_subtasks(env: Env, monke
     env.hook(monkeypatch)
     assert env.cards() == [] and env.state() == 'needs_human'
     assert 'non-dispatched' in env.body()
+
+
+@pytest.mark.parametrize('entry', ['recover', 'hook'])
+@pytest.mark.parametrize('interruption', [BREAK_ON_SECOND, BREAK_ON_RELEASE_TWO])
+def test_lowered_subtask_ceiling_blocks_recovery_without_publication(env: Env, monkeypatch, capsys,
+                                                                   entry, interruption):
+    env.use_symphony(interruption)
+    env.task_card(level='complex')
+    env.plan(plan_text(sub('a', level='standard'), sub('b', level='standard')))
+    env.hook(monkeypatch)
+    assert env.state() == 'needs_human'
+    assert json.loads(journal(env).read_text())['payload']['phase'] != 'done'
+    env.symphony = str(REAL_SYMPHONY)
+    env.write_project(plan_section='max_subtask_level = "simple"')
+    if entry == 'hook':
+        parent = env.card_path(TASK)
+        parent.write_text(parent.read_text().replace('state: needs_human', 'state: Subtasks', 1))
+    paths = [journal(env), env.kanban / '.symphony-identifiers.json',
+             *(env.card_path(sid) for sid in env.cards())]
+    before = {path: path.read_bytes() for path in paths}
+    ids = env.cards()
+    if entry == 'recover':
+        assert plan.recover_main(TASK, env.board) == 1
+        assert 'max_subtask_level' in capsys.readouterr().err
+    else:
+        env.hook(monkeypatch)
+        assert 'max_subtask_level' in env.body()
+        assert env.events()[-1]['outcome'] == 'rejected'
+        assert env.events()[-1]['needs_human'] == 'environment'
+    assert {path: path.read_bytes() for path in paths} == before
+    assert env.cards() == ids and env.state() == 'needs_human'
+    assert env.counter() is None
+    # Restoring the allowed policy resumes the original operation, then becomes a no-op.
+    env.write_project(plan_section='max_subtask_level = "standard"')
+    assert plan.recover_main(TASK, env.board) == 0
+    completed = {env.card_path(sid): env.card_path(sid).read_bytes() for sid in env.cards()}
+    completed[journal(env)] = journal(env).read_bytes()
+    assert plan.recover_main(TASK, env.board) == 0
+    assert {path: path.read_bytes() for path in completed} == completed

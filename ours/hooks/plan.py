@@ -337,7 +337,8 @@ def _command_problem(command: str, prefixes: list[str]) -> str | None:
 
 def _check_subtask(index: int, raw: object, keys: list[str | None], levels: list[str],
                    ceiling: int | None, task_level: str | None, cfg: check.Config,
-                   prefixes: list[str] | None, errors: list[str]) -> Subtask | None:
+                   prefixes: list[str] | None, errors: list[str], *,
+                   ceiling_label: str = "уровня задачи") -> Subtask | None:
     """Validate one [[subtask]]; the problems go to `errors`. The Subtask when it is clean."""
     if not isinstance(raw, dict):
         errors.append(f"подзадача {index}: нужна таблица [[subtask]]")
@@ -378,7 +379,7 @@ def _check_subtask(index: int, raw: object, keys: list[str | None], levels: list
             problems.append(f"level {level!r}: такого уровня нет в [levels]; есть: {', '.join(levels)}")
         elif ceiling is not None and levels.index(level) > ceiling:
             problems.append(
-                f"level {level!r} выше уровня задачи {task_level!r}; допустимы: {', '.join(levels[: ceiling + 1])}"
+                f"level {level!r} выше {ceiling_label} {task_level!r}; допустимы: {', '.join(levels[: ceiling + 1])}"
             )
     for name, multiline in (("level_reason", False), ("goal", True), ("check", False)):
         if name in raw:
@@ -445,6 +446,17 @@ def level_ceiling(project: dict, front_level: str | None) -> tuple[int | None, s
     return None, None
 
 
+def subtask_level_ceiling(project: dict, front_level: str | None) -> tuple[int | None, str | None]:
+    """The lower of the legacy task ceiling and the optional subtask ceiling."""
+    ceiling, name = level_ceiling(project, front_level)
+    configured = project["plan"].get("max_subtask_level")
+    if configured is not None:
+        index = list(project["levels"]["levels"]).index(configured)
+        if ceiling is None or index < ceiling:
+            return index, configured
+    return ceiling, name
+
+
 def check_plan(text: str, project: dict, cfg: check.Config, task_level: str | None,
                board: Path | None = None) -> tuple[list[Subtask], list[str]]:
     """(subtasks, []) for a good plan, ([], reasons) with every reason found.
@@ -470,11 +482,15 @@ def check_plan(text: str, project: dict, cfg: check.Config, task_level: str | No
     if len(raw) > limit:
         errors.append(f"в плане {len(raw)} подзадач, а можно не больше {limit} ([plan] max_subtasks)")
     levels = list(project["levels"]["levels"])
-    ceiling, level_name = level_ceiling(project, task_level)
+    ceiling, level_name = subtask_level_ceiling(project, task_level)
+    ceiling_label = ("потолка [plan] max_subtask_level"
+                     if level_name == project["plan"].get("max_subtask_level") and level_name is not None
+                     else "уровня задачи")
     keys = [item.get("key") if isinstance(item, dict) and isinstance(item.get("key"), str) else None for item in raw]
     prefixes = None if board is None else allowed_check_commands(board, project)
     subtasks = [
-        _check_subtask(i, item, keys, levels, ceiling, level_name, cfg, prefixes, errors)
+        _check_subtask(i, item, keys, levels, ceiling, level_name, cfg, prefixes, errors,
+                       ceiling_label=ceiling_label)
         for i, item in enumerate(raw, 1)
     ]
     if errors:
@@ -1024,7 +1040,8 @@ def _check_command_lines(ctx: check.Context, project: dict) -> list[str]:
 def render_limits(ctx: check.Context, project: dict) -> str:
     levels = project["levels"]["levels"]
     names = list(levels)
-    ceiling, level_name = level_ceiling(project, _card_level(ctx.card))
+    _, level_name = level_ceiling(project, _card_level(ctx.card))
+    ceiling, effective_name = subtask_level_ceiling(project, _card_level(ctx.card))
     allowed = names if ceiling is None else names[: ceiling + 1]
     base = project["limits"]
     plan = project["plan"]
@@ -1046,6 +1063,10 @@ def render_limits(ctx: check.Context, project: dict) -> str:
                      f"{body.get('max_turns', base['max_turns'])} | {body.get('max_state_turns', base['max_state_turns'])} |")
     if not allowed:
         lines.append("| — | | | | |")
+    if "max_subtask_level" in plan:
+        lines += ["", f"- max_subtask_level: {plan['max_subtask_level']} ([plan])",
+                  f"- действующий потолок подзадач: {effective_name}",
+                  "- применяется более низкий из потолка задачи и max_subtask_level"]
     lines += ["", "Если у уровня нет своего max_turns / max_state_turns, действуют значения проекта ([limits]).",
               "Модель и усилие — из перевода уровня для claude; «—» значит «как задано в службе».", "",
               "## Plan", "",

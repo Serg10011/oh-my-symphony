@@ -17,6 +17,7 @@ import re
 import subprocess
 import sys
 import threading
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -1136,3 +1137,93 @@ def test_project_new_template_has_the_commented_plan_section() -> None:
     text = (OURS / "bin" / "project-new").read_text(encoding="utf-8")
     assert "[plan]" in text and "# max_subtasks = 5" in text and "# max_failures = 2" in text
     assert "Порядок уровней — порядок, в котором они объявлены" in text
+
+
+@pytest.mark.parametrize('value', [True, 3, 1.5, [], {}, '', ' ', 'unknown', 'simple\n'])
+def test_max_subtask_level_requires_a_declared_nonempty_name(env: Env, value: object) -> None:
+    data = tomllib.loads((env.board / 'project.toml').read_text())
+    data['plan'] = {'max_subtask_level': value}
+    with pytest.raises(pc.ProjectError, match=r'project.toml: \[plan\] max_subtask_level'):
+        pc.validate_project(data)
+
+
+@pytest.mark.parametrize('levels', [None, {}])
+def test_max_subtask_level_without_declared_levels_is_refused(env: Env, levels) -> None:
+    data = tomllib.loads((env.board / 'project.toml').read_text())
+    data.pop('levels')
+    if levels is not None:
+        data['levels'] = levels
+    data['plan'] = {'max_subtask_level': 'simple'}
+    with pytest.raises(pc.ProjectError, match=r'max_subtask_level.*нет в \[levels\].*ни одного'):
+        pc.validate_project(data)
+
+
+@pytest.mark.parametrize('card, default, configured, expected', [
+    ('complex', 'simple', 'standard', 'standard'),
+    ('simple', 'complex', 'standard', 'simple'),
+    ('standard', 'simple', 'standard', 'standard'),
+    (None, 'standard', 'simple', 'simple'),
+    (None, 'simple', 'complex', 'simple'),
+    (None, None, 'standard', 'standard'),
+    ('unknown', 'simple', 'standard', 'standard'),
+    ('complex', 'simple', None, 'complex'),
+    (None, 'simple', None, 'simple'),
+    (None, None, None, None),
+    ('unknown', 'simple', None, None),
+])
+def test_effective_subtask_ceiling_combinations(env: Env, card, default, configured, expected) -> None:
+    levels = LEVELS.replace('default_level = "simple"\n',
+                            f'default_level = "{default}"\n' if default else '')
+    env.write_project(levels=levels, plan_section=f'max_subtask_level = "{configured}"' if configured else '')
+    project = pc.load_project(env.board)
+    names = list(project['levels']['levels'])
+    expected_pair = (names.index(expected), expected) if expected else (None, None)
+    assert plan.subtask_level_ceiling(project, card) == expected_pair
+    for index, name in enumerate(names):
+        subtasks, reasons = checked(env, plan_text(sub(level=name)), level=card)
+        allowed = expected is None or index <= names.index(expected)
+        assert bool(subtasks) == allowed and bool(reasons) != allowed
+
+
+def test_subtask_ceiling_follows_declaration_order(env: Env) -> None:
+    levels = LEVELS.replace('simple', 'zzz').replace('complex', 'aaa')
+    env.write_project(levels=levels, plan_section='max_subtask_level = "standard"')
+    assert checked(env, plan_text(sub(level='zzz')), level='aaa')[1] == []
+    assert checked(env, plan_text(sub(level='aaa')), level='aaa')[1] != []
+
+
+def test_rejected_subtask_ceiling_has_no_publication_side_effects(env: Env, monkeypatch) -> None:
+    env.write_project(plan_section='max_subtask_level = "simple"')
+    note = rejected(env, monkeypatch, plan_text(sub(level='standard')))
+    assert 'max_subtask_level' in note and "'simple'" in note
+    assert env.counter() == 1 and env.state() == 'Plan'
+    assert not (env.board / '.ours-state' / f'{TASK}.plan-create.json').exists()
+    assert env.branches() == ['main']
+    ledger = env.kanban / '.symphony-identifiers.json'
+    if ledger.exists():
+        assert not any(sid.startswith('oms-9-') for sid in json.loads(ledger.read_text())['issued'])
+
+
+@pytest.mark.parametrize('card, configured, effective', [
+    ('complex', 'simple', 'simple'), ('simple', 'complex', 'simple'),
+    (None, 'standard', 'standard'),
+])
+def test_brief_shows_separate_and_effective_subtask_ceiling(env: Env, monkeypatch, card, configured, effective) -> None:
+    levels = LEVELS.replace('default_level = "simple"\n', '')
+    env.write_project(levels=levels, plan_section=f'max_subtask_level = "{configured}"')
+    env.task_card(state='Plan', level=card)
+    monkeypatch.setattr(plan, 'fetch_budgets', lambda *args: (None, 'test'))
+    assert env.brief(monkeypatch) == 0
+    text = env.limits().read_text()
+    assert f'- max_subtask_level: {configured} ([plan])' in text
+    assert f'- действующий потолок подзадач: {effective}' in text
+    assert '| complex |' not in text
+    assert ('| standard |' in text) == (effective == 'standard')
+    if card:
+        assert f'## Task level\n\n- {card}\n' in text
+
+
+def test_project_new_subtask_ceiling_is_only_a_comment() -> None:
+    text = (OURS / 'bin' / 'project-new').read_text()
+    assert '# max_subtask_level = "simple"' in text
+    assert not any(line.startswith('max_subtask_level =') for line in text.splitlines())
