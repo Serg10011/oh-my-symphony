@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "task": "S4-38",
+  "date": "2026-11-01",
+  "status": "both_code_variants_verified_after_fallback",
+  "code_base": "d71761fb043ac0ed825e253bebe9c53e5a0545cb",
+  "instructions_ref": "290ab4eaa7a0ec5ce57885360670c6248672b852",
+  "protocol_sha256": "b2126eabf55880b43d76f18e5084369abb2af49b1575a9a067f07f3e235da56f",
+  "task_sha256": "d8f5154bf7f5b879682cfc88ef7052a23e51f9be0f65638c34494a4e5e555ab5",
+  "units": {
+    "name": "normalized_standard_credits",
+    "actual_subscription_quota_percentage_known": false,
+    "source": "https://learn.chatgpt.com/docs/pricing",
+    "per_million": {
+      "gpt-6.1-sol": {
+        "uncached_input": 50,
+        "cached_input": 2.5,
+        "output": 250
+      },
+      "gpt-6-luna": {
+        "uncached_input": 2.5,
+        "cached_input": 0.25,
+        "output": 12.5
+      }
+    },
+    "formula": "((input-cached)*input_rate + cached*cache_rate + output*output_rate)/1000000",
+    "subset_note": "cached is already in input; reasoning is already in output"
+  },
+  "A": {
+    "model": "gpt-6.1-sol",
+    "effort": "max",
+    "start": "2026-11-01T13:51:12.475Z",
+    "stop": "2026-11-01T14:11:46.358Z",
+    "wall_seconds": 1233.883,
+    "delta": {
+      "input_tokens": 1218117,
+      "cached_input_tokens": 1176576,
+      "output_tokens": 12810,
+      "reasoning_output_tokens": 3292,
+      "total_tokens": 1230927,
+      "uncached_input_tokens": 41541
+    },
+    "normalized_standard_credits": 8.22099,
+    "monotonic_counters": true,
+    "start_rule": "first_event_after_start_snapshot",
+    "stop_rule": "latest_event_captured_by_stop",
+    "ready_commit": "3a6e1c6dbf995e70a6cd258409e39992517ddc13",
+    "target_passed": 45,
+    "full_passed": 1589,
+    "acceptance": {
+      "passed": 19,
+      "total": 19
+    }
+  },
+  "B": {
+    "thread_id": "01a19775-0256-74c1-b606-8b90fc2879e9",
+    "initial_handoff": {
+      "model": "gpt-6.1-sol",
+      "effort": "max",
+      "start": "2026-11-01T14:12:46.437Z",
+      "stop": "2026-11-01T14:13:16.272Z",
+      "wall_seconds": 29.835,
+      "delta": {
+        "input_tokens": 161962,
+        "cached_input_tokens": 161408,
+        "output_tokens": 873,
+        "reasoning_output_tokens": 19,
+        "total_tokens": 162835,
+        "uncached_input_tokens": 554
+      },
+      "normalized_standard_credits": 0.64947,
+      "monotonic_counters": true,
+      "start_rule": "first_event_after_start_snapshot",
+      "stop_rule": "latest_event_captured_by_stop"
+    },
+    "luna": {
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "tokens": {
+        "input_tokens": 8957815,
+        "cached_input_tokens": 8806656,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 58630,
+        "reasoning_output_tokens": 36724,
+        "total_tokens": 9016445
+      },
+      "normalized_standard_credits": 3.3124365,
+      "ready_commit": "57688b4c96e0f096d3a179137286b21be3d9e08d",
+      "target_passed": 42,
+      "full_passed": 1586,
+      "acceptance": {
+        "passed": 18,
+        "total": 19,
+        "failed": "non-hook-object-opaque"
+      },
+      "outcome": "failed_acceptance",
+      "interim_implementation_help": false
+    },
+    "sol_repair": {
+      "model": "gpt-6.1-sol",
+      "effort": "medium",
+      "tokens": {
+        "input_tokens": 3891151,
+        "cached_input_tokens": 3727488,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 5861,
+        "reasoning_output_tokens": 874,
+        "total_tokens": 3897012,
+        "uncached_input_tokens": 163663
+      },
+      "normalized_standard_credits": 18.96712,
+      "ready_commit": "ac567690d33daef781ccae2a6042d4894fcba61c",
+      "target_passed": 41,
+      "full_passed": 1585,
+      "acceptance": {
+        "passed": 19,
+        "total": 19
+      },
+      "outcome": "verified",
+      "monotonic_model_transition": true,
+      "same_thread_as_luna": true,
+      "interim_implementation_help": false
+    },
+    "repair_handoff": {
+      "model": "gpt-6.1-sol",
+      "effort": "max",
+      "tokens": {
+        "input_tokens": 118616,
+        "cached_input_tokens": 118272,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 444,
+        "reasoning_output_tokens": 0,
+        "total_tokens": 119060
+      },
+      "normalized_standard_credits": 0.42388
+    },
+    "normalized_standard_credits_total": 23.352906500000003,
+    "luna_with_initial_handoff": 3.9619065,
+    "B_over_A_ratio": 2.8406440708479153
+  },
+  "excluded_from_both": [
+    "common task/protocol definition",
+    "measurement apparatus and counters",
+    "comparison formatting",
+    "shared acceptance checks",
+    "publication",
+    "architect waiting"
+  ],
+  "limitations": [
+    "B was externally interrupted; all observed developer tokens including continuation and repeated full tests are retained; clean no-interruption cost is unknown",
+    "same long chat was reused for Sol repair; this is not a fresh Sol developer task comparison",
+    "different context history and warm/cold environments; one workflow sample, not a pure model ranking",
+    "time is secondary by user clarification; no direct quota percentage is available"
+  ],
+  "merge_or_runtime_apply": false,
+  "publication": {
+    "selected_variant": "A",
+    "code_commit": "b9893fef5b3d60de9500b4afb0b4ca7b683b2200",
+    "ready_commit": "3a6e1c6dbf995e70a6cd258409e39992517ddc13",
+    "accepted_by_user": false,
+    "merged": false,
+    "runtime_applied": false
+  }
+}
