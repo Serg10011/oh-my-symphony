@@ -208,6 +208,7 @@ def fake_board(tmp_path):
     shutil.copytree(KIT, board)
     for path in (node, work / "tests" / "helpers", locks, board / ".ours-state"):
         path.mkdir(parents=True, exist_ok=True)
+    netstat = node / "netstat"
     script = (board / "test.sh").read_text()
     script = script.replace(
         "NODE_BIN=/Users/helloworld10011/.local/node/v24.22.1/bin", f'NODE_BIN="{node}"',
@@ -215,7 +216,10 @@ def fake_board(tmp_path):
         "LOCK_ROOT=/Users/helloworld10011/symphony-projects/.locks", f'LOCK_ROOT="{locks}"',
     ).replace(
         "SUMMARIZE=/Users/helloworld10011/dev/oh-my-symphony/ours/hooks/summarize.py", f'SUMMARIZE="{SUMMARIZE}"',
+    ).replace(
+        "NETSTAT=/usr/sbin/netstat", f'NETSTAT="{netstat}"',
     )
+    assert f'NETSTAT="{netstat}"' in script
     (board / "test.sh").write_text(script)
     (board / "project.toml").write_text("[timeouts]\ntests_s = 720\n")
     (board / ".ours-state" / "baseline.json").write_text('{"tests_s": 1}')
@@ -233,7 +237,14 @@ with open(os.environ["FAKE_LOCK"], "a") as lock:
     else:
         raise RuntimeError("wrapper released the lock before npm")
 counter = Path("calls")
+call_number = len(counter.read_text().splitlines()) + 1 if counter.exists() else 1
 counter.write_text(counter.read_text() + "call\\n" if counter.exists() else "call\\n")
+timeline = Path(os.environ["FAKE_TIMELINE"])
+events = timeline.read_text().splitlines() if timeline.exists() else []
+expected = ["netstat", "npm"] * (call_number - 1) + ["netstat"]
+if events != expected:
+    raise RuntimeError(f"TIME_WAIT checks before npm: {events!r}, expected {expected!r}")
+timeline.write_text("\\n".join([*events, "npm"]) + "\\n")
 report = Path(next(x.split("=", 1)[1] for x in sys.argv if x.startswith("--outputFile.junit=")))
 retry = report.name == "junit-retry.xml"
 mode = os.environ.get("FAKE_RETRY", "pass")
@@ -244,13 +255,15 @@ case = "<failure/>" if failed else ""
 report.write_text('<testsuite name="retry.test.ts"><testcase name="flaky">' + case + '</testcase></testsuite>')
 sys.exit(1 if failed else 0)
 ''')
-    for name in ("node", "npm"):
+    netstat.write_text('#!/bin/bash\nprintf "netstat\\n" >> "$FAKE_TIMELINE"\n')
+    for name in ("node", "npm", "netstat"):
         (node / name).chmod(0o755)
     env = {
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "PYTHONDONTWRITEBYTECODE": "1",
         "SYMPHONY_PYTHON": sys.executable,
         "FAKE_LOCK": str(locks / "test.lock"),
+        "FAKE_TIMELINE": str(work / "timeline"),
     }
     return board, work, locks, env
 
@@ -264,6 +277,9 @@ def test_complete_wrapper_holds_lock_across_first_run_and_retry(fake_board, retr
         text=True, capture_output=True, timeout=20,
     )
     assert (work / "calls").read_text().splitlines() == ["call", "call"], result.stderr
+    assert (work / "timeline").read_text().splitlines() == [
+        "netstat", "npm", "netstat", "npm",
+    ], result.stderr
     assert result.returncode == (0 if retry == "pass" else 1), (result.stdout, result.stderr)
     expected = "passed=1 skipped=0 failed=0" if retry == "pass" else "passed=0 skipped=0 failed=1"
     assert result.stdout.strip().endswith("PIPELINE_TESTS " + expected)
