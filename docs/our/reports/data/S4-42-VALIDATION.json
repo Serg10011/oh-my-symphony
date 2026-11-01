@@ -1,0 +1,88 @@
+{
+  "task": "S4-42",
+  "date": "2026-11-02",
+  "captured_at": "2026-11-01T21:03:44.523566+00:00",
+  "base": "4bfb891ef85ff852a7c3f5fe7597b8a1e623d3e3",
+  "implementation_commit": "3aa81150c99723c39339a579025e62024f12cace",
+  "executor": {
+    "model": "gpt-6.1-sol",
+    "effort": "max",
+    "profile_changed": false
+  },
+  "runs": {
+    "repro-before": {
+      "tests": 1,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 0,
+      "sha256": "a48acc0b7f4fa509e1c6c274143371fdd6e9e3c67c1fd67dc1bd492a8c0869e0"
+    },
+    "regression-before": {
+      "tests": 2,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 1,
+      "sha256": "6883b41d007d2ba39da8aab20a39e7b84c37e40713120f032c10f64d380935e9"
+    },
+    "target": {
+      "tests": 52,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 52,
+      "sha256": "23e2bd21e2a5e15f16e7ae3ef079fca5130223b11f6f8447cfd7db5dd995a84c"
+    },
+    "repro-after": {
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 2,
+      "sha256": "275469d779842076e132ee9873f3e2bee2e1162bc79d3a56ddf422a1d0d2ecb4"
+    },
+    "parallel": {
+      "tests": 52,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 52,
+      "sha256": "1aaa910582da85cd05a7829e3558c52b37ead8963077b4fb0cf50a2c4d6f8d75"
+    },
+    "core-main": {
+      "tests": 4258,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 141,
+      "passed": 4117,
+      "sha256": "0ebb802d2b3bd2a2dbbc8cc29fdc58705c49a429205627994183b8a0f6ae2663"
+    },
+    "core-timing": {
+      "tests": 12,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1,
+      "passed": 11,
+      "sha256": "d3e47a51f12618d3639df1adc46944871647ca46ba541f5f1a38a0cb329f3ed0"
+    }
+  },
+  "full_core": {
+    "tests": 4270,
+    "passed": 4128,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 142
+  },
+  "source_sha256": {
+    "src/symphony/pm/codex_compatibility.py": "d76a31b12b2006cb9ef76758048119954c20f3a6f83d8d7a8e67e75a0f10d1b0",
+    "tests/_pm_codex_runtime.py": "e25bcdab8035a7ea1276300496deaf0cd0137c0bc0bf93d16d62d7aa65ded065",
+    "tests/test_pm_codex_compatibility.py": "9d24291829744d4b4057dc6bb3087b8b7357653308c39452279b423d1724780a"
+  },
+  "ruff_src_tests": "PASS",
+  "production_probe_deadline_changed": false,
+  "anthropic_models_limits_billing_changed": false,
+  "runtime_applied": false,
+  "real_agents_started": false,
+  "archive": "/Users/helloworld10011/symphony-projects/.backups/s4-42-development-20261102-000344"
+}
