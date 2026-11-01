@@ -6,11 +6,13 @@ A manager card (label `role:manager-plan`) is sliced in the state `Plan`. The
 agent writes `<board>/artifacts/<TASK>/work/plan.toml` (in its worktree:
 `docs/<TASK>/work/plan.toml`) and hands the plan in by moving the card to
 `Subtasks`. The agent creates no cards itself: this program does, after the
-plan passed every check, and all or nothing.
+plan passed every check. A durable journal keeps interrupted creation bound
+to that same plan; workers are released only after the full batch is staged.
 
     plan.py hook    hooks.after_run, second line (after check.py hook). Acts
                     only on a card in `Subtasks` with the manager label and
-                    without `## Plan Accepted`; any other card is passed over
+                    without `## Plan Accepted` (or with an unfinished creation
+                    journal); any other card is passed over
                     silently (the hook runs after every turn of every card).
                     Accepted plan: the integration branch, the subtask cards
                     (state `In Progress`, `request: <TASK>`), `## Plan
@@ -20,6 +22,9 @@ plan passed every check, and all or nothing.
                     `Plan`; after [plan] max_failures rejections - `needs_human`.
                     Always exits 0; the outcome is in <board>/.ours-state/
                     check.log (mode "plan").
+    plan.py recover TASK --board PATH
+                    Resume the original journal without a planning agent.
+                    Completed/released cards are never reset or overwritten.
     plan.py brief   hooks.before_run, last line. For a manager card in `Plan`
                     writes <board>/artifacts/<TASK>/work/limits.md: levels the
                     subtasks may have, turn limits, plan failures so far, the
@@ -33,9 +38,12 @@ Standard library only, Python >= 3.11, POSIX.
 
 from __future__ import annotations
 
+import argparse
+import hashlib
 import json
 import os
 import re
+import secrets
 import stat
 import subprocess
 import sys
@@ -43,7 +51,7 @@ import tempfile
 import tomllib
 import unicodedata
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import check
@@ -55,7 +63,7 @@ MANAGER_LABEL = integrate.MANAGER_LABEL
 STATE_PLAN = "Plan"
 STATE_SUBTASKS = "Subtasks"
 STATE_ESCALATE = "needs_human"
-# Where a subtask card starts: the manager's analysis replaces Todo.
+# Working state after the entire batch and acceptance notes are durable.
 STATE_WORKER = "In Progress"
 NOTE_ACCEPTED = "Plan Accepted"
 NOTE_FAILURE = "Plan Failure"
@@ -131,7 +139,8 @@ def _has_accepted(card: Path) -> bool:
 def _waiting_front(ctx: check.Context) -> dict | None:
     """Front matter of a card whose plan is waiting for the hook, else None.
 
-    Waiting = state Subtasks + manager label + no `## Plan Accepted`. A card in
+    Waiting = state Subtasks + manager label + no acceptance, or an existing
+    creation journal (its phase is checked under the task lock). A card in
     Subtasks without the label is logged as skipped; every other card is silent.
     """
     front = integrate.read_card_front(ctx.card, with_title=True)
@@ -141,7 +150,7 @@ def _waiting_front(ctx: check.Context) -> dict | None:
         check.log_event(ctx, ctx.issue_id, MODE, "skipped",
                         f"карточка в {STATE_SUBTASKS} без метки {MANAGER_LABEL}: это не сданный план")
         return None
-    if _has_accepted(ctx.card):
+    if _has_accepted(ctx.card) and not os.path.lexists(journal_path(ctx)):
         return None
     return front
 
@@ -487,7 +496,7 @@ def _existing_subtask_cards(ctx: check.Context, task: str) -> list[str]:
     return sorted(names)
 
 
-def environment_problems(ctx: check.Context, project: dict) -> list[str]:
+def environment_problems(ctx: check.Context, project: dict, *, recovering: bool = False) -> list[str]:
     """Reasons that the manager cannot fix: the card goes to needs_human at once."""
     task = ctx.issue_id
     problems = []
@@ -504,7 +513,7 @@ def environment_problems(ctx: check.Context, project: dict) -> list[str]:
         problems.append(f"из ID задачи {task!r} не получаются ID подзадач <ЗАДАЧА>-N "
                         f"(нужно {SUBTASK_ID_RE.pattern}: без точек, до 64 знаков)")
     existing = _existing_subtask_cards(ctx, task)
-    if existing:
+    if existing and not recovering:
         shown = ", ".join(name[:-3] for name in existing[:5])
         more = f" и ещё {len(existing) - 5}" if len(existing) > 5 else ""
         problems.append(f"на доске уже есть карточки подзадач этой задачи: {shown}{more}; "
@@ -529,10 +538,12 @@ def render_body(task: str, index: int, total: int, sub: Subtask) -> str:
 
 
 def _new_card(ctx: check.Context, binary: str, board_root: Path, task: str, sid: str, sub: Subtask,
-              blockers: list[str], label: str, description: Path) -> str | None:
-    """`symphony board new`; None on success, else what went wrong."""
-    argv = [binary, "board", "new", sid, sub.title, "--root", str(board_root), "--state", STATE_WORKER,
-            "--labels", label, "--request", task, "--level", sub.level]
+              blockers: list[str], label: str, description: Path, creation_key: str) -> str | None:
+    """Create/replay a staged card, refusing edits to an uncommitted batch."""
+    argv = [binary, "board", "new", sid, sub.title, "--root", str(board_root),
+            "--workflow", str(ctx.workflow_dir / 'WORKFLOW.md'), "--state", STATE_SUBTASKS,
+            "--labels", label, "--request", task, "--level", sub.level,
+            "--creation-key", creation_key, "--staged", "--json"]
     for blocker in blockers:
         argv += ["--blocked-by", blocker]
     argv += ["--description-file", str(description)]
@@ -542,18 +553,27 @@ def _new_card(ctx: check.Context, binary: str, board_root: Path, task: str, sid:
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"{type(exc).__name__}: {exc}"
     if proc.returncode != 0:
-        return f"код {proc.returncode}: {(proc.stdout + proc.stderr).decode('utf-8', errors='replace').strip()[:300]}"
+        return f"код {proc.returncode}: {(proc.stdout + proc.stderr).decode('utf-8', errors='replace').strip()[-600:]}"
+    try:
+        result = json.loads(proc.stdout)
+        front = {key: value for key, value in result['front'].items()
+                 if key not in ('created_at', 'updated_at') and value is not None}
+        expected = {'id': sid, 'identifier': sid, 'title': sub.title, 'state': STATE_SUBTASKS,
+                    'labels': [label], 'request': task, 'level': sub.level}
+        if blockers:
+            expected['blocked_by'] = blockers
+        if (front != expected or result['description'].strip() != description.read_text().strip()
+                or Path(result['path']).resolve() != (board_root / f'{sid}.md').resolve()
+                or (board_root / f'{sid}.md').is_symlink()):
+            return 'карточка изменена до принятия плана; нужна проверка человеком'
+    except (ValueError, KeyError, TypeError, AttributeError, OSError) as exc:
+        return f'нет подтверждения создания: {exc}'
     return None
 
 
-def create_cards(ctx: check.Context, cfg: check.Config | None, project: dict, plan: list[Subtask]
+def create_cards(ctx: check.Context, cfg: check.Config | None, project: dict, plan: list[Subtask], journal: dict
                  ) -> tuple[list[tuple[str, Subtask]], str | None, list[str]]:
-    """Create the cards in file order, all or nothing.
-
-    Returns (created, failure, leftovers): `failure` is why it stopped (the cards
-    of this run are removed then), `leftovers` the files that could not be
-    removed. Only the files this run created are ever removed.
-    """
+    """Create the immutable batch in order; retain staged cards on failure."""
     task = ctx.issue_id
     binary = check.resolve_symphony_bin(cfg)
     if binary is None:
@@ -561,20 +581,16 @@ def create_cards(ctx: check.Context, cfg: check.Config | None, project: dict, pl
     board_root = ctx.workflow_dir / pc.BOARD_DIR
     label = project["integration"]["worker_label"]
     created: list[tuple[str, Subtask]] = []
-    made: list[Path] = []  # files that did not exist before and exist now
     ids = {sub.key: f"{task}-{n}" for n, sub in enumerate(plan, 1)}
     failure: str | None = None
     with tempfile.TemporaryDirectory(prefix="ours-plan-") as tmp:
         for n, sub in enumerate(plan, 1):
             sid = ids[sub.key]
             path = board_root / f"{sid}.md"
-            existed = os.path.lexists(path)
             description = Path(tmp) / f"{sid}.md"
             description.write_text(render_body(task, n, len(plan), sub), encoding="utf-8")
             problem = _new_card(ctx, binary, board_root, task, sid, sub, [ids[k] for k in sub.blocked_by],
-                                label, description)
-            if not existed and os.path.lexists(path):
-                made.append(path)
+                                label, description, child_creation_key(journal, sid))
             if problem is None and not os.path.isfile(path):
                 problem = "команда board new отработала, но файла карточки нет"
             if problem is not None:
@@ -584,12 +600,140 @@ def create_cards(ctx: check.Context, cfg: check.Config | None, project: dict, pl
     if failure is None:
         return created, None, []
     leftovers = []
-    for path in made:
-        try:
-            path.unlink()
-        except OSError:
-            leftovers.append(path.name)
+    for sid in ids.values():
+        if os.path.lexists(board_root / f'{sid}.md'):
+            leftovers.append(f'{sid}.md')
     return [], failure, leftovers
+
+
+# ---------------------------------------------------------------------------
+# durable ordinary-plan creation (never adopt a pre-journal partial plan)
+# ---------------------------------------------------------------------------
+
+
+def journal_path(ctx: check.Context) -> Path:
+    return ctx.state_dir / f'{ctx.issue_id}.plan-create.json'
+
+
+def _digest(value: object) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
+                                     separators=(',', ':')).encode()).hexdigest()
+
+
+def write_journal(ctx: check.Context, journal: dict) -> None:
+    check.ensure_state_dir(ctx.state_dir)
+    path = journal_path(ctx)
+    if path.is_symlink():
+        raise PlanError('журнал создания — ссылка; запись запрещена')
+    content = json.dumps({'payload': journal, 'sha256': _digest(journal)}, ensure_ascii=False, indent=2) + '\n'
+    name: str | None = None
+    try:
+        fd, name = tempfile.mkstemp(prefix='.tmp-plan-create-', dir=ctx.state_dir)
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(name, path)
+        directory = os.open(ctx.state_dir, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if name is not None:
+            Path(name).unlink(missing_ok=True)
+
+
+def read_journal(ctx: check.Context) -> dict | None:
+    check.ensure_state_dir(ctx.state_dir)
+    path = journal_path(ctx)
+    try:
+        if not stat.S_ISREG(path.lstat().st_mode):
+            raise PlanError('журнал создания должен быть обычным файлом')
+    except FileNotFoundError:
+        return None
+    try:
+        if path.stat().st_size > 256 * 1024:
+            raise ValueError('слишком большой журнал')
+        data = json.loads(path.read_text(encoding='utf-8'))
+        journal = data['payload']
+        fields = {'version', 'task', 'board', 'project', 'branch', 'branch_head', 'created_branch',
+                  'operation', 'started_at', 'plan_text', 'plan_hash', 'parent', 'phase'}
+        if (not isinstance(journal, dict) or set(journal) != fields
+                or set(data) != {'payload', 'sha256'} or data['sha256'] != _digest(journal)
+                or type(journal['version']) is not int or journal['version'] != 1
+                or journal['task'] != ctx.issue_id or journal['board'] != str(ctx.workflow_dir.resolve())
+                or journal['phase'] not in ('creating', 'committed', 'done')
+                or not isinstance(journal['operation'], str)
+                or not re.fullmatch('[a-f0-9]{64}', journal['operation'])
+                or not isinstance(journal['plan_text'], str)
+                or not isinstance(journal['plan_hash'], str)
+                or not re.fullmatch('[a-f0-9]{64}', journal['plan_hash'])
+                or not isinstance(journal['branch_head'], str)
+                or not re.fullmatch('[a-f0-9]{40}|[a-f0-9]{64}', journal['branch_head'])
+                or not isinstance(journal['started_at'], str)
+                or not isinstance(journal['branch'], str)
+                or not isinstance(journal['parent'], dict)
+                or not isinstance(journal['project'], dict)
+                or type(journal['created_branch']) is not bool):
+            raise ValueError('неверная структура, идентичность или контрольная сумма')
+        return journal
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise PlanError(f'не читается журнал создания; нужен разбор человеком: {exc}') from exc
+
+
+def child_creation_key(journal: dict, sid: str) -> str:
+    return _digest([journal['operation'], sid, journal['plan_hash']])
+
+
+def _project_identity(project: dict) -> dict:
+    return {'repo': str(Path(project['project']['repo']).resolve()),
+            'base_branch': project['project']['base_branch'],
+            'worker_label': project['integration']['worker_label']}
+
+
+def _parent_identity(ctx: check.Context) -> dict:
+    front = integrate.read_card_front(ctx.card, with_title=True)
+    body = check.split_card(ctx.card.read_text(encoding='utf-8'))[1]
+    body = re.sub(r'<!-- symphony-artifacts -->.*?<!-- /symphony-artifacts -->', '', body, flags=re.DOTALL)
+    sections = re.split(r'(?=^#{1,2}\s)', body, flags=re.MULTILINE)
+    owned = re.compile(r'^##\s+(Plan Accepted|Plan Failure|Subtask Progress)\s*$', re.IGNORECASE)
+    authored = '\n\n'.join(section.strip() for section in sections
+                           if section.strip() and not owned.fullmatch(section.splitlines()[0]))
+    return {'title': front['title'], 'labels': list(front['labels']), 'request': front['request'],
+            'level': _card_level(ctx.card), 'created_at': _front_value(ctx.card, 'created_at'),
+            'body_hash': _digest(authored)}
+
+
+def _front_value(path: Path, key: str) -> str:
+    lines, _ = check.split_card(path.read_text(encoding='utf-8'))
+    for line in lines:
+        match = integrate._KEY_RE.match(line)
+        if match and match[1] == key:
+            return integrate._scalar(match[2] or '')
+    return ''
+
+
+def _check_journal(ctx: check.Context, cfg: check.Config, project: dict, journal: dict) -> list[Subtask]:
+    if (journal['project'] != _project_identity(project)
+            or journal['branch'] != integrate.integration_branch(project, ctx.issue_id)
+            or journal['parent'] != _parent_identity(ctx)):
+        raise PlanError('изменились проект, ветка или исходная карточка; восстановление остановлено')
+    if not integrate._is_ancestor(Path(project['project']['repo']), journal['branch_head'],
+                                 integrate._tip(Path(project['project']['repo']), journal['branch'])):
+        raise PlanError('интеграционная ветка потеряла исходный коммит плана')
+    plan, reasons = check_plan(journal['plan_text'], project, cfg, _card_level(ctx.card), ctx.workflow_dir)
+    if reasons or _digest([asdict(sub) for sub in plan]) != journal['plan_hash']:
+        raise PlanError('сохранённый план не прошёл текущие проверки: ' + '; '.join(reasons))
+    if os.path.lexists(plan_file(ctx.workflow_dir, ctx.issue_id)):
+        text, reasons = _read_plan_text(ctx.workflow_dir, ctx.issue_id)
+        current, problems = check_plan(text, project, cfg, _card_level(ctx.card), ctx.workflow_dir) if text else ([], reasons)
+        if problems or _digest([asdict(sub) for sub in current]) != journal['plan_hash']:
+            raise PlanError('файл плана изменён после начала создания; исходный журнал не переписывается')
+    allowed = {f'{ctx.issue_id}-{n}.md' for n in range(1, len(plan) + 1)}
+    if set(_existing_subtask_cards(ctx, ctx.issue_id)) - allowed:
+        raise PlanError('обнаружены лишние карточки подзадач; восстановление остановлено')
+    return plan
 
 
 # ---------------------------------------------------------------------------
@@ -619,7 +763,7 @@ def _reason_lines(reasons: list[str]) -> list[str]:
 
 def _fail(ctx: check.Context, cfg: check.Config | None, project: dict, reasons: list[str], *,
           environment: bool = False) -> int:
-    """No card is created. Back to Plan, or to needs_human: at once for an
+    """Preserve staged cards. Back to Plan, or to needs_human: at once for an
     `environment` reason (the manager cannot fix it, no attempt is spent), else
     after [plan] max_failures rejections."""
     limit = project["plan"]["max_failures"]
@@ -628,14 +772,21 @@ def _fail(ctx: check.Context, cfg: check.Config | None, project: dict, reasons: 
     else:
         failures = _bump_failures(ctx, "; ".join(reasons))
         target = STATE_ESCALATE if failures >= limit else STATE_PLAN
-    moved = integrate._board_mv(ctx, cfg, target)
+    retained = os.path.lexists(journal_path(ctx))
+    current_state = integrate.read_card_front(ctx.card)['state'] if retained else None
+    if retained and current_state.lower() not in (STATE_SUBTASKS.lower(), STATE_ESCALATE.lower()):
+        target, moved = current_state, None  # Preserve an operator's intervening state change.
+    else:
+        moved = integrate._board_mv(ctx, cfg, target)
     head = [f"- at: {check._now()}", "- check: ours/hooks/plan.py hook"]
     if environment:
         head.append("- attempts: не расходуется (причину руководитель исправить не может)")
     else:
         head.append(f"- failures: {failures} of {limit}")
     head.append(f"- moved to: {target}" if moved is None else f"- moved to: {target} FAILED (see check.log)")
-    tail = ["", "Карточки подзадач не созданы." + (
+    tail = ["", ("Журнал и созданные карточки сохранены. Для продолжения исходной операции: "
+                 f"plan.py recover {ctx.issue_id} --board {ctx.workflow_dir}" if retained else
+                 "Карточки подзадач не созданы.") + (
         " Исправь план-файл и снова переведи карточку в Subtasks." if target == STATE_PLAN else
         " Дальше разбирает человек.")]
     note_via = _note(ctx, NOTE_FAILURE, [*head, "", "Причины:", "", *_reason_lines(reasons), *tail])
@@ -647,36 +798,101 @@ def _fail(ctx: check.Context, cfg: check.Config | None, project: dict, reasons: 
     return 0
 
 
-def _accept(ctx: check.Context, cfg: check.Config | None, project: dict, plan: list[Subtask]) -> int:
+def _release_cards(ctx: check.Context, cfg: check.Config, plan: list[Subtask], journal: dict) -> None:
+    binary = check.resolve_symphony_bin(cfg)
+    if binary is None:
+        raise PlanError('не найден symphony для запуска сохранённого плана')
+    ids = [f'{ctx.issue_id}-{n}' for n in range(1, len(plan) + 1)]
+    for sid in ids:
+        _require_parent(ctx, journal, ids)
+        argv = [binary, 'board', 'release', sid, '--root', str(ctx.workflow_dir / pc.BOARD_DIR),
+                '--workflow', str(ctx.workflow_dir / 'WORKFLOW.md'),
+                '--creation-key', child_creation_key(journal, sid), '--state', STATE_WORKER]
+        try:
+            proc = subprocess.run(argv, cwd=ctx.workflow_dir, stdin=subprocess.DEVNULL,
+                                  capture_output=True, timeout=check.SYMPHONY_TIMEOUT_S, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise PlanError(f'не запустилась {sid}: {exc}') from exc
+        if proc.returncode:
+            raise PlanError(f'не запустилась {sid}: {(proc.stdout + proc.stderr).decode(errors="replace")[-600:]}')
+
+
+def _require_parent(ctx: check.Context, journal: dict, accepted_ids: list[str] | None = None) -> None:
+    if (_parent_identity(ctx) != journal['parent']
+            or integrate.read_card_front(ctx.card)['state'].lower() != STATE_SUBTASKS.lower()):
+        raise PlanError('исходная карточка изменена или выведена из Subtasks; запуск остановлен')
+    if accepted_ids is not None:
+        body = check.split_card(ctx.card.read_text(encoding='utf-8'))[1]
+        if (integrate.plan_accepted_ids(body) != accepted_ids
+                or f'- creation-operation: {journal["operation"]}' not in body):
+            raise PlanError('запись Plan Accepted изменена; запуск остановлен')
+
+
+def _commit_notes(ctx: check.Context, journal: dict, plan: list[Subtask]) -> None:
+    body = check.split_card(ctx.card.read_text(encoding='utf-8'))[1]
+    marker = f'- creation-operation: {journal["operation"]}'
+    ids = [f'{ctx.issue_id}-{n}' for n in range(1, len(plan) + 1)]
+    if _has_accepted(ctx.card):
+        if marker not in body or integrate.plan_accepted_ids(body) != ids:
+            raise PlanError('Plan Accepted относится к другой операции или изменён')
+    else:
+        branch_state = 'created' if journal['created_branch'] else 'already existed'
+        lines = [f'- at: {journal["started_at"]}', f'- branch: {journal["branch"]} ({branch_state})',
+                 f'- subtasks: {len(plan)}', marker, '']
+        lines += [f'- {sid} — {sub.title} — {sub.level}' for sid, sub in zip(ids, plan, strict=True)]
+        if _note(ctx, NOTE_ACCEPTED, lines) == 'failed':
+            raise PlanError('не сохранена запись Plan Accepted; подзадачи остаются в ожидании')
+    body = check.split_card(ctx.card.read_text(encoding='utf-8'))[1]
+    if not re.search(rf'^##\s+{re.escape(NOTE_PROGRESS)}\s*$', body, re.MULTILINE):
+        if _note(ctx, NOTE_PROGRESS, [f'0 of {len(plan)} merged']) == 'failed':
+            raise PlanError('не сохранена запись Subtask Progress; подзадачи остаются в ожидании')
+
+
+def _accept(ctx: check.Context, cfg: check.Config, project: dict, plan: list[Subtask],
+            text: str, journal: dict | None = None) -> int:
     import worktree  # lazy: worktree.py imports integrate.py
 
     task = ctx.issue_id
     repo = Path(project["project"]["repo"])
     branch = integrate.integration_branch(project, task)
     try:
-        with worktree.worktree_lock(worktree.common_dir(repo)):
-            _, created_branch = integrate.ensure_integration_branch(repo, branch, project["project"]["base_branch"])
-    except (integrate.IntegrateError, worktree.HookError) as exc:
-        return _fail(ctx, cfg, project, [f"не создалась интеграционная ветка {branch}: {exc}"], environment=True)
-    cards, failure, leftovers = create_cards(ctx, cfg, project, plan)
-    if failure is not None:
-        if leftovers:
-            return _fail(ctx, cfg, project, [
-                failure,
-                "созданные карточки удалить не удалось, осталось: " + ", ".join(leftovers),
-            ], environment=True)
-        return _fail(ctx, cfg, project, [failure])
+        if journal is None:
+            with worktree.worktree_lock(worktree.common_dir(repo)):
+                head, created_branch = integrate.ensure_integration_branch(repo, branch, project['project']['base_branch'])
+            journal = {'version': 1, 'task': task, 'board': str(ctx.workflow_dir.resolve()),
+                       'project': _project_identity(project), 'branch': branch, 'branch_head': head,
+                       'created_branch': created_branch, 'operation': secrets.token_hex(32),
+                       'started_at': check._now(), 'plan_text': text,
+                       'plan_hash': _digest([asdict(sub) for sub in plan]),
+                       'parent': _parent_identity(ctx), 'phase': 'creating'}
+            write_journal(ctx, journal)  # Must be durable before the first board new.
+        _require_parent(ctx, journal)
+        if journal['phase'] == 'creating':
+            _, failure, leftovers = create_cards(ctx, cfg, project, plan, journal)
+            if failure is not None:
+                raise PlanError(failure + ('; сохранено в ожидании: ' + ', '.join(leftovers) if leftovers else ''))
+            _require_parent(ctx, journal)
+            _commit_notes(ctx, journal, plan)
+            with ctx.card.open('rb') as stream:
+                os.fsync(stream.fileno())
+            directory = os.open(ctx.card.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+            journal['phase'] = 'committed'
+            write_journal(ctx, journal)
+        else:
+            _commit_notes(ctx, journal, plan)
+        _release_cards(ctx, cfg, plan, journal)
+        journal['phase'] = 'done'
+        write_journal(ctx, journal)
+    except (PlanError, OSError, integrate.IntegrateError, worktree.HookError) as exc:
+        return _fail(ctx, cfg, project, [str(exc)], environment=True)
     _reset_failures(ctx)
-    lines = [f"- at: {check._now()}", f"- branch: {branch} ({'created' if created_branch else 'already existed'})",
-             f"- subtasks: {len(cards)}", ""]
-    lines += [f"- {sid} — {sub.title} — {sub.level}" for sid, sub in cards]
-    note_via = _note(ctx, NOTE_ACCEPTED, lines)
-    progress_via = _note(ctx, NOTE_PROGRESS, [f"0 of {len(cards)} merged"])
-    check.log_event(ctx, ctx.issue_id, MODE, "accepted", f"{len(cards)} subtask cards created",
-                    branch=branch, cards=", ".join(sid for sid, _ in cards), note=note_via, progress=progress_via)
-    if "failed" in (note_via, progress_via):
-        _report(ctx, "the cards are created but the card of the task has no full notes; "
-                     "a repeated hook will send it to needs_human (cards already exist)")
+    check.log_event(ctx, ctx.issue_id, MODE, 'accepted', f'{len(plan)} subtask cards created',
+                    branch=branch, cards=', '.join(f'{task}-{n}' for n in range(1, len(plan) + 1)),
+                    note='journal', progress='journal')
     return 0
 
 
@@ -695,18 +911,30 @@ def _run_hook(ctx: check.Context, project: dict) -> int:
             cfg: check.Config | None = check.load_config(ctx.workflow_dir)
         except check.CheckError:
             cfg = None
-        problems = environment_problems(ctx, project)
+        try:
+            journal = read_journal(ctx)
+        except PlanError as exc:
+            return _fail(ctx, cfg, project, [str(exc)], environment=True)
+        if journal is not None and journal['phase'] == 'done':
+            return 0
+        problems = environment_problems(ctx, project, recovering=journal is not None)
         if problems:
             return _fail(ctx, cfg, project, problems, environment=True)
         if cfg is None:
             return _fail(ctx, cfg, project, ["не читаются правила проекта (project.toml)"], environment=True)
+        if journal is not None:
+            try:
+                plan = _check_journal(ctx, cfg, project, journal)
+            except (PlanError, integrate.IntegrateError) as exc:
+                return _fail(ctx, cfg, project, [str(exc)], environment=True)
+            return _accept(ctx, cfg, project, plan, journal['plan_text'], journal)
         text, reasons = _read_plan_text(ctx.workflow_dir, ctx.issue_id)
         plan: list[Subtask] = []
         if text is not None:
             plan, reasons = check_plan(text, project, cfg, _card_level(ctx.card), ctx.workflow_dir)
         if reasons:
             return _fail(ctx, cfg, project, reasons)
-        return _accept(ctx, cfg, project, plan)
+        return _accept(ctx, cfg, project, plan, text)
 
 
 def hook_main() -> int:
@@ -863,7 +1091,49 @@ def brief_main() -> int:
         return 0
 
 
-USAGE = "использование: plan.py hook | plan.py brief"
+def recover_main(task: str, board: Path) -> int:
+    """Resume the recorded operation without running a planning agent."""
+    try:
+        board = board.expanduser().resolve(strict=True)
+        project = pc.load_project(board)
+        integrate.check_task_id(task, project)
+        if not SUBTASK_ID_RE.fullmatch(task):
+            raise PlanError('неверный ID задачи')
+        ctx = check.Context(MODE, board, integrate.workspace_root(project) / task, task)
+        cfg = check.load_config(board)
+        lock = check.try_lock(ctx, LOCK_WAIT_S)
+        if lock is None:
+            raise PlanError('операция уже выполняется; блокировка занята')
+        with lock:
+            journal = read_journal(ctx)
+            if journal is None:
+                raise PlanError('нет журнала исходной операции; старые карточки автоматически не присваиваются')
+            if journal['phase'] == 'done':
+                print(f'{task}: создание плана уже завершено')
+                return 0
+            problems = environment_problems(ctx, project, recovering=True)
+            if problems:
+                raise PlanError('; '.join(problems))
+            plan = _check_journal(ctx, cfg, project, journal)
+            state = integrate.read_card_front(ctx.card)['state'].lower()
+            if state not in (STATE_SUBTASKS.lower(), STATE_ESCALATE.lower()):
+                raise PlanError('карточка должна быть в Subtasks или needs_human; её состояние сохранено')
+            if state == STATE_ESCALATE.lower():
+                error = integrate._board_mv(ctx, cfg, STATE_SUBTASKS)
+                if error is not None:
+                    raise PlanError(f'не удалось вернуть карточку в Subtasks: {error}')
+            _accept(ctx, cfg, project, plan, journal['plan_text'], journal)
+            if read_journal(ctx)['phase'] != 'done':
+                print(f'{task}: восстановление остановлено; причина в карточке и check.log', file=sys.stderr)
+                return 1
+        print(f'{task}: исходный план восстановлен, подзадачи разрешены к выполнению')
+        return 0
+    except (PlanError, OSError, check.CheckError, pc.ProjectError, integrate.IntegrateError) as exc:
+        print(f'plan.py recover: {exc}', file=sys.stderr)
+        return 1
+
+
+USAGE = "использование: plan.py hook | plan.py brief | plan.py recover TASK --board PATH"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -872,6 +1142,12 @@ def main(argv: list[str] | None = None) -> int:
         return hook_main()
     if args == ["brief"]:
         return brief_main()
+    if args and args[0] == 'recover':
+        parser = argparse.ArgumentParser(prog='plan.py recover')
+        parser.add_argument('task')
+        parser.add_argument('--board', required=True, type=Path)
+        parsed = parser.parse_args(args[1:])
+        return recover_main(parsed.task, parsed.board)
     print(f"plan.py: {USAGE}", file=sys.stderr)
     return 2
 

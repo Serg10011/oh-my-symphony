@@ -164,6 +164,14 @@ class Env:
         self.ws = tmp / "workspaces" / TASK
         self.ws.mkdir(parents=True)
         write(self.board / "test.sh", "exit 0\n")
+        write(self.board / 'WORKFLOW.md', '''---
+tracker:
+  kind: file
+  board_root: ./kanban
+  active_states: [Todo, Plan, In Progress, Verify, Document]
+  terminal_states: [Subtasks, needs_human, Done, Blocked, Archive]
+---
+''')
         self.symphony = str(REAL_SYMPHONY)
         self.write_project(integration=integration, levels=levels, plan_section=plan_section, checks=checks,
                            port=port)
@@ -777,49 +785,51 @@ def test_a_task_id_that_cannot_make_subtask_ids(tmp_path: Path, monkeypatch: pyt
 # ---------------------------------------------------------------------------
 
 
-def test_a_failure_on_the_second_card_removes_the_first(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_failure_on_the_second_card_retains_the_first_staged(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
     env.use_symphony(BREAK_ON_SECOND)
     env.task_card()
     env.plan(plan_text(sub("a"), sub("b"), sub("c")))
     assert env.hook(monkeypatch) == 0
-    assert env.cards() == [], "the first card must be removed"
-    assert env.state() == "Plan" and env.counter() == 1
+    assert env.cards() == ['OMS-9-1']
+    assert env.state('OMS-9-1') == 'Subtasks'
+    assert env.state() == "needs_human" and env.counter() is None
     note = env.body()
     assert "не создалась карточка OMS-9-2 (подзадача 2 из 3)" in note and "boom on the second card" in note
     assert "## Plan Accepted" not in note
     assert [e["outcome"] for e in env.events()] == ["rejected"]
 
 
-def test_partial_creation_does_not_reuse_retired_ids_on_retry(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_partial_creation_resumes_the_same_ids_on_retry(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
     env.use_symphony(BREAK_ON_SECOND)
     env.task_card()
     env.plan(plan_text(sub("a"), sub("b")))
     assert env.hook(monkeypatch) == 0
-    assert env.cards() == []
+    assert env.cards() == ['OMS-9-1']
     ledger = env.kanban / ".symphony-identifiers.json"
     assert "oms-9-1" in json.loads(ledger.read_text())["issued"]
 
     env.symphony = str(REAL_SYMPHONY)
     env.write_project()
-    env.task_card()
-    assert env.hook(monkeypatch) == 0
-    assert env.cards() == []
-    assert "already issued" in env.body()
-    assert env.state() == "needs_human"
-    assert env.counter() == 2
+    assert plan.recover_main(TASK, env.board) == 0
+    assert env.cards() == ['OMS-9-1', 'OMS-9-2']
+    assert env.state() == 'Subtasks'
+    assert all(env.state(sid) == 'In Progress' for sid in env.cards())
+    assert env.counter() is None
+    assert env.body().count('## Plan Accepted') == 1
 
 
-def test_only_the_cards_of_this_run_are_removed(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_partial_creation_keeps_foreign_cards_unchanged(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
     env.use_symphony(BREAK_ON_SECOND)
     env.task_card()
     other = write(env.kanban / "OMS-8-1.md", "---\nid: OMS-8-1\nstate: Todo\n---\n\nmine\n")
+    before = other.read_bytes()
     env.plan(plan_text(sub("a"), sub("b")))
     assert env.hook(monkeypatch) == 0
-    assert other.exists() and env.cards() == []
+    assert other.read_bytes() == before and env.cards() == ['OMS-9-1']
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
-def test_cards_that_cannot_be_removed_call_a_human(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_board_write_failure_retains_staged_cards_and_calls_a_human(env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
     env.use_symphony(LOCK_ON_FIRST)
     env.task_card()
     env.plan(plan_text(sub("a"), sub("b")))
@@ -830,7 +840,7 @@ def test_cards_that_cannot_be_removed_call_a_human(env: Env, monkeypatch: pytest
     assert env.cards() == ["OMS-9-1"]
     (event,) = [e for e in env.events() if e["outcome"] == "rejected"]
     assert event["needs_human"] == "environment"
-    assert "осталось: OMS-9-1.md" in event["reason"]
+    assert "сохранено в ожидании: OMS-9-1.md" in event["reason"]
     assert env.counter() is None
 
 

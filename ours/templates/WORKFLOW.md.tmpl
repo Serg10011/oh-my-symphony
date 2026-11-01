@@ -12,7 +12,8 @@ tracker:
   # Order matters: the core picks the first human/review/block state for a
   # hand-off, which must be Human Review (DECISIONS 2026-10-24, item g).
   # Subtasks = the plan is handed in and the workers do the subtasks; no agent
-  # works on the task card meanwhile. Terminal for the core, so it must keep
+  # works on the task card meanwhile. Staged workers also wait here until the
+  # entire batch is committed (S4-32). Terminal for the core, so it must keep
   # clear of the words human/review/block in its name. It is no "done":
   # agent.dependency_resolving_states below.
   # Auto-archive (core default, tracker.archive_after_days is not set): a
