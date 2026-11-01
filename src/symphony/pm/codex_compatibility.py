@@ -87,8 +87,9 @@ async def _run(command: list[str], home: Path, deadline: float) -> str:
     readers = [asyncio.create_task(bounded_read(process.stdout)),
                asyncio.create_task(bounded_read(process.stderr))]
     try:
+        timeout = _remaining(deadline)
         stdout, _, _ = await asyncio.wait_for(
-            asyncio.gather(readers[0], readers[1], process.wait()), _remaining(deadline)
+            asyncio.gather(readers[0], readers[1], process.wait()), timeout
         )
         if process.returncode != 0:
             raise ValueError("command failed")

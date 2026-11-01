@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 
@@ -9,7 +10,7 @@ import pytest
 
 from symphony._shell import _host_boot_token
 
-from symphony.pm import codex_compatibility, host_tools
+from symphony.pm import codex_compatibility, host_tools, planning
 from symphony.pm.models import PmError
 from symphony.pm.planning import DISABLED_FEATURES, PmPlanningClient
 from tests._pm_codex_runtime import fake_codex, schemas
@@ -106,7 +107,7 @@ def test_nested_network_control_must_explicitly_accept_false(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["ok", "unsupported_flags", "timeout", "server_request"])
+@pytest.mark.parametrize("mode", ["ok", "unsupported_flags", "server_request"])
 async def test_local_probe_processes_are_reaped_and_profile_is_unchanged(tmp_path, monkeypatch, mode):
     executable = fake_codex(tmp_path, mode=mode)
     spawned = []
@@ -121,20 +122,94 @@ async def test_local_probe_processes_are_reaped_and_profile_is_unchanged(tmp_pat
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", capture)
     admission = await codex_compatibility.admit_codex(str(executable),
-        deadline=asyncio.get_running_loop().time() + (0.3 if mode == "timeout" else 5))
+        deadline=asyncio.get_running_loop().time() + 5)
     assert (admission.reason is None) == (mode == "ok")
-    if mode == "timeout":
-        assert "timed out" in admission.reason
     for pid in spawned:
         with pytest.raises(ProcessLookupError):
             os.kill(pid, 0)
     assert all(not home.exists() for home in homes)
-    if mode != "timeout":
-        import json
-        calls = [json.loads(line) for line in executable.with_suffix(".calls").read_text().splitlines()]
-        startup = calls[-1]
-        assert startup[:2] == ["app-server", "--listen"]
-        assert {startup[index + 1] for index, value in enumerate(startup) if value == "--disable"} == set(DISABLED_FEATURES)
+    calls = [json.loads(line) for line in executable.with_suffix(".calls").read_text().splitlines()]
+    startup = calls[-1]
+    assert startup[:2] == ["app-server", "--listen"]
+    assert {startup[index + 1] for index, value in enumerate(startup) if value == "--disable"} == set(DISABLED_FEATURES)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("expiry", "reason"), [
+    ("before_wait", "planning operation exceeded its absolute deadline"),
+    ("during_wait", "timed out"),
+])
+async def test_expired_probe_reaps_started_processes_and_removes_profiles(tmp_path, monkeypatch, expiry, reason):
+    ready = tmp_path / "waiting.pid"
+    executable = fake_codex(tmp_path, mode="timeout", ready_file=ready)
+    spawned = []
+    homes = []
+    create = asyncio.create_subprocess_exec
+    remaining = planning._remaining
+    expiry_pending = False
+    expirations = []
+
+    async def capture(*args, **kwargs):
+        nonlocal expiry_pending
+        process = await create(*args, **kwargs)
+        spawned.append(process.pid)
+        homes.append(Path(kwargs["env"]["CODEX_HOME"]))
+        if "generate-json-schema" in args:
+            async def wait_until_stalled():
+                while not ready.exists():
+                    if process.returncode is not None:
+                        pytest.fail("probe exited before reaching its controlled wait")
+                    await asyncio.sleep(0.01)
+                assert int(ready.read_text()) == process.pid
+
+            try:
+                # This is only a fixture liveness guard, not the tested deadline.
+                await asyncio.wait_for(wait_until_stalled(), 10)
+            except BaseException:
+                if process.returncode is None:
+                    process.kill()
+                await process.wait()
+                raise
+            expiry_pending = True
+        return process
+
+    def expire_stalled_probe(deadline):
+        nonlocal expiry_pending
+        if not expiry_pending:
+            return remaining(deadline)
+        expiry_pending = False
+        expirations.append(expiry)
+        if expiry == "before_wait":
+            return remaining(float("-inf"))
+        # The process has acknowledged its 30-second wait. Startup latency
+        # cannot decide which expiry path this short read budget exercises.
+        return 0.01
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capture)
+    monkeypatch.setattr(planning, "_remaining", expire_stalled_probe)
+    loop = asyncio.get_running_loop()
+    errors = []
+    previous_handler = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _, context: errors.append(context["message"]))
+    try:
+        admission = await codex_compatibility.admit_codex(str(executable))
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(previous_handler)
+
+    assert expirations == [expiry]
+    assert admission.found == "0.162.1"
+    assert admission.reason is not None and reason in admission.reason
+    calls = [json.loads(line) for line in executable.with_suffix(".calls").read_text().splitlines()]
+    assert len(spawned) == len(homes) == len(calls) == 2
+    assert calls[0] == ["--version"]
+    assert calls[1][:2] == ["app-server", "generate-json-schema"]
+    assert int(ready.read_text()) == spawned[1]
+    for pid in spawned:
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    assert all(not home.exists() for home in homes)
+    assert errors == []
 
 
 @pytest.mark.asyncio
