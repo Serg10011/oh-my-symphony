@@ -1,0 +1,14 @@
+#!/usr/bin/env python3
+"""Print the latest check.py failures for a board (read-only)."""
+
+from __future__ import annotations
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
+
+import check_report  # noqa: E402
+
+if __name__ == "__main__":
+    sys.exit(check_report.run())
