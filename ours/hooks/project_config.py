@@ -195,7 +195,10 @@ _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
         "branch_prefix": (str, False),
         "worker_label": (str, False),
     },
-    "plan": {"max_subtasks": (int, False), "max_failures": (int, False)},
+    "plan": {
+        "max_subtasks": (int, False), "max_failures": (int, False),
+        "max_subtask_level": (str, False),
+    },
     "delivery": {"repo": (str, False), "base": (str, False)},
     "service": {"model": (str, False)},
     "billing": {"mode": (str, False), "api_key_file": (str, False)},
@@ -542,6 +545,12 @@ def validate_project(data: dict) -> dict:
     integration = out["integration"] = {**DEFAULT_INTEGRATION, **out["integration"]}
     _check_branch_prefix(integration["branch_prefix"])
     plan = out["plan"] = {**DEFAULT_PLAN, **out["plan"]}
+    if "max_subtask_level" in plan and plan["max_subtask_level"] not in out["levels"]["levels"]:
+        raise ProjectError(
+            f"{PROJECT_FILE}: [plan] max_subtask_level {plan['max_subtask_level']!r}: "
+            "такого уровня нет в [levels]; есть: "
+            + (", ".join(out["levels"]["levels"]) or "ни одного")
+        )
     if plan["max_subtasks"] > MAX_SUBTASKS_LIMIT:
         raise ProjectError(
             f"{PROJECT_FILE}: [plan] max_subtasks = {plan['max_subtasks']}: "
