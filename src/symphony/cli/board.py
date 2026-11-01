@@ -20,6 +20,7 @@ the current `WORKFLOW.md` (or an explicit one passed with --workflow).
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -90,7 +91,11 @@ def _tracker_from_root(root: Path) -> TrackerConfig:
 
 def _get_tracker(args: argparse.Namespace) -> TrackerConfig:
     if args.root is not None:
-        return _tracker_from_root(Path(args.root))
+        root = Path(args.root).resolve()
+        cfg = _resolve_config(args) if args.workflow is not None else None
+        if cfg is not None and cfg.tracker.kind == "file" and cfg.tracker.board_root == root:
+            return cfg.tracker
+        return _tracker_from_root(root)
     cfg = _resolve_config(args)
     if cfg is not None:
         if cfg.tracker.kind == "file":
@@ -215,6 +220,11 @@ def cmd_new(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
+    if args.staged and (args.creation_key is None or normalize_state(state) not in {
+        normalize_state(item) for item in tracker.terminal_states
+    }):
+        print('error: staged creation requires a creation key and a terminal (non-dispatched) state', file=sys.stderr)
+        return 1
     try:
         level = _check_level(args)
     except SymphonyError as exc:
@@ -234,7 +244,7 @@ def cmd_new(args: argparse.Namespace) -> int:
 
         # Validate + write under one board lock: two concurrent `board new`
         # calls must not each see an acyclic board and jointly create a cycle.
-        _, path = fbt.create_validated(
+        resolved, path = fbt.create_validated(
             identifier=identifier,
             prefix=args.prefix,
             validate=_validate,
@@ -248,11 +258,32 @@ def cmd_new(args: argparse.Namespace) -> int:
             blocked_by=blocked_by or None,
             request=args.request,
             level=level,
+            creation_key=args.creation_key,
         )
     except (OSError, SymphonyError) as exc:
         print(f"error: {_operator_message(exc)}", file=sys.stderr)
         return 1
-    print(f"created {path}")
+    if args.json:
+        front, body = parse_ticket_file(path)
+        print(json.dumps({'identifier': resolved, 'path': str(path), 'front': front, 'description': body}, ensure_ascii=False, default=str))
+    else:
+        print(f"created {path}")
+    return 0
+
+
+def cmd_release(args: argparse.Namespace) -> int:
+    tracker = _get_tracker(args)
+    legal = {s.lower(): s for s in (*tracker.active_states, *tracker.terminal_states)}
+    state = legal.get(args.state.lower())
+    if state is None:
+        print(f'error: unknown state {args.state!r}', file=sys.stderr)
+        return 1
+    try:
+        path = FileBoardTracker(tracker).release_created(args.id, args.creation_key, state)
+    except (OSError, SymphonyError) as exc:
+        print(f'error: {_operator_message(exc)}', file=sys.stderr)
+        return 1
+    print(f'released {args.id} ({path})')
     return 0
 
 
@@ -453,6 +484,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_new.add_argument("id", nargs="?", help="explicit unused identifier; omit for automatic allocation")
     p_new.add_argument("title", help="ticket title")
     p_new.add_argument("--prefix", default="TASK", help="prefix for automatic IDs (default: TASK)")
+    p_new.add_argument("--creation-key", default=None, help="idempotent creation key for an explicit ID (64 hex characters)")
+    p_new.add_argument("--json", action="store_true", help="print the resulting ticket as JSON")
+    p_new.add_argument('--staged', action='store_true', help='require a non-dispatched state and a creation key')
     p_new.add_argument("--state", default=None)
     p_new.add_argument("--priority", type=int, default=None)
     p_new.add_argument("--labels", default=None, help="comma-separated labels")
@@ -495,6 +529,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="task level (a name from WORKFLOW.md `levels`); sets model/effort/limits",
     )
     p_new.set_defaults(func=cmd_new)
+
+    p_release = sub.add_parser('release', help='release an unchanged staged creation once')
+    add_workflow_args(p_release)
+    p_release.add_argument('id', help='ticket identifier')
+    p_release.add_argument('--creation-key', required=True)
+    p_release.add_argument('--state', required=True, help='initial working state')
+    p_release.set_defaults(func=cmd_release)
 
     p_mv = sub.add_parser("mv", help="change a ticket state")
     add_workflow_args(p_mv)

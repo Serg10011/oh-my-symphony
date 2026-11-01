@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sqlite3
@@ -11,11 +12,24 @@ from dataclasses import asdict
 from pathlib import Path
 
 from ..errors import SymphonyError
-from ..issue import PlanningRef
+from ..issue import PlanningRef, parse_iso_timestamp
 from .validate import IDENTIFIER_RE, validate_identifier
 
 LEDGER_NAME = ".symphony-identifiers.json"
 _NUMBERED_ID = re.compile(r"^(.+)-(\d+)$")
+_DIGEST = re.compile(r"^[a-f0-9]{64}$")
+
+
+def creation_fingerprint(front: dict, body: str) -> str:
+    authored = {key: value for key, value in front.items()
+                if key not in ('created_at', 'updated_at') and value is not None}
+    payload = json.dumps({'front': authored, 'body': body.strip()}, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def validate_creation_key(key: str) -> None:
+    if not isinstance(key, str) or not _DIGEST.fullmatch(key):
+        raise SymphonyError('creation key must be a 64-character lowercase hex digest')
 
 
 def _exists(path: Path) -> bool:
@@ -52,6 +66,7 @@ class IdentifierLedger:
         self.issued: set[str] = set()
         self.high_water: dict[str, int] = {}
         self.planning_refs: dict[str, PlanningRef] = {}
+        self.creations: dict[str, dict[str, str]] = {}
         self.migrating = False
         try:
             self.migrating = not _exists(self.path)
@@ -87,6 +102,25 @@ class IdentifierLedger:
                 if ref is None:
                     raise ValueError("invalid planning identity")
                 self.planning_refs[_key(identifier)] = ref
+            creations = data.get('creations', {})
+            if not isinstance(creations, dict):
+                raise ValueError('invalid creation receipts')
+            for identifier, receipt in creations.items():
+                if not isinstance(identifier, str) or not IDENTIFIER_RE.fullmatch(identifier) or _key(identifier) not in self.issued:
+                    raise ValueError('creation receipt without an issued ID')
+                if not isinstance(receipt, dict) or set(receipt) != {'key', 'input_hash', 'created_at', 'identifier'}:
+                    raise ValueError('invalid creation receipt')
+                if not all(isinstance(value, str) and value for value in receipt.values()):
+                    raise ValueError('invalid creation receipt fields')
+                if not _DIGEST.fullmatch(receipt['key']) or not _DIGEST.fullmatch(receipt['input_hash']):
+                    raise ValueError('invalid creation digest')
+                if not IDENTIFIER_RE.fullmatch(receipt['identifier']) or _key(receipt['identifier']) != _key(identifier):
+                    raise ValueError('creation identity mismatch')
+                if parse_iso_timestamp(receipt['created_at']) is None:
+                    raise ValueError('invalid creation timestamp')
+                if _key(identifier) in self.creations:
+                    raise ValueError('duplicate creation identity')
+                self.creations[_key(identifier)] = receipt
         except (OSError, ValueError) as exc:
             raise SymphonyError(
                 "cannot read identifier ledger; restore it before creating or deleting tickets",
@@ -144,20 +178,34 @@ class IdentifierLedger:
         prefix = validate_identifier(prefix, field="prefix")
         return validate_identifier(f"{prefix}-{self.high_water.get(prefix.casefold(), 0) + 1}")
 
-    def reserve(self, identifier: str, planning_ref: PlanningRef | None = None) -> None:
+    def matching_creation(self, identifier: str, creation_key: str, input_hash: str) -> dict[str, str] | None:
+        receipt = self.creations.get(_key(identifier))
+        if receipt and receipt['identifier'] == identifier and receipt['key'] == creation_key and receipt['input_hash'] == input_hash:
+            return receipt
+        return None
+
+    def reserve(self, identifier: str, planning_ref: PlanningRef | None = None, *,
+                creation_key: str | None = None, input_hash: str = '', created_at: str = '') -> str | None:
         key = _key(identifier)
         # PM reconciliation restores the same staged task after a crash or
         # deletion. Ordinary CLI/API creates carry no planning identity.
         same_task = planning_ref is not None and self.planning_refs.get(key) == planning_ref
-        if key in self.issued and not same_task:
+        receipt = self.matching_creation(identifier, creation_key, input_hash) if creation_key else None
+        if key in self.issued and not same_task and receipt is None:
             raise SymphonyError("ticket identifier was already issued", identifier=identifier)
         self.observe(identifier, planning_ref)
+        if creation_key:
+            self.creations[key] = receipt or {'identifier': identifier, 'key': creation_key,
+                                              'input_hash': input_hash, 'created_at': created_at}
+            return self.creations[key]['created_at']
+        return None
 
     def save(self) -> None:
         """Persist reservations before publishing/deleting a ticket; gaps are safe."""
         data = json.dumps(
             {"version": 1, "issued": sorted(self.issued), "high_water": self.high_water,
-             "planning_refs": {key: asdict(ref) for key, ref in self.planning_refs.items()}},
+             "planning_refs": {key: asdict(ref) for key, ref in self.planning_refs.items()},
+             "creations": self.creations},
             sort_keys=True, indent=2,
         ) + "\n"
         name: str | None = None

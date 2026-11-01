@@ -64,7 +64,7 @@ from ..logging import get_logger
 from ..skills import normalize_skill_names
 from ..ticket_markdown import parse_body_dependency_ids
 from ..workflow import TrackerConfig
-from .identifiers import IdentifierLedger
+from .identifiers import IdentifierLedger, creation_fingerprint, validate_creation_key
 from .validate import (
     board_edges,
     dangling_blockers,
@@ -573,6 +573,18 @@ def write_ticket_atomic(path: Path, front: dict[str, Any], body: str) -> None:
     """Atomic write: temp file in same dir + rename."""
     content = serialize_ticket(front, body).replace("\n", os.linesep).encode("utf-8")
     _write_ticket_bytes_atomic(path, content)
+
+
+def _sync_ticket(path: Path) -> None:
+    """Durability barrier for recoverable creation/release operations."""
+    with path.open('rb') as stream:
+        os.fsync(stream.fileno())
+    if os.name != 'nt':
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
 
 
 def _write_ticket_bytes_atomic(path: Path, content: bytes) -> None:
@@ -1179,6 +1191,7 @@ class FileBoardTracker:
         request: str | None = None,
         planning_ref: PlanningRef | None = None,
         level: str | None = None,
+        creation_key: str | None = None,
     ) -> tuple[str, Path]:
         """Validate the board graph and create the ticket under one lock.
 
@@ -1193,16 +1206,20 @@ class FileBoardTracker:
         `validate` is called with the in-lock board snapshot and the resolved
         identifier; raising from it aborts before anything is written.
         """
+        if creation_key is not None:
+            validate_creation_key(creation_key)
+            if identifier is None or planning_ref is not None:
+                raise SymphonyError('creation key requires an explicit non-PM identifier')
         with _exclusive_lock(self._allocator_lock_path()):
             ledger = self._identifier_ledger_unlocked()
             resolved = validate_identifier(
                 identifier if identifier is not None else ledger.next_identifier(prefix)
             )
-            if validate is not None:
+            # A rejected new request must not leave a per-ticket lock that the
+            # legacy-ID migration would interpret as an issued reservation.
+            if validate is not None and (creation_key is None or self.find_path(resolved) is None):
                 validate(self.scan_all(), resolved)
             with self._ticket_lock_under_allocator(resolved):
-                if self.find_path(resolved) is not None:
-                    raise SymphonyError("ticket already exists", identifier=resolved)
                 front = self._new_ticket_front(
                     identifier=resolved,
                     title=title,
@@ -1216,11 +1233,66 @@ class FileBoardTracker:
                     planning_ref=planning_ref,
                     level=level,
                 )
-                ledger.reserve(resolved, planning_ref)
+                fingerprint = creation_fingerprint(front, description) if creation_key else ''
+                existing = self.find_path(resolved)
+                if existing is not None and creation_key:
+                    receipt = ledger.matching_creation(resolved, creation_key, fingerprint)
+                    if receipt and not existing.is_symlink():
+                        actual, _ = parse_ticket_file(existing)
+                        if (actual.get('id', actual.get('identifier')) == resolved
+                                and actual.get('identifier', resolved) == resolved
+                                and actual.get('created_at') == receipt['created_at']):
+                            _sync_ticket(existing)
+                            return resolved, existing
+                    raise SymphonyError('ticket creation identity mismatch', identifier=resolved)
+                if existing is not None:
+                    raise SymphonyError("ticket already exists", identifier=resolved)
+                original_created = ledger.reserve(resolved, planning_ref, creation_key=creation_key,
+                                                  input_hash=fingerprint, created_at=front['created_at'])
+                if original_created is not None:
+                    front['created_at'] = original_created
                 ledger.save()
                 path = self._root / f"{resolved}.md"
                 write_ticket_atomic(path, front, description)
+                if creation_key:
+                    _sync_ticket(path)
                 return resolved, path
+
+    def release_created(self, identifier: str, creation_key: str, new_state: str) -> Path:
+        """Release an unchanged staged creation once, preserving all later work.
+
+        The release marker and state are written atomically in the same ticket.
+        Repeating a release after a crash never resets a worker's progress or
+        an operator's subsequent state change.
+        """
+        validate_creation_key(creation_key)
+        identifier = validate_identifier(identifier)
+        with _exclusive_lock(self._allocator_lock_path()), self._ticket_lock_under_allocator(identifier):
+            ledger = self._identifier_ledger_unlocked()
+            receipt = next((item for item in ledger.creations.values()
+                            if item['identifier'] == identifier and item['key'] == creation_key), None)
+            path = self.find_path(identifier)
+            if receipt is None or path is None or path.is_symlink():
+                raise SymphonyError('ticket creation identity mismatch', identifier=identifier)
+            front, body = parse_ticket_file(path)
+            if (front.get('id', front.get('identifier')) != identifier
+                    or front.get('identifier', identifier) != identifier
+                    or front.get('created_at') != receipt['created_at']):
+                raise SymphonyError('ticket creation identity mismatch', identifier=identifier)
+            marker = {'key': creation_key, 'state': new_state}
+            if 'creation_release' in front:
+                if front['creation_release'] != marker:
+                    raise SymphonyError('ticket was released with different parameters', identifier=identifier)
+                _sync_ticket(path)
+                return path
+            if creation_fingerprint(front, body) != receipt['input_hash']:
+                raise SymphonyError('staged ticket changed before release', identifier=identifier)
+            front['creation_release'] = marker
+            front['state'] = new_state
+            front['updated_at'] = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            write_ticket_atomic(path, front, body)
+            _sync_ticket(path)
+            return path
 
     def create_with_next_identifier(
         self,
@@ -1260,12 +1332,13 @@ class FileBoardTracker:
         request: str | None = None,
         planning_ref: PlanningRef | None = None,
         level: str | None = None,
+        creation_key: str | None = None,
     ) -> Path:
         return self.create_validated(
             identifier=identifier, title=title, state=state,
             priority=priority, labels=labels, description=description,
             agent_kind=agent_kind, skills=skills, blocked_by=blocked_by,
-            request=request, planning_ref=planning_ref, level=level,
+            request=request, planning_ref=planning_ref, level=level, creation_key=creation_key,
         )[1]
 
     def _new_ticket_front(
