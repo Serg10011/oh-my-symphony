@@ -1380,6 +1380,25 @@
     else renderBoardColumns(scrollEl);
   }
 
+  function captureBoardScroll(scrollEl) {
+    const regions = new Map();
+    for (const node of scrollEl.querySelectorAll('[data-board-scroll]')) {
+      regions.set(node.dataset.boardScroll, { top: node.scrollTop, left: node.scrollLeft });
+    }
+    return { top: scrollEl.scrollTop, left: scrollEl.scrollLeft, regions };
+  }
+
+  function restoreBoardScroll(scrollEl, saved) {
+    for (const node of scrollEl.querySelectorAll('[data-board-scroll]')) {
+      const position = saved.regions.get(node.dataset.boardScroll);
+      if (!position) continue;
+      node.scrollTop = position.top;
+      node.scrollLeft = position.left;
+    }
+    scrollEl.scrollTop = saved.top;
+    scrollEl.scrollLeft = saved.left;
+  }
+
   function buildBoardViewToggle() {
     return el('div', { class: 'segmented board-view-toggle', role: 'group', 'aria-label': t('board.viewMode') }, [
       ['lanes', t('board.viewLanes')],
@@ -1467,7 +1486,7 @@
   function buildMobileLaneTabs(columns) {
     const maxIndex = Math.max(columns.length - 1, 0);
     if (state.mobileColumnIndex > maxIndex) state.mobileColumnIndex = maxIndex;
-    return el('div', { class: 'mobile-lane-tabs', role: 'tablist', 'aria-label': t('board.activeLanes') },
+    return el('div', { class: 'mobile-lane-tabs', 'data-board-scroll': 'lane-tabs', role: 'tablist', 'aria-label': t('board.activeLanes') },
       columns.map((col, index) => el('button', {
         class: `mobile-lane-tab${index === state.mobileColumnIndex ? ' active' : ''}`,
         type: 'button',
@@ -1808,7 +1827,7 @@
 
   function buildTerminalSectionEl(groups, live, readOnly) {
     const total = groups.reduce((sum, row) => sum + row.issues.length, 0);
-    const section = el('section', { class: 'terminal-section', 'aria-label': t('board.terminalStates') });
+    const section = el('section', { class: 'terminal-section', 'data-board-scroll': 'terminal-section', 'aria-label': t('board.terminalStates') });
     section.appendChild(el('div', { class: 'terminal-section-header' }, [
       el('div', { class: 'terminal-section-title' }, t('workflow.reviewAndParked')),
       el('span', { class: 'terminal-total' }, String(total)),
@@ -1828,7 +1847,7 @@
       ]),
       el('span', { class: 'column-count' }, String(issues.length)),
     ]));
-    const body = el('div', { class: 'terminal-card-list' });
+    const body = el('div', { class: 'terminal-card-list', 'data-board-scroll': `terminal:${col.name}` });
     for (const issue of issues) {
       const card = buildCardEl(issue, live[issue.identifier], readOnly);
       card.classList.add('terminal-card');
@@ -1849,7 +1868,7 @@
       el('div', { class: 'column-title-wrap' }, [dot, el('span', { class: 'column-title' }, col.name), el('span', { class: 'column-count' }, String(issues.length))]),
       el('div', { class: 'column-actions' }, actions),
     ]);
-    const body = el('div', { class: 'column-body' });
+    const body = el('div', { class: 'column-body', 'data-board-scroll': `lane:${col.name}` });
     if (!issues.length) body.appendChild(el('div', { class: 'column-empty' }, t('board.noTickets')));
     for (const issue of issues) body.appendChild(buildCardEl(issue, live[issue.identifier], readOnly));
     const column = el('div', { class: `column${col.terminal ? ' terminal' : ''}` }, [header, body]);
@@ -5444,7 +5463,13 @@
         }
         if (state.route === 'board') {
           if (firstLoad || !document.getElementById('board-scroll')) renderRoute();
-          else if (state.boardView === 'lanes') renderBoardColumns(document.getElementById('board-scroll'));
+          else if (state.boardView === 'lanes') {
+            const scrollEl = document.getElementById('board-scroll');
+            // Capture after the fetch: the reader may have scrolled while waiting.
+            const saved = captureBoardScroll(scrollEl);
+            renderBoardColumns(scrollEl);
+            restoreBoardScroll(scrollEl, saved);
+          }
         }
       }
     } catch (_err) {
