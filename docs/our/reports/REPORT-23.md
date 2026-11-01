@@ -2,6 +2,7 @@
 
 Дата: 01.11.2026. Задание: [TASK-S4-33](../tasks/TASK-S4-33.md).
 Ветка: `codex/board-scroll`, база `our-main @ 3acfc74`, код `49dfbe1`.
+[PR №63](https://github.com/Serg10011/oh-my-symphony/pull/63).
 Один Codex, без новых ролей. Слияние и применение ещё не разрешены.
 
 ## Результат
