@@ -140,6 +140,21 @@
   "pull_request": {
     "number": 66,
     "url": "https://github.com/Serg10011/oh-my-symphony/pull/66",
+    "state": "closed",
+    "accepted_by_sergey": true,
+    "merged": true,
+    "applied": true,
+    "accepted_head": "6ef39cf0ac8123fbc82f00f2a6058ec1380f6886",
+    "approval_date": "2026-11-01",
+    "merged_head": "c69ae38785ad149ff53b97e8a56eb7ea67275c4a",
+    "merge_commit": "d2dc881a6c0a763b59d50a0b6e8eda800457fae6",
+    "applied_code_commit": "d2dc881a6c0a763b59d50a0b6e8eda800457fae6"
+  },
+  "final_lifecycle_result": "/Users/helloworld10011/symphony-projects/.backups/s4-35-36-apply-20261101-144707/result.json",
+  "pull_request_state_recorded_before_merge": false,
+  "pull_request_at_approval": {
+    "number": 66,
+    "url": "https://github.com/Serg10011/oh-my-symphony/pull/66",
     "state": "open",
     "accepted_by_sergey": true,
     "merged": false,
@@ -147,6 +162,9 @@
     "accepted_head": "6ef39cf0ac8123fbc82f00f2a6058ec1380f6886",
     "approval_date": "2026-11-01"
   },
-  "final_lifecycle_result": "/Users/helloworld10011/symphony-projects/.backups/s4-35-36-apply-20261101-144707/result.json",
-  "pull_request_state_recorded_before_merge": true
+  "completion_date": "2026-11-01",
+  "developer_chats_archived": [
+    "01a19697-f3d9-7c30-be3a-aae13d8726cf",
+    "01a196c3-9981-72c1-9da7-546e2bd92f40"
+  ]
 }
