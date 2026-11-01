@@ -1398,6 +1398,150 @@ async def test_web_board_browser_e2e(web_base_url: str) -> None:
             await browser.close()
 
 
+def _seed_scroll_cards(board_dir: Path) -> None:
+    for state in ("Todo", "In Progress", "Human Review", "Done", "Blocked"):
+        for number in range(30):
+            identifier = f"SCROLL-{state.replace(' ', '-')}-{number:02}"
+            (board_dir / "kanban" / f"{identifier}.md").write_text(
+                _ticket(identifier, f"Scroll card {number:02} in {state}", state, 2),
+                encoding="utf-8",
+            )
+
+
+async def _scroll_snapshot(page: Any) -> dict[str, Any]:
+    return await page.evaluate("""() => {
+      const position = node => ({top: node.scrollTop, left: node.scrollLeft});
+      const terminal = document.querySelector('.terminal-section');
+      const tabs = document.querySelector('.mobile-lane-tabs');
+      return {
+        board: position(document.getElementById('board-scroll')),
+        terminal: terminal ? position(terminal) : null,
+        tabs: tabs ? position(tabs) : null,
+        groups: Object.fromEntries(Array.from(document.querySelectorAll('.terminal-group'), group => [
+          group.querySelector('.column-title').textContent,
+          position(group.querySelector('.terminal-card-list')),
+        ])),
+      };
+    }""")
+
+
+async def _set_scroll_positions(page: Any, top: int = 650) -> dict[str, Any]:
+    await page.evaluate("""top => {
+      const board = document.getElementById('board-scroll');
+      board.scrollTop = board.scrollHeight;
+      board.scrollLeft = 150;
+      const terminal = document.querySelector('.terminal-section');
+      if (terminal) terminal.scrollLeft = 90;
+      const tabs = document.querySelector('.mobile-lane-tabs');
+      if (tabs) tabs.scrollLeft = 70;
+      document.querySelectorAll('.terminal-group').forEach((group, index) => {
+        group.querySelector('.terminal-card-list').scrollTop = top + index * 80;
+      });
+      window.scrollTestColumns = document.querySelector('.board-columns');
+    }""", top)
+    return await _scroll_snapshot(page)
+
+
+async def _wait_for_board_poll(page: Any) -> None:
+    await page.wait_for_function(
+        "document.querySelector('.board-columns') !== window.scrollTestColumns",
+        timeout=8000,
+    )
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+async def test_board_poll_preserves_nested_scroll(
+    web_base_url: str, board_dir: Path, width: int,
+) -> None:
+    _seed_scroll_cards(board_dir)
+    assert async_playwright is not None
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page(viewport={"width": width, "height": 800})
+        errors: list[str] = []
+        mutations: list[str] = []
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.on("request", lambda request: mutations.append(request.url)
+                if request.method not in ("GET", "HEAD") else None)
+        try:
+            await page.goto(f"{web_base_url}/#/board", wait_until="networkidle")
+            await page.locator(".terminal-card-list").first.wait_for()
+            before = await _set_scroll_positions(page)
+            assert all(position["top"] >= 650 for position in before["groups"].values())
+            card = board_dir / "kanban/SCROLL-Done-06.md"
+            card.write_text(card.read_text().replace("Scroll card 06 in Done", "Freshly updated card"))
+            await _wait_for_board_poll(page)
+            assert await _scroll_snapshot(page) == before
+            assert await page.get_by_text("Freshly updated card", exact=True).count() == 1
+
+            # A shorter list clamps to its new range without disturbing peers.
+            await page.evaluate("window.scrollTestColumns = document.querySelector('.board-columns')")
+            for card in (board_dir / "kanban").glob("SCROLL-Done-*.md"):
+                card.unlink()
+            await _wait_for_board_poll(page)
+            after = await _scroll_snapshot(page)
+            assert after["groups"]["Done"]["top"] == 0
+            assert after["groups"]["Human Review"] == before["groups"]["Human Review"]
+            assert after["groups"]["Blocked"] == before["groups"]["Blocked"]
+            assert errors == [] and mutations == []
+        finally:
+            await browser.close()
+
+
+@pytest.mark.parametrize("width", [1280, 390])
+async def test_board_poll_preserves_all_lanes_viewport(
+    web_base_url: str, board_dir: Path, width: int,
+) -> None:
+    _seed_scroll_cards(board_dir)
+    assert async_playwright is not None
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page(viewport={"width": width, "height": 800})
+        try:
+            await page.goto(f"{web_base_url}/#/board", wait_until="networkidle")
+            await page.get_by_role("button", name="All", exact=True).click()
+            await page.wait_for_function("document.querySelectorAll('.board-columns > .column').length === 8")
+            before = await _set_scroll_positions(page)
+            assert before["board"]["top"] > 0 and before["board"]["left"] > 0
+            await _wait_for_board_poll(page)
+            assert await _scroll_snapshot(page) == before
+            await _assert_no_document_overflow(page, f"scroll all lanes {width}")
+        finally:
+            await browser.close()
+
+
+async def test_board_poll_keeps_scroll_changes_during_fetch(
+    web_base_url: str, board_dir: Path,
+) -> None:
+    _seed_scroll_cards(board_dir)
+    assert async_playwright is not None
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page(viewport={"width": 1280, "height": 800})
+        requested, release = asyncio.Event(), asyncio.Event()
+
+        async def delayed_board(route: Any) -> None:
+            response = await route.fetch()
+            requested.set()
+            await release.wait()
+            await route.fulfill(response=response)
+
+        try:
+            await page.goto(f"{web_base_url}/#/board", wait_until="networkidle")
+            await page.locator(".terminal-card-list").first.wait_for()
+            await _set_scroll_positions(page, 200)
+            await page.route("**/api/v1/board", delayed_board)
+            await asyncio.wait_for(requested.wait(), timeout=8)
+            # The reader can continue scrolling while the response is pending.
+            latest = await _set_scroll_positions(page, 900)
+            release.set()
+            await _wait_for_board_poll(page)
+            assert await _scroll_snapshot(page) == latest
+        finally:
+            release.set()
+            await browser.close()
+
+
 async def test_gate_stats_and_intent_tripwires_browser_e2e(
     git_web_base_url: str, git_board_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
