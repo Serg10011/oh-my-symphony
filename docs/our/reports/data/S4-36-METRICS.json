@@ -146,5 +146,7 @@
     "applied": false,
     "accepted_head": "6ef39cf0ac8123fbc82f00f2a6058ec1380f6886",
     "approval_date": "2026-11-01"
-  }
+  },
+  "final_lifecycle_result": "/Users/helloworld10011/symphony-projects/.backups/s4-35-36-apply-20261101-144707/result.json",
+  "pull_request_state_recorded_before_merge": true
 }
