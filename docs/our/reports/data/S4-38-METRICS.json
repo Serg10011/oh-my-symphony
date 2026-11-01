@@ -166,8 +166,13 @@
     "accepted_by_user": true,
     "acceptance_date": "2026-11-01",
     "approval_text": "ок. го дальше",
-    "merge_status": "prepared",
-    "runtime_applied": false,
-    "publication_fields_describe_original_snapshot": true
+    "merge_status": "merged_and_applied",
+    "runtime_applied": true,
+    "publication_fields_describe_original_snapshot": true,
+    "merged": true,
+    "merge_commit": "c0c1fa8dd252f9941c6daddfc5b98e7fe9652260",
+    "applied_code_commit": "f8f351ff56a934c48e32a116ec2695d9b3f45110",
+    "verified_at": "2026-11-01T16:56:47.950103+00:00",
+    "cycle_result": "/Users/helloworld10011/symphony-projects/.backups/s4-37-39-apply-20261101-194019/result.json"
   }
 }
