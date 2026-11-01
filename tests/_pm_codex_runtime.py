@@ -26,7 +26,8 @@ def schemas():
     return {"ThreadStartParams.json": thread, "TurnStartParams.json": turn}
 
 
-def fake_codex(directory: Path, version="0.162.1", *, missing=None, mode="ok", output=None, returncode=0, mutate=None):
+def fake_codex(directory: Path, version="0.162.1", *, missing=None, mode="ok", output=None, returncode=0, mutate=None,
+               ready_file: Path | None = None):
     directory.mkdir(exist_ok=True)
     executable = directory / "codex"
     data = schemas()
@@ -44,6 +45,11 @@ if "--version" in sys.argv:
     print({output if output is not None else 'codex-cli ' + version!r})
     raise SystemExit({returncode})
 if {mode!r} == "timeout":
+    if {str(ready_file) if ready_file is not None else None!r} is not None:
+        ready = Path({str(ready_file) if ready_file is not None else None!r})
+        pending = ready.with_suffix(".tmp")
+        pending.write_text(str(os.getpid()))
+        pending.replace(ready)
     time.sleep(30)
 if "generate-json-schema" in sys.argv:
     root = Path(sys.argv[sys.argv.index("--out") + 1]) / "v2"
