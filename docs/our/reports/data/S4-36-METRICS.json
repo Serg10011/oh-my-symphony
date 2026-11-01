@@ -141,8 +141,10 @@
     "number": 66,
     "url": "https://github.com/Serg10011/oh-my-symphony/pull/66",
     "state": "open",
-    "accepted_by_sergey": false,
+    "accepted_by_sergey": true,
     "merged": false,
-    "applied": false
+    "applied": false,
+    "accepted_head": "6ef39cf0ac8123fbc82f00f2a6058ec1380f6886",
+    "approval_date": "2026-11-01"
   }
 }
