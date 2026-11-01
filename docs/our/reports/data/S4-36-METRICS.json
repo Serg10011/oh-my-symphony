@@ -1,4 +1,16 @@
 {
+  "methodology_correction": {
+    "date": "2026-11-01",
+    "status": "invalid_for_task_cost_comparison",
+    "raw_usage_counters_preserved": true,
+    "reason": "Task execution and experimental monitoring, diagnostics, metering and report preparation were mixed in the windows.",
+    "architect_role_in_comparison": "Initial assignment, access and guidance only.",
+    "experimental_reporting_excluded_from_both_variants": true,
+    "corrected_task_cost_A": null,
+    "corrected_task_cost_B": null,
+    "ratios_are_historical_mixed_window_ratios": true,
+    "new_measurement_performed": false
+  },
   "task": "S4-36",
   "date": "2026-11-01",
   "base": "22b692f85c6b333d6038e593fb95f833fe535619",

@@ -161,5 +161,13 @@
     "merged": false,
     "runtime_applied": false,
     "pr": "https://github.com/Serg10011/oh-my-symphony/pull/69"
+  },
+  "lifecycle": {
+    "accepted_by_user": true,
+    "acceptance_date": "2026-11-01",
+    "approval_text": "ок. го дальше",
+    "merge_status": "prepared",
+    "runtime_applied": false,
+    "publication_fields_describe_original_snapshot": true
   }
 }
