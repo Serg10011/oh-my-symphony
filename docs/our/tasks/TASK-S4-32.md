@@ -7,6 +7,7 @@
 Подготовлено и проверено 01.11: код `b0e2bf2`, ядро **4127 / 137**,
 `ours/` **1539**, ruff PASS, 59 новых сценариев.
 [REPORT-22](../reports/REPORT-22.md). Ожидает приёмки Сергея.
+PR: [№62](https://github.com/Serg10011/oh-my-symphony/pull/62) в `our-main`.
 
 ## Проблема
 

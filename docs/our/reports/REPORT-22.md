@@ -2,6 +2,7 @@
 
 Дата: 01.11.2026. Задание: [TASK-S4-32](../tasks/TASK-S4-32.md).
 Ветка: `codex/plan-recovery`, база `our-main @ b28fe6b`, код `b0e2bf2`.
+PR: [№62](https://github.com/Serg10011/oh-my-symphony/pull/62) в нашу `our-main`.
 Исполнитель: один Codex. Слияние и обновление ещё не разрешены.
 
 ## Результат
