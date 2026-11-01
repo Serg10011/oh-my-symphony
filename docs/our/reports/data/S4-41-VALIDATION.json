@@ -1,0 +1,79 @@
+{
+  "task": "S4-41",
+  "date": "2026-11-01",
+  "executor": {
+    "model": "gpt-6.1-sol",
+    "effort": "max",
+    "profile_changed": false
+  },
+  "base": "6925494906bac785c2c680100efb2af67c80c31e",
+  "implementation_commit": "571efe0f34438f5ac9a75065d66071daef956c1e",
+  "pr": "https://github.com/Serg10011/oh-my-symphony/pull/72",
+  "checks": {
+    "target_first": {
+      "artifact": "/private/tmp/s4-41-target.xml",
+      "sha256": "96d1654fc3dce9d65a56a19f9912ed6e576a7a0a702316d25c97ccc17c2f3014",
+      "tests": 141,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 140
+    },
+    "new_scenarios": {
+      "artifact": "/private/tmp/s4-41-merging.xml",
+      "sha256": "03ba1a5bad5e03446e13f434f678e4424447f9f7977bfde984ecc6d587c6dc24",
+      "tests": 23,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 23
+    },
+    "full_first": {
+      "artifact": "/private/tmp/s4-41-full-ours-first.xml",
+      "sha256": "266759f2369dffbb6e9a5864bafd87160ba873c5e702a44d658c22f73e64db69",
+      "tests": 1644,
+      "failures": 1,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 1643
+    },
+    "updated_config_expectation": {
+      "artifact": "/private/tmp/s4-41-config.xml",
+      "sha256": "9f1bc1eac458cfcf77ea0dcb14462909a06253c7f81517c82832011126e316ba",
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 1
+    },
+    "full_final": {
+      "artifact": "/private/tmp/s4-41-full-ours.xml",
+      "sha256": "629f78df5ecae469efe38a7566276b30936418076e85091f5dd71bdccee43e63",
+      "tests": 1644,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 1644
+    }
+  },
+  "ruff_ours": "pass",
+  "diff_check": "pass",
+  "local_links_checked": 92,
+  "core_or_dependency_changes": false,
+  "pipeline_models_limits_billing_changed": false,
+  "runtime_applied": false,
+  "real_cards_or_agents_started": false,
+  "source_sha256": {
+    "ours/README.md": "8c5933be301fac80051af85528a757672ecc8f32341b8ef1f6e6b5f530f4fb2a",
+    "ours/hooks/README.md": "2c0001539c2b05c8a069d54e183f2b82439c63feea56034f6217290229b0c1a3",
+    "ours/hooks/check.py": "7dffb33a657732291a9932fbfced6a55800750a2dc3a6409cb3a0e1f1a70ccc3",
+    "ours/hooks/integrate.py": "3ade18030e25ea8e564c82bc332712708b9a5708fa9de1bf785bbb0a75be25e8",
+    "ours/prompts/base.md": "dd07ba37bcea71036cd1a4b02845a316381bda313bab04f865d4579e965498ee",
+    "ours/prompts/stages/verify.md": "71289a7ffa0f520f2880c7dc4a0cf942a46233b6d5cca52109903a830230b156",
+    "ours/templates/WORKFLOW.md.tmpl": "58c4a3077f0435df18463a61084521a7161687eb4e73415203da228026a70431",
+    "ours/tests/test_light_path_e2e.py": "dfb739c0d633b3da1df0391306395df760e424640579b19569b41e0b4c8da554",
+    "ours/tests/test_merging.py": "89026100e370cf0b989bbb9b1896c2b559ed9af228c2ee637627d99db4894c35",
+    "ours/tests/test_planning_states.py": "f6ac474048164af201e8cfca338d40117a727fa30a85f951859188e5e75acecf",
+    "ours/tests/test_project_kit.py": "57f66d2f010bd0e2eb225e2d58fab95ad1b1c20e1c998b64c216671003f57bc1"
+  }
+}

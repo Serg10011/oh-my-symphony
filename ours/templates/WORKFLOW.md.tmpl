@@ -19,7 +19,8 @@ tracker:
   # Auto-archive (core default, tracker.archive_after_days is not set): a
   # terminal card untouched for 30 days goes to Archive; editing the card
   # restarts the count (S4-19/S4-21 will append `## Subtask Progress`).
-  terminal_states: ["Human Review", needs_human, Subtasks, Done, Blocked, Archive]
+  # Merging is host-owned: no agent, no resolved dependencies, keep its workspace.
+  terminal_states: ["Human Review", needs_human, Subtasks, Merging, Done, Blocked, Archive]
 
 polling:
   interval_ms: 30000
@@ -233,7 +234,7 @@ hooks:
   auto_merge_target_branch: {{yaml:base}}
   # Subtasks: the task card's workspace is needed at the final check (S4-21);
   # otherwise terminal cleanup and the service restart would remove it.
-  preserve_workspace_states: ["Human Review", "needs_human", "Subtasks"]
+  preserve_workspace_states: ["Human Review", "needs_human", "Subtasks", "Merging"]
   # A blocked_by dependency is met only in Done. Without the key the core counts
   # every terminal state except Blocked/Archive/..., so Subtasks would be "met" (S4-17).
   dependency_resolving_states: [Done]

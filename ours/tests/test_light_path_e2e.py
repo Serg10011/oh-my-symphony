@@ -139,8 +139,8 @@ def test_the_prompts_render_with_and_without_the_worker_label(
     document = render_prompt("stages/document.md", labels=labels, request=request_id)
     # base.md shows the labels the Verify branch reads, and only when there are some.
     assert ("Labels: role:worker" in base) is bool(labels and labels[0] == "role:worker")
-    assert "subtask (role:worker + request): Verify -> Human Review (no Document)" in base
-    assert "a subtask goes from Verify straight to `Human Review`" in base
+    assert "subtask (integration enabled, role:worker + request): Verify -> Merging -> Done (host, no Document)" in base
+    assert "a subtask goes from Verify straight to `Merging`" in base
     assert "(a subtask needs only the first two" in base
     # verify.md: one text for every card, the branch is chosen by the labels and `request:`.
     assert "**Subtask** (the `Labels:` line of the ticket shows `role:worker` AND the ticket has a `request:` field)" in verify
