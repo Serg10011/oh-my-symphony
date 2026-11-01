@@ -167,6 +167,7 @@
     "code_and_ready_commit": "8d26e047eca04b6c36bb1856168d3d2e47b46d14",
     "accepted_by_user": false,
     "merged": false,
-    "runtime_applied": false
+    "runtime_applied": false,
+    "pr": "https://github.com/Serg10011/oh-my-symphony/pull/70"
   }
 }
