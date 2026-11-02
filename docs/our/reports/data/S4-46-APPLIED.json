@@ -38,7 +38,7 @@
   },
   "plist_lint": "PASS",
   "installed": true,
-  "documents_merged": false,
+  "documents_merged": true,
   "first_job": {
     "rc": 0,
     "pid": 8744,
@@ -192,8 +192,8 @@
   "screenshot_sha256": "e9a4f1e86e4da627375dba976e0be3df8d2e8321546434c4b26c7798681cb856",
   "runtime_configured": true,
   "documentation_accepted": true,
-  "documentation_merged": false,
-  "documentation_synced": false,
+  "documentation_merged": true,
+  "documentation_synced": true,
   "core_or_product_code_changed": false,
   "new_dependencies": false,
   "post_merge_manages_overview": false,
@@ -207,14 +207,69 @@
     "url": "https://github.com/Serg10011/oh-my-symphony/pull/82",
     "base": "our-main",
     "head": "codex/overview-autostart",
-    "state": "open",
+    "state": "closed",
     "accepted": true,
-    "merged": false
+    "merged": true,
+    "merge_commit": "2d70ee0016a920a58c7c978ac26e8e7d0ea0acad"
   },
   "documentation_acceptance": {
     "date": "2026-11-02",
     "user_reply": "Давай",
     "accepted_head": "f804e5d4df9c629fc289d2f525d37d68e324ec67",
     "scope": "merge PR 82 and synchronize ordinary documents; preserve running services and baseline"
+  },
+  "documentation_merge_commit": "2d70ee0016a920a58c7c978ac26e8e7d0ea0acad",
+  "documentation_sync": {
+    "status": "PASS",
+    "head": "2d70ee0016a920a58c7c978ac26e8e7d0ea0acad",
+    "checks": {
+      "files_preserved": true,
+      "history_preserved": true,
+      "services_preserved": true,
+      "baseline_preserved": true,
+      "hold_preserved": true,
+      "overview_preserved": true,
+      "overview_config_preserved": true,
+      "oms_idle": true,
+      "eve_off": true,
+      "overview_running": true,
+      "accepted_source_preserved": true,
+      "git:/Users/helloworld10011/dev/oh-my-symphony": true,
+      "git:/Users/helloworld10011/dev/oms-pipeline": true,
+      "applied_state": true,
+      "baseline_code_ancestor": true,
+      "no_doctor": true,
+      "no_restart": true,
+      "no_new_baseline": true
+    },
+    "services": {
+      "oms": {
+        "rc": 0,
+        "pid": 5117
+      },
+      "eve": {
+        "rc": 113,
+        "pid": null
+      },
+      "inbox-runner": {
+        "rc": 0,
+        "pid": 57583
+      },
+      "overview": {
+        "rc": 0,
+        "pid": 8768
+      }
+    }
+  },
+  "documentation_sync_archive": "/Users/helloworld10011/symphony-projects/.backups/s4-46-docs-20261102-180909",
+  "documentation_post_merge_exit_code": 0,
+  "new_measurement_during_documentation_sync": false,
+  "service_restart_during_documentation_sync": false,
+  "early_verification": {
+    "passed": 16,
+    "total": 18,
+    "cause": "invoked before post-merge completed",
+    "preserved_as": "primary-sync-before-completion.json",
+    "final_after_exit": "18/18 PASS"
   }
 }
