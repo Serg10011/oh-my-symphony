@@ -204,5 +204,22 @@
     "state": "open",
     "accepted": false,
     "merged": false
+  },
+  "final_session_metadata_observations": {
+    "initial_cli_read_protected_paths_unchanged": true,
+    "later_exactly_unchanged_paths": 293,
+    "git_index": {
+      "path": "/Users/helloworld10011/dev/oms-pipeline/.git/index",
+      "content_and_mode_unchanged": true,
+      "mtime_refreshed_by_auxiliary_git_status": true
+    },
+    "generated_progress": {
+      "path": "/Users/helloworld10011/symphony-projects/oms/WORKFLOW-PROGRESS.md",
+      "only_updated_timestamp_changed": true,
+      "previous_bytes_verified_against_initial_sha256": true
+    },
+    "cards_configuration_history_registry_unchanged": true,
+    "first_strict_final_check": "stopped on the two metadata observations",
+    "further_git_status_uses_no_optional_locks": true
   }
 }
