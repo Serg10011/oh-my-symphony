@@ -1,0 +1,94 @@
+{
+  "status": "documents_synced",
+  "accepted_head": "8a31ee9c0ebc30a86afc7a1bfffac828aaaa375c",
+  "merge_head": "d64980180929a4adaae1b6018efab69e4919e8b3",
+  "base": "63b2de7d13b4e6635b3eefb61a1b4585bd006756",
+  "merge_commit": "10659a7dd04e39b7877ac93bceac64a6663f7698",
+  "verified_at": "2026-11-02T04:52:42.347887+00:00",
+  "primary_document_sync": {
+    "status": "PASS",
+    "head": "10659a7dd04e39b7877ac93bceac64a6663f7698",
+    "checks": {
+      "files_preserved": true,
+      "history_preserved": true,
+      "services_preserved": true,
+      "baseline_preserved": true,
+      "hold_preserved": true,
+      "oms_idle": true,
+      "eve_off": true,
+      "git:/Users/helloworld10011/dev/oh-my-symphony": true,
+      "git:/Users/helloworld10011/dev/oms-pipeline": true,
+      "applied_state": true,
+      "baseline_code_ancestor": true,
+      "no_doctor": true,
+      "no_restart": true,
+      "no_new_baseline": true
+    },
+    "services": {
+      "oms": {
+        "rc": 0,
+        "pid": 32417
+      },
+      "eve": {
+        "rc": 113,
+        "pid": null
+      },
+      "inbox-runner": {
+        "rc": 0,
+        "pid": 57583
+      }
+    }
+  },
+  "source_sha256": {
+    "src/symphony/hub.py": "103837980a2aeae78436d8750f0cd313d461222d175e1f2472050c66e076e5d7",
+    "src/symphony/projects.py": "4c4e60a019f266c7ca0d8362ecfe662bd19cef9773fb9b1df5dd77c94417793d",
+    "src/symphony/service.py": "e09b76ee67f4b2f9390565427e0d90eee014202b457403d78e83367d361ea0aa",
+    "src/symphony/cli/project.py": "81ed63ed62c85c8f78774fafe6913475f58795d453908da78a3e5d9db8ff7040",
+    "tests/test_hub.py": "7cf269a8e7b4e47aeb0c377285019331a85646e0ce406dbb9df42c59893cc3b2"
+  },
+  "new_test_run": false,
+  "new_baseline_measure": false,
+  "service_restart": false,
+  "runtime_applied": false,
+  "hub_deployed": false,
+  "new_pipeline_jobs": false,
+  "task": "S4-44",
+  "date": "2026-11-02",
+  "accepted_pr": 78,
+  "applied_kind": "documents_only",
+  "backup": "/Users/helloworld10011/symphony-projects/.backups/s4-44-apply-20261102-074949",
+  "snapshot_files": 173,
+  "sqlite_backups": 2,
+  "baseline_preserved": {
+    "base_branch": "our-main",
+    "base_sha": "4f6f3fb8b311e3751c5e08dc61d2704914dbf1dd",
+    "passed": 5804,
+    "skipped": 142,
+    "failed": 0,
+    "setup_s": 8.3,
+    "tests_s": 575.9,
+    "measured_at": "2026-11-01T22:20:54Z"
+  },
+  "services_preserved": {
+    "oms": {
+      "rc": 0,
+      "pid": 32417
+    },
+    "eve": {
+      "rc": 113,
+      "pid": null
+    },
+    "inbox-runner": {
+      "rc": 0,
+      "pid": 57583
+    }
+  },
+  "global_registry_preserved": true,
+  "real_projects_registered": false,
+  "anthropic_models_limits_billing_changed": false,
+  "executor": {
+    "model": "gpt-6.1-sol",
+    "effort": "max",
+    "profile_changed": false
+  }
+}
