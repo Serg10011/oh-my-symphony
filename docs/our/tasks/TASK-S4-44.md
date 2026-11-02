@@ -54,3 +54,7 @@ EVE остаётся выключенной. Регистрация настоя
 [S4-44-VALIDATION.json](../reports/data/S4-44-VALIDATION.json).
 Архив — `/Users/helloworld10011/symphony-projects/.backups/s4-44-research-20261102-064932`.
 Готово для приёмки; слияние и внедрение не выполнялись.
+
+[PR №78](https://github.com/Serg10011/oh-my-symphony/pull/78) открыт в our-main.
+Основной коммит исследования — 642b135. Публикация ссылок не меняет
+исследованные исходники или сохранённые результаты проверок.
