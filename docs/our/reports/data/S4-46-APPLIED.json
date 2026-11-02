@@ -191,7 +191,7 @@
   },
   "screenshot_sha256": "e9a4f1e86e4da627375dba976e0be3df8d2e8321546434c4b26c7798681cb856",
   "runtime_configured": true,
-  "documentation_accepted": false,
+  "documentation_accepted": true,
   "documentation_merged": false,
   "documentation_synced": false,
   "core_or_product_code_changed": false,
@@ -208,7 +208,13 @@
     "base": "our-main",
     "head": "codex/overview-autostart",
     "state": "open",
-    "accepted": false,
+    "accepted": true,
     "merged": false
+  },
+  "documentation_acceptance": {
+    "date": "2026-11-02",
+    "user_reply": "Давай",
+    "accepted_head": "f804e5d4df9c629fc289d2f525d37d68e324ec67",
+    "scope": "merge PR 82 and synchronize ordinary documents; preserve running services and baseline"
   }
 }
