@@ -220,6 +220,17 @@
     },
     "cards_configuration_history_registry_unchanged": true,
     "first_strict_final_check": "stopped on the two metadata observations",
-    "further_git_status_uses_no_optional_locks": true
+    "further_git_status_uses_no_optional_locks": true,
+    "later_exactly_unchanged_paths_scope": "first late comparison, before independent EVE merge at 08:31"
+  },
+  "independent_eve_work_observed": {
+    "repo": "/Users/helloworld10011/dev/eve-pipeline",
+    "branch": "dev",
+    "head_short": "3f12230",
+    "merge": "codex/mcp-context",
+    "at_local": "2026-11-02T08:31:02+03:00",
+    "clean": true,
+    "touched_by_this_task": false,
+    "note": "Git metadata changes occurred after the initial read-only snapshot window; this active repository is not expected to remain frozen over the session."
   }
 }
