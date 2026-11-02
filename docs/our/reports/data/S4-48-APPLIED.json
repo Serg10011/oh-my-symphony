@@ -1,0 +1,89 @@
+{
+  "task": "S4-48",
+  "date": "2026-11-02",
+  "scope": "accepted_developer_rules_documentation_sync",
+  "status": "documents_synced",
+  "documentation_accepted": true,
+  "documentation_merged": true,
+  "documentation_synced": true,
+  "accepted_head": "aaaf86a3ecaefec37c4d8837d3f28bab87772025",
+  "approval_record": "252e9c769279ae0440b57ab8fd7e98f3614181a4",
+  "pr": 86,
+  "merge_commit": "518aaa5b41fcc3e5869926f2dc77b818c5a7bd64",
+  "post_merge_exit_code": 0,
+  "document_sync": {
+    "status": "PASS",
+    "head": "518aaa5b41fcc3e5869926f2dc77b818c5a7bd64",
+    "checks": {
+      "files_preserved": true,
+      "history_preserved": true,
+      "services_preserved": true,
+      "baseline_preserved": true,
+      "hold_preserved": true,
+      "overview_preserved": true,
+      "overview_config_preserved": true,
+      "worktree_paths_preserved": true,
+      "oms_idle": true,
+      "eve_off": true,
+      "overview_running": true,
+      "accepted_source_preserved": true,
+      "git:/Users/helloworld10011/dev/oh-my-symphony": true,
+      "git:/Users/helloworld10011/dev/oms-pipeline": true,
+      "applied_state": true,
+      "baseline_code_ancestor": true,
+      "no_render": true,
+      "no_doctor": true,
+      "no_restart": true,
+      "no_new_baseline": true
+    },
+    "services": {
+      "oms": {
+        "rc": 0,
+        "pid": 5117
+      },
+      "eve": {
+        "rc": 113,
+        "pid": null
+      },
+      "inbox-runner": {
+        "rc": 0,
+        "pid": 57583
+      },
+      "overview": {
+        "rc": 0,
+        "pid": 8768
+      }
+    }
+  },
+  "source_sha256": {
+    "ours/bin/project-overview": "5e901d01286348f8f5d82523c3d8e83e1b2f531fa816603b8674db6f0a536d0c",
+    "ours/hooks/project_overview.py": "5ccb239fd54141dc5cdd282222ee13f81d76c6aaf19d251a1bcd5a1673fc4ec0",
+    "ours/templates/overview.html": "5da53e2b7cac223621342b5dfd0e91dc27c26e2c88266fbbb156ee5779f2a43e",
+    "ours/templates/overview.js": "791c5c75efef4d703a4368c3536d86f31139b2a06d2e87633e243c5d343517d1",
+    "ours/tests/test_project_overview.py": "5bd1de4c4683bab001b9564a294f4fdf1ac9df17c05036503172cb0494182a04"
+  },
+  "service_heads": {
+    "/Users/helloworld10011/dev/oh-my-symphony": "518aaa5b41fcc3e5869926f2dc77b818c5a7bd64",
+    "/Users/helloworld10011/dev/oms-pipeline": "518aaa5b41fcc3e5869926f2dc77b818c5a7bd64"
+  },
+  "protected_snapshot_paths": 174,
+  "protected_comparison_paths": 173,
+  "applied_state_compared_separately": true,
+  "history_databases": 2,
+  "historical_baseline_unchanged": true,
+  "historical_baseline_task": "S4-45",
+  "historical_baseline_counts": {
+    "passed": 5830,
+    "skipped": 142,
+    "failed": 0
+  },
+  "new_baseline_measurement": false,
+  "service_restart": false,
+  "cleanup": false,
+  "api_calls": false,
+  "api_profiles_installed": false,
+  "anthropic_models_limits_billing_changed": false,
+  "archive": "/Users/helloworld10011/symphony-projects/.backups/s4-48-docs-20261102-214604",
+  "completion_cycle_record": "/Users/helloworld10011/symphony-projects/.backups/s4-48-docs-20261102-214604/result.json",
+  "note": "Подтверждённая синхронизация PR №86. Применение отдельной итоговой записи требует своего подтверждения и фиксируется в архиве и её PR."
+}
