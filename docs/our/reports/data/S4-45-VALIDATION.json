@@ -195,5 +195,14 @@
     "Снимки интерфейса используют временные тестовые карточки. Реальные OMS/EVE отдельно проверены разовой командой --snapshot."
   ],
   "local_links_checked": 119,
-  "diff_check": "PASS"
+  "diff_check": "PASS",
+  "pull_request": {
+    "number": 80,
+    "url": "https://github.com/Serg10011/oh-my-symphony/pull/80",
+    "base": "our-main",
+    "head": "codex/project-overview",
+    "state": "open",
+    "accepted": false,
+    "merged": false
+  }
 }
