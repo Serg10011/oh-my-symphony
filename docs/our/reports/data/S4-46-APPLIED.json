@@ -201,5 +201,14 @@
     "user_launch_agents_before": [],
     "oms_and_queue_registered": true,
     "complete_startup_path_investigated": false
+  },
+  "documentation_pr": {
+    "number": 82,
+    "url": "https://github.com/Serg10011/oh-my-symphony/pull/82",
+    "base": "our-main",
+    "head": "codex/overview-autostart",
+    "state": "open",
+    "accepted": false,
+    "merged": false
   }
 }

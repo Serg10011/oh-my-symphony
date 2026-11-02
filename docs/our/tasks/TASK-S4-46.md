@@ -46,3 +46,5 @@ ours/bin/project-overview из служебной копии, отдельные
 замер и службы. [REPORT-36](../reports/REPORT-36.md),
 [фактический итог](../reports/data/S4-46-APPLIED.json). Код не менялся.
 История и документы ещё не приняты и не влиты.
+
+[PR №82](https://github.com/Serg10011/oh-my-symphony/pull/82) открыт для приёмки истории; база our-main.
