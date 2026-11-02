@@ -1,0 +1,220 @@
+{
+  "task": "S4-46",
+  "status": "running_verified",
+  "verified_at": "2026-11-02T10:09:05.622386+00:00",
+  "executor": {
+    "model": "gpt-6.1-sol",
+    "effort": "max",
+    "profile_changed": false
+  },
+  "authorized_by_user": true,
+  "agent_path": "/Users/helloworld10011/Library/LaunchAgents/local.symphony.overview.plist",
+  "log_path": "/Users/helloworld10011/Library/Logs/Symphony/overview.log",
+  "url": "http://127.0.0.1:8788/",
+  "label": "local.symphony.overview",
+  "plist": {
+    "Label": "local.symphony.overview",
+    "ProgramArguments": [
+      "/Users/helloworld10011/dev/oh-my-symphony/.venv/bin/python",
+      "-B",
+      "/Users/helloworld10011/dev/oh-my-symphony/ours/bin/project-overview",
+      "--projects-root",
+      "/Users/helloworld10011/symphony-projects",
+      "--port",
+      "8788"
+    ],
+    "WorkingDirectory": "/Users/helloworld10011/dev/oh-my-symphony",
+    "EnvironmentVariables": {
+      "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+      "HOME": "/Users/helloworld10011",
+      "PYTHONUNBUFFERED": "1",
+      "PYTHONDONTWRITEBYTECODE": "1"
+    },
+    "StandardOutPath": "/Users/helloworld10011/Library/Logs/Symphony/overview.log",
+    "StandardErrorPath": "/Users/helloworld10011/Library/Logs/Symphony/overview.log",
+    "RunAtLoad": true,
+    "KeepAlive": true,
+    "ThrottleInterval": 10
+  },
+  "plist_lint": "PASS",
+  "installed": true,
+  "documents_merged": false,
+  "first_job": {
+    "rc": 0,
+    "pid": 8744,
+    "state": "running",
+    "path": "/Users/helloworld10011/Library/LaunchAgents/local.symphony.overview.plist"
+  },
+  "restarted_job": {
+    "rc": 0,
+    "pid": 8768,
+    "state": "running",
+    "path": "/Users/helloworld10011/Library/LaunchAgents/local.symphony.overview.plist"
+  },
+  "current_job": {
+    "rc": 0,
+    "pid": 8768,
+    "state": "running",
+    "path": "/Users/helloworld10011/Library/LaunchAgents/local.symphony.overview.plist"
+  },
+  "checks": {
+    "bootstrap_ok": true,
+    "registered_running": true,
+    "correct_agent_loaded": true,
+    "loopback_only": true,
+    "plist_matches_reviewed_bytes": true,
+    "plist_owner_and_mode": true,
+    "managed_restart_ok": true,
+    "read_only_api": true,
+    "both_projects_visible": true,
+    "oms_identified": true,
+    "eve_unknown": true,
+    "files_preserved": true,
+    "history_preserved": true,
+    "services_preserved": true,
+    "counts_preserved": true,
+    "hold_preserved": true,
+    "baseline_preserved": true,
+    "accepted_source_preserved": true
+  },
+  "protected_paths": 173,
+  "listener_addresses": [
+    "127.0.0.1:8788"
+  ],
+  "baseline": {
+    "base_branch": "our-main",
+    "base_sha": "155114a4bcccc46e765fa1bf20ef2eae11f7f90b",
+    "passed": 5830,
+    "skipped": 142,
+    "failed": 0,
+    "setup_s": 8.1,
+    "tests_s": 577.0,
+    "measured_at": "2026-11-02T09:44:36Z"
+  },
+  "services": {
+    "oms": {
+      "rc": 0,
+      "pid": 5117,
+      "state": "running",
+      "path": "/Users/helloworld10011/symphony-projects/oms/launchd.plist"
+    },
+    "eve": {
+      "rc": 113,
+      "pid": null,
+      "state": null,
+      "path": null
+    },
+    "inbox-runner": {
+      "rc": 0,
+      "pid": 57583,
+      "state": "running",
+      "path": "/Users/helloworld10011/dev/oh-my-symphony/tmp_workspaces/launchd/local.symphony.inbox-runner.plist"
+    }
+  },
+  "history_preserved": true,
+  "source_sha256": {
+    "ours/bin/project-overview": "5e901d01286348f8f5d82523c3d8e83e1b2f531fa816603b8674db6f0a536d0c",
+    "ours/hooks/project_overview.py": "5ccb239fd54141dc5cdd282222ee13f81d76c6aaf19d251a1bcd5a1673fc4ec0",
+    "ours/templates/overview.html": "5da53e2b7cac223621342b5dfd0e91dc27c26e2c88266fbbb156ee5779f2a43e",
+    "ours/templates/overview.js": "791c5c75efef4d703a4368c3536d86f31139b2a06d2e87633e243c5d343517d1",
+    "ours/tests/test_project_overview.py": "5bd1de4c4683bab001b9564a294f4fdf1ac9df17c05036503172cb0494182a04"
+  },
+  "real_agents_started": false,
+  "anthropic_models_limits_billing_changed": false,
+  "full_test_rerun": false,
+  "login_session_restarted": false,
+  "date": "2026-11-02",
+  "source_base": "47f70cb0d9f431346e317787c0570993f5497fbf",
+  "implementation_commit": "88983e208c219da9a194a1a03287ced5b94febff",
+  "plist_sha256": "5172fc964b6357412e93be16211d1953a79e3475aa8a63f6716bcb41669d8ab1",
+  "archive": "/Users/helloworld10011/symphony-projects/.backups/s4-46-launchd-20261102-130754",
+  "browser": {
+    "url": "http://127.0.0.1:8788/",
+    "realProjects": true,
+    "before": {
+      "documentWidth": 1280,
+      "projects": [
+        {
+          "id": "eve",
+          "link": null,
+          "metrics": [
+            "—",
+            "—",
+            "—"
+          ],
+          "status": "Нет связи"
+        },
+        {
+          "id": "oms",
+          "link": "http://127.0.0.1:9972/",
+          "metrics": [
+            "0",
+            "0",
+            "0"
+          ],
+          "status": "Работает"
+        }
+      ],
+      "updated": "Обновлено 13:09:23",
+      "width": 1280
+    },
+    "after": {
+      "documentWidth": 1280,
+      "projects": [
+        {
+          "id": "eve",
+          "link": null,
+          "metrics": [
+            "—",
+            "—",
+            "—"
+          ],
+          "status": "Нет связи"
+        },
+        {
+          "id": "oms",
+          "link": "http://127.0.0.1:9972/",
+          "metrics": [
+            "0",
+            "0",
+            "0"
+          ],
+          "status": "Работает"
+        }
+      ],
+      "updated": "Обновлено 13:10:53",
+      "width": 1280
+    },
+    "automaticUpdateObserved": true,
+    "console": [],
+    "screenshot": "s4-46-live-overview.jpg"
+  },
+  "screenshot_sha256": "e9a4f1e86e4da627375dba976e0be3df8d2e8321546434c4b26c7798681cb856",
+  "runtime_configured": true,
+  "documentation_accepted": true,
+  "documentation_merged": false,
+  "documentation_synced": false,
+  "core_or_product_code_changed": false,
+  "new_dependencies": false,
+  "post_merge_manages_overview": false,
+  "legacy_finding": {
+    "user_launch_agents_before": [],
+    "oms_and_queue_registered": true,
+    "complete_startup_path_investigated": false
+  },
+  "documentation_pr": {
+    "number": 82,
+    "url": "https://github.com/Serg10011/oh-my-symphony/pull/82",
+    "base": "our-main",
+    "head": "codex/overview-autostart",
+    "state": "open",
+    "accepted": true,
+    "merged": false
+  },
+  "documentation_acceptance": {
+    "date": "2026-11-02",
+    "user_reply": "Давай",
+    "accepted_head": "f804e5d4df9c629fc289d2f525d37d68e324ec67",
+    "scope": "merge PR 82 and synchronize ordinary documents; preserve running services and baseline"
+  }
+}
