@@ -251,5 +251,8 @@
   "scope": "Actual primary PR 97 application; later history synchronization recorded separately",
   "history_pr": 98,
   "history_pr_url": "https://github.com/Serg10011/oh-my-symphony/pull/98",
-  "history_pr_merged": false
+  "history_pr_merged": false,
+  "history_human_acceptance": "accepted_by_Sergey_2026-11-03",
+  "history_accepted_review_head": "f37cb0db1710931e46e04eb95658b125b8e51949",
+  "history_outcome_location": "PR 98 and private S4-55/history-sync archive; this record describes primary PR 97 application"
 }
