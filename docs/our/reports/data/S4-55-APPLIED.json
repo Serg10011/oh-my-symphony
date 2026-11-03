@@ -248,5 +248,8 @@
   "model_filesystem_write": false,
   "model_shell": false,
   "history_sync_pending": true,
-  "scope": "Actual primary PR 97 application; later history synchronization recorded separately"
+  "scope": "Actual primary PR 97 application; later history synchronization recorded separately",
+  "history_pr": 98,
+  "history_pr_url": "https://github.com/Serg10011/oh-my-symphony/pull/98",
+  "history_pr_merged": false
 }
