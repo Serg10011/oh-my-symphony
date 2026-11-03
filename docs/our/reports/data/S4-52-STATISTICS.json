@@ -3,7 +3,7 @@
   "trial_type": "REAL_PAID_API_TRIAL",
   "status": "dialogue_complete",
   "review": "PASS_with_fixed_text_session_scope",
-  "human_acceptance": "pending",
+  "human_acceptance": "accepted_by_Sergey_2026-11-03",
   "generations": 3,
   "generation_limit": 5,
   "preflight_http_requests": 0,
@@ -139,5 +139,6 @@
   "project_read_granted": false,
   "new_board_jobs": false,
   "service_update": false,
-  "anthropic_changed": false
+  "anthropic_changed": false,
+  "accepted_review_head": "d27afaeb83c99d13ec54756188643d4ab032d98c"
 }
