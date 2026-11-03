@@ -16,6 +16,7 @@ import tempfile
 from datetime import datetime, timezone
 
 import api_executor as api
+import api_budget as budget
 
 MAX_STATE_BYTES = 16 * 1024 * 1024
 DEFAULT_LIMITS = {"max_calls": 8, "output_tokens_per_call": 2048,
@@ -85,7 +86,7 @@ def _text(value, limit: int, *, empty: bool = False) -> bool:
 
 
 def validate_spec(raw: dict) -> dict:
-    allowed = {"task", "context", "lead_profile", "worker_profile", "lead_effort", "limits"}
+    allowed = {"task", "context", "lead_profile", "worker_profile", "lead_effort", "limits", "budget"}
     if not isinstance(raw, dict) or set(raw) - allowed or not _text(raw.get("task"), 65536):
         raise SessionError("invalid_spec")
     lead, worker = raw.get("lead_profile", "deepseek-lead"), raw.get("worker_profile", "luna-worker")
@@ -109,8 +110,14 @@ def validate_spec(raw: dict) -> dict:
         api.prepare(lead, {"input": raw["task"], "effort": effort})
     except api.ExecutorError:
         raise SessionError("invalid_lead_effort") from None
-    return {"task": raw["task"], "context": context, "lead_profile": lead,
-            "worker_profile": worker, "lead_effort": effort, "limits": limits}
+    result = {"task": raw["task"], "context": context, "lead_profile": lead,
+              "worker_profile": worker, "lead_effort": effort, "limits": limits}
+    if "budget" in raw:
+        try:
+            result["budget"] = budget.validate(raw["budget"])
+        except budget.BudgetError as exc:
+            raise SessionError(str(exc)) from None
+    return result
 
 
 def _profiles(spec: dict) -> dict:
@@ -222,6 +229,11 @@ def _load(path: Path) -> dict:
     if state["status"] == "prepared" and (calls or state["parts"] or state["tool_errors"]
             or state["lead_history"] != [{"role": "user", "content": spec["task"]}]):
         raise SessionError("invalid_state")
+    if "budget" in spec:
+        try:
+            budget.validate_state(state)
+        except budget.BudgetError as exc:
+            raise SessionError(str(exc)) from None
     return state
 
 
@@ -231,6 +243,13 @@ def create(path, spec: dict) -> dict:
              "profiles": _profiles(spec),
              "lead_history": [{"role": "user", "content": spec["task"]}], "parts": {},
              "calls": [], "tool_errors": [], "result": None, "stop_reason": None}
+    if "budget" in spec:
+        try:
+            state.update(budget_catalog=budget.snapshot(), preflights=[])
+            if any(p["model"] not in state["budget_catalog"]["models"] for p in state["profiles"].values() if p):
+                raise budget.BudgetError("unpriced_model")
+        except budget.BudgetError as exc:
+            raise SessionError(str(exc)) from None
     with _lock(path):
         try:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
@@ -266,13 +285,19 @@ def summary(state: dict) -> dict:
         record["total_tokens"] = (record["input_tokens"] + record["output_tokens"]
                                   if record["input_tokens"] is not None and record["output_tokens"] is not None else None)
         usage[profile] = record
-    return {"version": 1, "status": state["status"], "task_acceptance": "not_evaluated",
+    result = {"version": 1, "status": state["status"], "task_acceptance": "not_evaluated",
             "profiles": state["profiles"],
             "lead_profile": state["spec"]["lead_profile"], "worker_profile": state["spec"]["worker_profile"],
             "calls": len(state["calls"]), "output_tokens_committed": _spent(state),
             "limits": state["spec"]["limits"], "usage": usage, "cost_usd": None,
             "parts": {key: {"attempts": p["attempts"]} for key, p in state["parts"].items()},
             "tool_errors": state["tool_errors"], "stop_reason": state["stop_reason"], "result": state["result"]}
+    if "budget" in state["spec"]:
+        result["budget"] = {**state["spec"]["budget"], **budget.totals(state),
+                            "preflight_requests": len(state["preflights"]),
+                            "tariff_version": state["budget_catalog"]["version"],
+                            "scope": "generation_under_pinned_tariff; provider_invoice_not_verified"}
+    return result
 
 
 def show(path) -> dict:
@@ -320,9 +345,28 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport)
     if len(encoded) > limits["request_bytes"]:
         _stop(path, state, "request_size_limit")
         return None
+    reservation = None
+    if "budget" in spec:
+        probe = {"profile": profile, "request_sha256": hashlib.sha256(encoded).hexdigest(), "status": "in_flight"}
+        state["preflights"].append(probe)
+        _save(path, state)
+        try:
+            measured = api.measure_input(profile, request, environ=environ, transport=transport)
+            probe.update(status="measured", result=measured)
+            reservation = budget.quote(state, api.profile_for(profile).model,
+                                       measured["input_tokens_upper_bound"], cap, measured["basis"])
+        except Exception as exc:
+            probe["status"] = "error"
+            if isinstance(exc, api.ExecutorError):
+                probe["error"] = exc.as_dict()
+            reason = str(exc) if isinstance(exc, budget.BudgetError) else "preflight_error"
+            _stop(path, state, reason)
+            return None
     call = {"index": len(state["calls"]) + 1, "profile": profile, "part_id": part_id,
             "output_cap": cap, "request_sha256": hashlib.sha256(encoded).hexdigest(),
             "history_items": len(history), "status": "in_flight", "started_at": _now()}
+    if reservation is not None:
+        call["budget_reservation"] = reservation
     state["calls"].append(call)
     _save(path, state)
     try:
@@ -333,8 +377,11 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport)
         _stop(path, state, "api_error")
         return None
     call.update(status="received", response=response, finished_at=_now())
+    violation = budget.settle(state, call, response) if reservation is not None else None
     _save(path, state)
-    if not response["usage"]["usage_known"]:
+    if violation:
+        _stop(path, state, violation)
+    elif not response["usage"]["usage_known"]:
         _stop(path, state, "unknown_usage")
     elif response["usage"]["output_tokens"] > cap:
         _stop(path, state, "provider_output_limit")
@@ -364,7 +411,7 @@ def _arguments(call, parts):
     return args, None
 
 
-def run(path, *, environ=None, transport=None) -> dict:
+def run(path, *, environ=None, transport=None, require_budget=False) -> dict:
     path = _path(path)
     with _lock(path):
         state = _load(path)
@@ -376,6 +423,13 @@ def run(path, *, environ=None, transport=None) -> dict:
             raise SessionError("profile_changed_since_init")
         env = dict(os.environ if environ is None else environ)
         _credentials(state["spec"], env)
+        if require_budget and "budget" not in state["spec"]:
+            raise SessionError("budget_required")
+        if "budget" in state["spec"]:
+            try:
+                budget.fresh(state["budget_catalog"])
+            except budget.BudgetError as exc:
+                raise SessionError(str(exc)) from None
         state.update(status="running", started_at=_now())
         _save(path, state)
         seen = set()
@@ -448,7 +502,7 @@ def cli(argv=None) -> int:
         elif args.command == "show":
             result = show(args.state)
         else:
-            result = run(args.state)
+            result = run(args.state, require_budget=True)
         print(json.dumps(result, ensure_ascii=False, allow_nan=False))
         return 3 if result["status"] in ("stopped", "running") else 0
     except (SessionError, OSError) as exc:
