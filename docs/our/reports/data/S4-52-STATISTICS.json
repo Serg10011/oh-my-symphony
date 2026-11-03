@@ -1,0 +1,144 @@
+{
+  "task": "S4-52",
+  "trial_type": "REAL_PAID_API_TRIAL",
+  "status": "dialogue_complete",
+  "review": "PASS_with_fixed_text_session_scope",
+  "human_acceptance": "accepted_by_Sergey_2026-11-03",
+  "generations": 3,
+  "generation_limit": 5,
+  "preflight_http_requests": 0,
+  "parts": {
+    "limits-section": {
+      "assignments": 1,
+      "corrections": 0
+    }
+  },
+  "budget_enforced": false,
+  "rates_per_million_tokens": {
+    "deepseek-v4-pro": {
+      "input": "0.66",
+      "cached_input": "0.022",
+      "output": "1.98",
+      "regime": "off_peak",
+      "source": "https://api-docs.deepseek.com/quick_start/pricing/"
+    },
+    "gpt-6-luna": {
+      "input": "0.10",
+      "cached_input": "0.01",
+      "cache_write_30m": "0.125",
+      "output": "0.50",
+      "regime": "standard_short_context_global",
+      "source": "https://developers.openai.com/api/docs/models/gpt-6-luna"
+    }
+  },
+  "rates_checked_at": "2026-11-03T19:07:03.912246+00:00",
+  "per_call": [
+    {
+      "index": 1,
+      "profile": "deepseek-lead",
+      "model": "deepseek-v4-pro",
+      "effort": "high",
+      "status": "completed",
+      "started_at": "2026-11-03T19:02:41.873223+00:00",
+      "finished_at": "2026-11-03T19:03:01.897419+00:00",
+      "usage": {
+        "input_tokens": 1217,
+        "output_tokens": 2601,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": null,
+        "reasoning_tokens": 2028,
+        "total_tokens": 3818,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "estimated_usd": "0.0059532",
+      "provider_billed_usd": null
+    },
+    {
+      "index": 2,
+      "profile": "luna-worker",
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "status": "completed",
+      "started_at": "2026-11-03T19:03:01.899640+00:00",
+      "finished_at": "2026-11-03T19:03:10.907559+00:00",
+      "usage": {
+        "input_tokens": 514,
+        "output_tokens": 727,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "reasoning_tokens": 389,
+        "total_tokens": 1241,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "estimated_usd": "0.0004149",
+      "provider_billed_usd": null
+    },
+    {
+      "index": 3,
+      "profile": "deepseek-lead",
+      "model": "deepseek-v4-pro",
+      "effort": "high",
+      "status": "completed",
+      "started_at": "2026-11-03T19:03:10.910941+00:00",
+      "finished_at": "2026-11-03T19:03:19.300366+00:00",
+      "usage": {
+        "input_tokens": 4233,
+        "output_tokens": 1215,
+        "cached_input_tokens": 3712,
+        "cache_write_input_tokens": null,
+        "reasoning_tokens": 668,
+        "total_tokens": 5448,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "estimated_usd": "0.002831224",
+      "provider_billed_usd": null
+    }
+  ],
+  "by_model": {
+    "deepseek-v4-pro": {
+      "calls": 2,
+      "input_tokens": 5450,
+      "output_tokens": 3816,
+      "cached_input_tokens": 3712,
+      "reasoning_tokens": 2696,
+      "estimated_usd": "0.008784424"
+    },
+    "gpt-6-luna": {
+      "calls": 1,
+      "input_tokens": 514,
+      "output_tokens": 727,
+      "cached_input_tokens": 0,
+      "reasoning_tokens": 389,
+      "estimated_usd": "0.0004149"
+    }
+  },
+  "estimated_total_usd": "0.009199324",
+  "provider_billed_total_usd": null,
+  "provider_invoice_verified": false,
+  "cost_scope": "Only this API generation chain; excludes this Codex chat and local preparation",
+  "cost_assumptions": [
+    "DeepSeek off-peak UTC",
+    "OpenAI Standard, global endpoint, short context, zero reported cache writes",
+    "Provider invoice, account balances, tax and rounding not verified"
+  ],
+  "input_includes_cached": true,
+  "output_includes_reasoning": true,
+  "state_sha256": "4269ffa4ffe81a9b766ab6ee96ee42b1b6609a57ba523a0d147b7c269bac20ce",
+  "spec_sha256": "178ac3d849b73ffcdbf9b12ff0c6ce2864a0fae13799c098a8de9ddd1e30ccdb",
+  "runtime_source_sha256": {
+    "ours/bin/api-executor": "556d665d8206f1057b5ca9f7315a078cd49fd17b032639cfdc365b65c23c9963",
+    "ours/bin/api-session": "523a1ffa5fc0e82858c0f378af9823507b3c58b94ef94739b74f289158ebafc5",
+    "ours/hooks/api_executor.py": "ea6e49da18bee655a61890cb3f335bc3520c817ba476b536dc485d839d7fb58d",
+    "ours/hooks/api_session.py": "726ef94d44c96e1deebfe3e876d7902a0f8497e379d5190a693ecaed28e127df",
+    "ours/hooks/api_budget.py": "c397ae2d4069989cb3d610c2703b00deebd1f5bcd112f7549a963538647d01f8"
+  },
+  "runtime_base_commit": "f0106f1072d8e391b3b36d5e673f584faa5c6c1d",
+  "project_read_granted": false,
+  "new_board_jobs": false,
+  "service_update": false,
+  "anthropic_changed": false,
+  "accepted_review_head": "d27afaeb83c99d13ec54756188643d4ab032d98c"
+}
