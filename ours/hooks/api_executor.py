@@ -135,7 +135,7 @@ def prepare(name: str, request: dict) -> tuple[Profile, dict]:
     if tools:
         body["tools"] = tools
     if profile.provider == "openai":
-        body.update(store=False, include=["reasoning.encrypted_content"])
+        body.update(store=False, include=["reasoning.encrypted_content"], service_tier="default")
     if len(_encode(body)) > MAX_REQUEST_BYTES:
         raise ExecutorError("request_too_large")
     return profile, body
@@ -207,25 +207,24 @@ def normalize(response: Any, profile: Profile, body: dict) -> dict:
             "requested_model": profile.model, "model": response["model"],
             "effort": body["reasoning"]["effort"], "id": response["id"],
             "status": response["status"], "output_text": "".join(texts), "function_calls": calls,
+            "service_tier": response.get("service_tier"),
             "refusals": refusals, "output": response["output"],
             "usage": usage_fields(response.get("usage")), "charge_possible": True}
 
 
-def execute(name: str, request: dict, *, environ: Mapping[str, str] | None = None,
-            transport: httpx.BaseTransport | None = None) -> dict:
-    """Send exactly once; the injectable transport is for offline tests."""
-    profile, body = prepare(name, request)
+def _exchange(profile: Profile, endpoint: str, body: dict | None, *, environ, transport):
+    """One bounded exchange with fixed provider credentials; no retries or redirects."""
     env = os.environ if environ is None else environ
     key = env.get(profile.key_env, "")
     if not key:
         raise ExecutorError("missing_api_key")
     if not all(33 <= ord(char) <= 126 for char in key):
         raise ExecutorError("invalid_api_key")
-    started = time.monotonic()
     try:
         with httpx.Client(timeout=TIMEOUT_SECONDS, trust_env=False, follow_redirects=False,
                           transport=transport) as client:
-            with client.stream("POST", profile.endpoint, content=_encode(body),
+            with client.stream("POST" if body is not None else "GET", endpoint,
+                               content=_encode(body) if body is not None else None,
                                headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"}) as response:
                 if response.status_code != 200:
                     raise ExecutorError("http_error", http_status=response.status_code, charge_possible=True)
@@ -237,9 +236,41 @@ def execute(name: str, request: dict, *, environ: Mapping[str, str] | None = Non
     except httpx.HTTPError:
         raise ExecutorError("network_error", charge_possible=True) from None
     try:
-        result = normalize(json.loads(data, parse_constant=_reject_constant), profile, body)
+        return json.loads(data, parse_constant=_reject_constant)
     except (ValueError, UnicodeError, RecursionError):
         raise ExecutorError("invalid_response_json", charge_possible=True) from None
+
+
+def measure_input(name: str, request: dict, *, environ=None, transport=None) -> dict:
+    """Count OpenAI input or reserve DeepSeek's entire published model capacity."""
+    profile, body = prepare(name, request)
+    if profile.provider == "openai":
+        payload = {k: v for k, v in body.items() if k in {"model", "input", "instructions", "tools", "reasoning"}}
+        raw = _exchange(profile, profile.endpoint + "/input_tokens", payload, environ=environ, transport=transport)
+        if (not isinstance(raw, dict) or raw.get("object") != "response.input_tokens"
+                or type(raw.get("input_tokens")) is not int or not 1 <= raw["input_tokens"] <= 1_050_000):
+            raise ExecutorError("invalid_input_count")
+        return {"input_tokens_upper_bound": raw["input_tokens"], "basis": "provider_count"}
+    raw = _exchange(profile, "https://api.deepseek.com/models", None, environ=environ, transport=transport)
+    if not isinstance(raw, dict) or raw.get("object") != "list" or not isinstance(raw.get("data"), list):
+        raise ExecutorError("invalid_model_metadata")
+    models = [m for m in raw["data"] if isinstance(m, dict) and m.get("id") == profile.model]
+    if len(models) != 1:
+        raise ExecutorError("invalid_model_metadata")
+    model = models[0]
+    if (type(model.get("context_window")) is not int or not 1 <= model["context_window"] <= 1_048_576
+            or type(model.get("max_output_tokens")) is not int or model["max_output_tokens"] < body["max_output_tokens"]):
+        raise ExecutorError("model_limits_unverified")
+    return {"input_tokens_upper_bound": model["context_window"], "basis": "full_model_context"}
+
+
+def execute(name: str, request: dict, *, environ: Mapping[str, str] | None = None,
+            transport: httpx.BaseTransport | None = None) -> dict:
+    """Send exactly once; the injectable transport is for offline tests."""
+    profile, body = prepare(name, request)
+    started = time.monotonic()
+    raw = _exchange(profile, profile.endpoint, body, environ=environ, transport=transport)
+    result = normalize(raw, profile, body)
     result["elapsed_seconds"] = round(time.monotonic() - started, 3)
     return result
 
