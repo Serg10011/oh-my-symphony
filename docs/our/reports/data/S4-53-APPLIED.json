@@ -1,0 +1,230 @@
+{
+  "tasks": [
+    "S4-53"
+  ],
+  "accepted_head": "a981ff52fcaac8ac9d0cfcfddec52b67e7112b85",
+  "accepted_pr": 95,
+  "merge_commit": "8c79521ce4fbe5a2cf013c22e1044dbe76fed20b",
+  "implementation_commit": "422698f0d6fea51057d3eddb725a915c1ffd5578",
+  "accepted": true,
+  "applied": true,
+  "post_merge_exit_code": 0,
+  "post_merge_started_at": "2026-11-03T17:57:15.314256+00:00",
+  "post_merge_finished_at": "2026-11-03T18:07:12.814833+00:00",
+  "verified_at": "2026-11-03T18:07:46.013728+00:00",
+  "checks": {
+    "git:/Users/helloworld10011/dev/oh-my-symphony": true,
+    "git:/Users/helloworld10011/dev/oms-pipeline": true,
+    "applied_state": true,
+    "new_full_baseline": true,
+    "baseline_history_preserved": true,
+    "oms_config_only_measured_timeouts_changed": true,
+    "anthropic_policy_preserved:levels": true,
+    "anthropic_policy_preserved:limits": true,
+    "anthropic_policy_preserved:billing": true,
+    "anthropic_policy_preserved:agent": true,
+    "anthropic_policy_preserved:service": true,
+    "oms_workflow_matches_generator": true,
+    "merging_inactive": true,
+    "merging_preserved": true,
+    "only_done_resolves_dependencies": true,
+    "agent_policy_only_test_timeout_changed": true,
+    "claude_policy_only_stall_timeout_changed": true,
+    "oms_settings_only_test_timeouts_changed": true,
+    "oms_prompts_match_installed_source": true,
+    "oms_progress_only_timestamp_changed": true,
+    "cards_artifacts_eve_and_other_files_preserved": true,
+    "oms:kanban:file_set": true,
+    "oms:artifacts:file_set": true,
+    "oms:wiki:file_set": true,
+    "oms:prompts:file_set": true,
+    "oms:bin:file_set": true,
+    "oms:.ours-state:file_set": true,
+    "eve:kanban:file_set": true,
+    "eve:artifacts:file_set": true,
+    "eve:wiki:file_set": true,
+    "eve:prompts:file_set": true,
+    "eve:bin:file_set": true,
+    "eve:.ours-state:file_set": true,
+    "history:oms": true,
+    "history:eve": true,
+    "oms_restarted": true,
+    "eve_still_off": true,
+    "queue_pid_preserved": true,
+    "queue_idle": true,
+    "inbox_empty": true,
+    "oms_api_idle": true,
+    "dispatch_hold_preserved": true,
+    "previous_api_bins_and_tests_preserved": true,
+    "overview_pid_preserved": true,
+    "overview_sources_preserved": true,
+    "overview_alive_readonly": true,
+    "worktree_paths_preserved": true,
+    "installed_api_tests": true,
+    "installed_api_commands_passive": true,
+    "installed_both_budget_modes_passive": true,
+    "installed_both_read_modes_passive": true,
+    "installed_all_read_budget_pairs": true,
+    "s4_52_original_worktree_preserved": true,
+    "s4_52_private_state_preserved": true,
+    "s4_52_spec_preserved": true,
+    "s4_52_runtime_preserved": true,
+    "tested_source:/Users/helloworld10011/dev/oh-my-symphony": true,
+    "tested_source:/Users/helloworld10011/dev/oms-pipeline": true,
+    "doctor_and_restart_succeeded": true,
+    "full_junit_preserved": true
+  },
+  "baseline": {
+    "base_branch": "our-main",
+    "base_sha": "8c79521ce4fbe5a2cf013c22e1044dbe76fed20b",
+    "passed": 6062,
+    "skipped": 142,
+    "failed": 0,
+    "setup_s": 9.2,
+    "tests_s": 580.0,
+    "measured_at": "2026-11-03T18:07:10Z"
+  },
+  "baseline_before": {
+    "base_branch": "our-main",
+    "base_sha": "ad81a1bb5988a3267ebe304ae2f09e69ca164af6",
+    "passed": 5998,
+    "skipped": 142,
+    "failed": 0,
+    "setup_s": 7.9,
+    "tests_s": 582.2,
+    "measured_at": "2026-11-03T10:19:06Z"
+  },
+  "history_preserved": {
+    "/Users/helloworld10011/symphony-projects/oms/.symphony/state.db": {
+      "runs": true,
+      "run_events": true,
+      "pm_workspaces": true,
+      "pm_operations": true,
+      "pm_approvals": true,
+      "pm_handoff_batches": true,
+      "pm_handoff_items": true,
+      "pm_managed_tickets": true,
+      "pm_exchange_records": true,
+      "pm_journals": true,
+      "pm_dispatch_permits": true,
+      "pm_authority_revocations": true,
+      "pm_legacy_conversions": true,
+      "pm_verification_records": true,
+      "pm_acceptances": true,
+      "pm_manual_verification_records": true,
+      "pm_coverage_waivers": true,
+      "pm_planning_reserved_ids": true
+    },
+    "/Users/helloworld10011/symphony-projects/eve/.symphony/state.db": {
+      "runs": true,
+      "run_events": true,
+      "pm_workspaces": true,
+      "pm_operations": true,
+      "pm_approvals": true,
+      "pm_handoff_batches": true,
+      "pm_handoff_items": true,
+      "pm_managed_tickets": true,
+      "pm_exchange_records": true,
+      "pm_journals": true,
+      "pm_dispatch_permits": true,
+      "pm_authority_revocations": true,
+      "pm_legacy_conversions": true,
+      "pm_verification_records": true,
+      "pm_acceptances": true,
+      "pm_manual_verification_records": true,
+      "pm_coverage_waivers": true,
+      "pm_planning_reserved_ids": true
+    }
+  },
+  "services_after": {
+    "oms": {
+      "rc": 0,
+      "pid": 26697
+    },
+    "eve": {
+      "rc": 113,
+      "pid": null
+    },
+    "inbox-runner": {
+      "rc": 0,
+      "pid": 57583
+    },
+    "overview": {
+      "rc": 0,
+      "pid": 8768
+    }
+  },
+  "timeouts_before": {
+    "tests_s": 1200,
+    "gate_ms": 1260000,
+    "hooks_ms": 1260000
+  },
+  "timeouts_after": {
+    "tests_s": 1200,
+    "gate_ms": 1260000,
+    "hooks_ms": 1260000
+  },
+  "unexpected_changes": [],
+  "full_junit_counts": {
+    "main": {
+      "tests": 4257,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 141
+    },
+    "timing": {
+      "tests": 12,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1
+    },
+    "ours": {
+      "tests": 1935,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "all": {
+      "tests": 6204,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 142
+    }
+  },
+  "new_test_run": true,
+  "new_baseline_measure": true,
+  "service_restart": true,
+  "new_pipeline_jobs": false,
+  "eve_board_updated": false,
+  "overview_service_pid_preserved": true,
+  "paid_api_calls": false,
+  "api_tasks_executed": false,
+  "archive": "/Users/helloworld10011/symphony-projects/.backups/s4-53-apply-20261103-205540",
+  "reviewed_head": "5f43d64068f715f91d7b2f5387a46eda33883b3f",
+  "protected_paths": 174,
+  "sqlite_copies": 2,
+  "installed_api_tests": {
+    "tests": 232,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "passive_commands": 16,
+  "model_assigned": "gpt-6.1-sol",
+  "effort_assigned": "max",
+  "source_sha256": {
+    "ours/hooks/api_project.py": "4330a812dde2d34b676d20939f1e23f667132e64d8c3e3c47f877510f6f226de",
+    "ours/hooks/api_session.py": "20aa1081b5d2db0be10bf5fff0e6f8c797de9eb5df435197bde213bf5800616b",
+    "ours/tests/test_api_project.py": "5fd4cebf1097c410d4df783105bd43a501b09156373583aba56b872e7f20aa60",
+    "ours/tests/test_api_project_session.py": "0174fd8fded19bd68b7159bbc711385da2eeeb95732b6c475f940bf9992f3eb2"
+  },
+  "default_api_budget_required": false,
+  "api_budget_ui": false,
+  "api_execution_registered_on_boards": false,
+  "project_read_opt_in": true,
+  "project_read_source": "fixed Git commit blobs",
+  "model_filesystem_write": false,
+  "model_shell": false,
+  "s4_52_preserved": true,
+  "scope": "Actual primary PR 95 application; later history-only synchronization recorded separately"
+}
