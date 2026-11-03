@@ -290,6 +290,7 @@ def summary(state: dict) -> dict:
             "lead_profile": state["spec"]["lead_profile"], "worker_profile": state["spec"]["worker_profile"],
             "calls": len(state["calls"]), "output_tokens_committed": _spent(state),
             "limits": state["spec"]["limits"], "usage": usage, "cost_usd": None,
+            "budget_enforced": "budget" in state["spec"],
             "parts": {key: {"attempts": p["attempts"]} for key, p in state["parts"].items()},
             "tool_errors": state["tool_errors"], "stop_reason": state["stop_reason"], "result": state["result"]}
     if "budget" in state["spec"]:
@@ -488,6 +489,9 @@ def cli(argv=None) -> int:
         command.add_argument("--state", required=True)
         if name == "init":
             command.add_argument("--spec", default="-", help="JSON specification, default stdin")
+        elif name == "run":
+            command.add_argument("--require-budget", action="store_true",
+                                 help="Reject a session without a configured shared input and USD budget")
     args = parser.parse_args(argv)
     try:
         if args.command == "init":
@@ -502,7 +506,7 @@ def cli(argv=None) -> int:
         elif args.command == "show":
             result = show(args.state)
         else:
-            result = run(args.state, require_budget=True)
+            result = run(args.state, require_budget=args.require_budget)
         print(json.dumps(result, ensure_ascii=False, allow_nan=False))
         return 3 if result["status"] in ("stopped", "running") else 0
     except (SessionError, OSError) as exc:

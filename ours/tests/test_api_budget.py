@@ -260,15 +260,85 @@ def test_invalid_budget_cannot_be_initialized(tmp_path, raw):
     assert not (tmp_path / "budget.json").exists()
 
 
-def test_cli_requires_budget_with_keys_but_library_legacy_mode_still_works(tmp_path, monkeypatch, capsys):
+def test_cli_explicit_budget_requirement_rejects_missing_budget(tmp_path, monkeypatch, capsys):
     path = tmp_path / "legacy.json"
     session.create(path, {"task": "Legacy", "lead_profile": "sol-lead", "worker_profile": None})
     for name, key in KEYS.items():
         monkeypatch.setenv(name, key)
     monkeypatch.setattr(api.httpx, "Client", lambda **kwargs: pytest.fail("Unexpected network"))
-    assert session.cli(["run", "--state", str(path)]) == 2
+    assert session.cli(["run", "--state", str(path), "--require-budget"]) == 2
     assert json.loads(capsys.readouterr().out)["error"] == "budget_required"
     assert session.show(path)["status"] == "prepared"
+
+
+def mock_cli(monkeypatch, transport):
+    client = api.httpx.Client
+
+    def local_client(**kwargs):
+        return client(**(kwargs | {"transport": transport}))
+
+    monkeypatch.setattr(api.httpx, "Client", local_client)
+    for name, key in KEYS.items():
+        monkeypatch.setenv(name, key)
+
+
+def test_cli_without_budget_completes_chain_and_preserves_usage(tmp_path, monkeypatch, capsys):
+    path = tmp_path / "trial.json"
+    session.create(path, {"task": "Проверить полезный результат на пробном балансе"})
+    transport, sent = exchange([frame("deepseek-v4-pro", calls=[delegate()]),
+                                frame("gpt-6-luna"), frame("deepseek-v4-pro")])
+    mock_cli(monkeypatch, transport)
+    monkeypatch.setattr(budget, "today", lambda: date(2027, 1, 1))
+    assert session.cli(["run", "--state", str(path)]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "dialogue_complete" and result["calls"] == 3
+    assert result["budget_enforced"] is False and "budget" not in result
+    assert len(sent) == len(generated(sent)) == 3
+    assert result["usage"]["deepseek-lead"]["input_tokens"] == 24
+    assert result["usage"]["luna-worker"]["cache_write_input_tokens"] == 0
+    assert result["cost_usd"] is None and result["task_acceptance"] == "not_evaluated"
+    raw = json.loads(path.read_text())
+    assert "budget_catalog" not in raw and all(c["status"] == "received" for c in raw["calls"])
+    assert all(key not in path.read_text() for key in KEYS.values())
+    assert session.show(path) == result
+    assert session.cli(["run", "--state", str(path)]) == 0
+    assert json.loads(capsys.readouterr().out) == result and len(sent) == 3
+
+
+@pytest.mark.parametrize("dollars,code,status", [("0.10", 3, "stopped"), ("2", 0, "dialogue_complete")])
+def test_cli_keeps_configured_budget_without_strict_flag(tmp_path, monkeypatch, capsys, dollars, code, status):
+    path = create(tmp_path, model="deepseek-lead", worker="luna-worker", dollars=dollars)
+    transport, sent = exchange([frame("deepseek-v4-pro")])
+    mock_cli(monkeypatch, transport)
+    assert session.cli(["run", "--state", str(path)]) == code
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == status and result["budget_enforced"] is True
+    assert result["budget"]["max_usd"] == budget.display(budget.money(dollars))
+    assert len(sent) == (1 if code == 3 else 2)
+    if code == 3:
+        assert result["stop_reason"] == "money_budget_exhausted" and not generated(sent)
+    else:
+        assert len(generated(sent)) == 1
+
+
+@pytest.mark.parametrize("kind", ["call_limit", "provider_output_limit", "unknown_usage"])
+def test_cli_without_budget_still_stops_at_technical_bounds(tmp_path, monkeypatch, capsys, kind):
+    path = tmp_path / "bounded.json"
+    spec = {"task": "Проверить остановку без денежного потолка"}
+    if kind == "call_limit":
+        spec["limits"] = {"max_calls": 1}
+        response = frame("deepseek-v4-pro", calls=[delegate()])
+    else:
+        response = (frame("deepseek-v4-pro", output=2049) if kind == "provider_output_limit"
+                    else frame("deepseek-v4-pro", usage=None))
+    session.create(path, spec)
+    transport, sent = exchange([response])
+    mock_cli(monkeypatch, transport)
+    assert session.cli(["run", "--state", str(path)]) == 3
+    result = json.loads(capsys.readouterr().out)
+    assert result["budget_enforced"] is False and result["stop_reason"] == kind
+    assert result["calls"] == 1 and len(sent) == len(generated(sent)) == 1
+    assert session.show(path)["status"] == "stopped"
 
 
 def test_corrupt_budget_ledger_cannot_be_used(tmp_path):
