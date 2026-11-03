@@ -48,7 +48,7 @@ def delegate(call_id="call_1", kind="start"):
 
 def exchange(frames, *, count=12, metadata=None, probe_error=None):
     frames, sent = iter(frames), []
-    default_metadata = {"object": "list", "data": [{"id": "deepseek-v4-pro", "object": "model",
+    default_metadata = {"object": "list", "data": [{"id": "deepseek-flash", "object": "model",
                          "context_window": 1048576, "max_output_tokens": 393216}]}
 
     def handle(request):
@@ -76,9 +76,9 @@ def generated(sent):
 
 def test_entire_chain_uses_one_budget_and_preserves_metadata(tmp_path):
     path = create(tmp_path, model="deepseek-lead", worker="luna-worker")
-    transport, sent = exchange([frame("deepseek-v4-pro", calls=[delegate()]), frame("gpt-6-luna"),
-                                frame("deepseek-v4-pro", calls=[delegate("call_2", "correction")]),
-                                frame("gpt-6-luna"), frame("deepseek-v4-pro")])
+    transport, sent = exchange([frame("deepseek-flash", calls=[delegate()]), frame("gpt-6-luna"),
+                                frame("deepseek-flash", calls=[delegate("call_2", "correction")]),
+                                frame("gpt-6-luna"), frame("deepseek-flash")])
     result = session.run(path, environ=KEYS, transport=transport, require_budget=True)
     assert result["status"] == "dialogue_complete" and result["calls"] == 5
     assert result["budget"]["preflight_requests"] == 5 and result["budget"]["input_tokens_committed"] == 60
@@ -149,11 +149,11 @@ def test_invalid_counter_result_never_falls_back_to_an_estimate(tmp_path, count)
     assert json.loads(path.read_text())["preflights"][0]["error"]["error"] == "invalid_input_count"
 
 
-@pytest.mark.parametrize("models", [[], [{"id": "other"}], [{"id": "deepseek-v4-pro"}],
-                                  [{"id": "deepseek-v4-pro", "context_window": 2000000, "max_output_tokens": 393216}],
-                                  [{"id": "deepseek-v4-pro", "context_window": True, "max_output_tokens": 393216}],
-                                  [{"id": "deepseek-v4-pro", "context_window": 1048576, "max_output_tokens": 15}],
-                                  [{"id": "deepseek-v4-pro"}, {"id": "deepseek-v4-pro"}]])
+@pytest.mark.parametrize("models", [[], [{"id": "other"}], [{"id": "deepseek-flash"}],
+                                  [{"id": "deepseek-flash", "context_window": 2000000, "max_output_tokens": 393216}],
+                                  [{"id": "deepseek-flash", "context_window": True, "max_output_tokens": 393216}],
+                                  [{"id": "deepseek-flash", "context_window": 1048576, "max_output_tokens": 15}],
+                                  [{"id": "deepseek-flash"}, {"id": "deepseek-flash"}]])
 def test_unverified_deepseek_capacity_stops_before_generation(tmp_path, models):
     path = create(tmp_path, model="deepseek-lead", worker="luna-worker")
     transport, sent = exchange([], metadata={"object": "list", "data": models})
@@ -244,7 +244,7 @@ def test_cost_ceilings_cover_cache_writes_long_context_and_rounding():
     # Twelve-hour writes and regional processing are reserved conservatively.
     assert budget.cost(cat, "gpt-6-luna", 1_000_000, 0) == "0.550000"
     assert budget.cost(cat, "gpt-6.1-sol", 1000, 100, cached=800, written=100) == "0.001958"
-    assert budget.cost(cat, "deepseek-v4-pro", 1000, 100, cached=800) == "0.000696"
+    assert budget.cost(cat, "deepseek-flash", 1000, 100, cached=800) == "0.000185"
     assert budget.cost(cat, "gpt-6-luna", 1, 0, written=0) == "0.000001"
     assert budget.money(budget.cost(cat, "gpt-6-luna", 272001, 10)) > budget.money(budget.cost(cat, "gpt-6-luna", 272000, 10))
 
@@ -285,8 +285,8 @@ def mock_cli(monkeypatch, transport):
 def test_cli_without_budget_completes_chain_and_preserves_usage(tmp_path, monkeypatch, capsys):
     path = tmp_path / "trial.json"
     session.create(path, {"task": "Проверить полезный результат на пробном балансе"})
-    transport, sent = exchange([frame("deepseek-v4-pro", calls=[delegate()]),
-                                frame("gpt-6-luna"), frame("deepseek-v4-pro")])
+    transport, sent = exchange([frame("deepseek-flash", calls=[delegate()]),
+                                frame("gpt-6-luna"), frame("deepseek-flash")])
     mock_cli(monkeypatch, transport)
     monkeypatch.setattr(budget, "today", lambda: date(2027, 1, 1))
     assert session.cli(["run", "--state", str(path)]) == 0
@@ -308,7 +308,7 @@ def test_cli_without_budget_completes_chain_and_preserves_usage(tmp_path, monkey
 @pytest.mark.parametrize("dollars,code,status", [("0.10", 3, "stopped"), ("2", 0, "dialogue_complete")])
 def test_cli_keeps_configured_budget_without_strict_flag(tmp_path, monkeypatch, capsys, dollars, code, status):
     path = create(tmp_path, model="deepseek-lead", worker="luna-worker", dollars=dollars)
-    transport, sent = exchange([frame("deepseek-v4-pro")])
+    transport, sent = exchange([frame("deepseek-flash")])
     mock_cli(monkeypatch, transport)
     assert session.cli(["run", "--state", str(path)]) == code
     result = json.loads(capsys.readouterr().out)
@@ -327,10 +327,10 @@ def test_cli_without_budget_still_stops_at_technical_bounds(tmp_path, monkeypatc
     spec = {"task": "Проверить остановку без денежного потолка"}
     if kind == "call_limit":
         spec["limits"] = {"max_calls": 1}
-        response = frame("deepseek-v4-pro", calls=[delegate()])
+        response = frame("deepseek-flash", calls=[delegate()])
     else:
-        response = (frame("deepseek-v4-pro", output=2049) if kind == "provider_output_limit"
-                    else frame("deepseek-v4-pro", usage=None))
+        response = (frame("deepseek-flash", output=2049) if kind == "provider_output_limit"
+                    else frame("deepseek-flash", usage=None))
     session.create(path, spec)
     transport, sent = exchange([response])
     mock_cli(monkeypatch, transport)
