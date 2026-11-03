@@ -32,9 +32,9 @@ def state_file(tmp_path, **spec):
     return path
 
 
-def frame(text="Результат", calls=(), *, model="deepseek-v4-pro", **changes):
+def frame(text="Результат", calls=(), *, model="deepseek-flash", **changes):
     reasoning = ({"type": "reasoning", "content": [{"type": "reasoning_text", "text": "private-lead-reasoning"}]}
-                 if model == "deepseek-v4-pro" else
+                 if model == "deepseek-flash" else
                  {"type": "reasoning", "id": "rs_local", "summary": [], "encrypted_content": "opaque-worker-reasoning"})
     output = [reasoning, *calls]
     if text:
@@ -74,7 +74,7 @@ def test_lead_worker_correction_and_final_keep_contexts_separate(tmp_path):
     result = session.run(path, environ=KEYS, transport=transport)
     assert result["status"] == "dialogue_complete" and result["task_acceptance"] == "not_evaluated"
     assert result["calls"] == 5 and result["parts"] == {"part_1": {"attempts": 2}}
-    assert [r["body"]["model"] for r in sent] == ["deepseek-v4-pro", "gpt-6-luna", "deepseek-v4-pro", "gpt-6-luna", "deepseek-v4-pro"]
+    assert [r["body"]["model"] for r in sent] == ["deepseek-flash", "gpt-6-luna", "deepseek-flash", "gpt-6-luna", "deepseek-flash"]
     assert "private-lead-reasoning" in json.dumps(sent[2]["body"])
     assert "opaque-worker-reasoning" in json.dumps(sent[3]["body"])
     for request in sent:
@@ -148,7 +148,7 @@ def test_malformed_assignment_is_data_for_lead_not_an_execution(tmp_path, argume
     result = session.run(path, environ=KEYS, transport=transport)
     assert result["status"] == "dialogue_complete" and result["calls"] == 2
     assert not result["parts"] and result["tool_errors"][0]["error"] == "invalid_assignment"
-    assert all(r["body"]["model"] == "deepseek-v4-pro" for r in sent)
+    assert all(r["body"]["model"] == "deepseek-flash" for r in sent)
 
 
 def test_unknown_correction_and_repeated_start_cannot_reset_worker_attempts(tmp_path):
@@ -194,7 +194,7 @@ def test_delegation_reserves_a_lead_return(tmp_path, limits):
     result = session.run(path, environ=KEYS, transport=transport)
     assert result["status"] == "dialogue_complete" and result["calls"] == 2
     assert result["tool_errors"][0]["error"] == "budget_reserves_lead_return"
-    assert all(r["body"]["model"] == "deepseek-v4-pro" for r in sent)
+    assert all(r["body"]["model"] == "deepseek-flash" for r in sent)
     if "output_tokens_total" in limits:
         assert sent[-1]["body"]["max_output_tokens"] == 16
 
@@ -360,7 +360,7 @@ def test_profile_change_after_init_requires_a_new_assignment(tmp_path, monkeypat
     monkeypatch.setattr(api.httpx, "Client", lambda **kwargs: pytest.fail("Unexpected network client"))
     with pytest.raises(session.SessionError, match="profile_changed_since_init"):
         session.run(path, environ=KEYS)
-    assert session.show(path)["profiles"]["lead"]["model"] == "deepseek-v4-pro"
+    assert session.show(path)["profiles"]["lead"]["model"] == "deepseek-flash"
 
 
 def test_cli_is_local_from_another_directory_and_missing_key_has_no_trace(tmp_path):

@@ -63,7 +63,7 @@ def test_lead_and_worker_read_independently_without_spending_correction_attempt(
     assert all("PRIVATE_LEAD_CONTEXT" not in json.dumps(r) and "private-lead-reasoning" not in json.dumps(r)
                for r in workers)
     assert "opaque-worker-reasoning" in json.dumps(workers[1])
-    assert "opaque-worker-reasoning" not in json.dumps([r for r in sent if r["body"]["model"] == "deepseek-v4-pro"])
+    assert "opaque-worker-reasoning" not in json.dumps([r for r in sent if r["body"]["model"] == "deepseek-flash"])
     assert all(key not in path.read_text() for key in KEYS.values())
     assert session.run(path, environ={}, transport=transport) == result and len(sent) == 6
 
@@ -200,7 +200,7 @@ def test_absent_project_config_does_not_register_read_tools_or_run_git(tmp_path,
     assert {t["name"] for t in sent[0]["body"]["tools"]} == {"delegate_luna"}
 
 
-@pytest.mark.parametrize("lead,worker,model", [("deepseek-lead", "luna-worker", "deepseek-v4-pro"),
+@pytest.mark.parametrize("lead,worker,model", [("deepseek-lead", "luna-worker", "deepseek-flash"),
                                            ("sol-lead", "luna-worker", "gpt-6.1-sol"),
                                            ("sol-lead", None, "gpt-6.1-sol")])
 def test_all_agreed_compositions_can_use_fixed_read_grants(tmp_path, lead, worker, model):

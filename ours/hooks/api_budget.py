@@ -8,8 +8,10 @@ from decimal import Decimal, ROUND_CEILING
 import re
 
 CATALOG = {
-    "version": "2026-11-03-standard-peak-v1", "verified_on": "2026-11-03", "valid_until": "2026-11-10",
+    "version": "2026-11-03-standard-peak-v2", "verified_on": "2026-11-03", "valid_until": "2026-11-10",
     "models": {
+        "deepseek-flash": {"input": "0.30", "cached": "0.006", "write": "0.30", "output": "1.20",
+                           "long_context": False, "regional_factor": "1"},
         "deepseek-v4-pro": {"input": "1.32", "cached": "0.044", "write": "1.32", "output": "3.96",
                             "long_context": False, "regional_factor": "1"},
         "gpt-6-luna": {"input": "0.10", "cached": "0.01", "write": "0.25", "output": "0.50",

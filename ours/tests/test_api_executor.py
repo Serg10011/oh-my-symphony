@@ -46,7 +46,7 @@ def exchange(body=None, status=200):
 
 
 @pytest.mark.parametrize("name,model,effort,endpoint,key_env", [
-    ("deepseek-lead", "deepseek-v4-pro", "high", "https://api.deepseek.com/responses", "DEEPSEEK_API_KEY"),
+    ("deepseek-lead", "deepseek-flash", "high", "https://api.deepseek.com/responses", "DEEPSEEK_API_KEY"),
     ("luna-worker", "gpt-6-luna", "max", "https://api.openai.com/v1/responses", "OPENAI_API_KEY"),
     ("sol-lead", "gpt-6.1-sol", "medium", "https://api.openai.com/v1/responses", "OPENAI_API_KEY"),
 ])
@@ -259,7 +259,7 @@ def test_cli_entry_point_from_another_directory(tmp_path):
     result = subprocess.run([sys.executable, str(ROOT / "ours/bin/api-executor"), "profiles"],
                             cwd=tmp_path, capture_output=True, text=True, timeout=15)
     assert result.returncode == 0 and result.stderr == ""
-    assert {p["model"] for p in json.loads(result.stdout)["profiles"]} == {"deepseek-v4-pro", "gpt-6-luna", "gpt-6.1-sol"}
+    assert {p["model"] for p in json.loads(result.stdout)["profiles"]} == {"deepseek-flash", "gpt-6-luna", "gpt-6.1-sol"}
 
 
 def test_cli_bad_json_and_missing_file_are_clean_errors(tmp_path, capsys):

@@ -33,7 +33,7 @@ class Profile:
 
 
 PROFILES = {
-    "deepseek-lead": Profile("deepseek-lead", "deepseek", "deepseek-v4-pro", "high",
+    "deepseek-lead": Profile("deepseek-lead", "deepseek", "deepseek-flash", "high",
                              "https://api.deepseek.com/responses", "DEEPSEEK_API_KEY"),
     "luna-worker": Profile("luna-worker", "openai", "gpt-6-luna", "max",
                            "https://api.openai.com/v1/responses", "OPENAI_API_KEY"),
