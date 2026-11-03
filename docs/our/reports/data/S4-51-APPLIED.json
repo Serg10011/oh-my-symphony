@@ -215,5 +215,7 @@
   "default_api_budget_required": false,
   "api_budget_ui": false,
   "api_execution_registered_on_boards": false,
-  "scope": "Actual primary PR 92 application; later history-only synchronization recorded separately"
+  "scope": "Actual primary PR 92 application; later history-only synchronization recorded separately",
+  "history_pr": 93,
+  "history_pr_url": "https://github.com/Serg10011/oh-my-symphony/pull/93"
 }
