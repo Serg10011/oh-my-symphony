@@ -1,0 +1,211 @@
+{
+  "task_id": "S4-61",
+  "prepared_at": "2026-11-04T17:07:00.550327+00:00",
+  "status": "implemented_checked_awaiting_acceptance",
+  "task": "Добавь к api-session report удобный текстовый отчёт на русском для оператора: итог по моделям, токены и кеш, известная стоимость с явным указанием неизвестных списаний и основы оценки. Он должен читаться без разбора JSON. Сохрани нынешний JSON-режим и офлайн-работу; тарифы и запуск моделей не меняй.\nРезультат: unified diff и краткий отчёт о проверках, которые действительно удалось выполнить.",
+  "runtime_base": "a5d811d6125b71f00bf0d6cfdafe61e49c6fbc77",
+  "branch": "codex/readable-api-spending",
+  "profiles": {
+    "lead": {
+      "name": "deepseek-lead",
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "effort": "high",
+      "endpoint": "https://api.deepseek.com/responses",
+      "key_env": "DEEPSEEK_API_KEY"
+    },
+    "worker": {
+      "name": "luna-worker",
+      "provider": "openai",
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "endpoint": "https://api.openai.com/v1/responses",
+      "key_env": "OPENAI_API_KEY"
+    }
+  },
+  "limits": {
+    "max_calls": 1000,
+    "output_tokens_per_call": 393216,
+    "output_tokens_total": 2097152,
+    "request_bytes": 16777216
+  },
+  "output_limits": {
+    "deepseek-lead": 393216,
+    "luna-worker": 128000
+  },
+  "budget_enforced": false,
+  "state_path": "/Users/helloworld10011/symphony-api-runs/s4-61-readable-spending-20261104-200700/session.json",
+  "state_sha256": "2776faf0413711906a71297b9bb53b96e3e0643d2408bb9017703a7761c8cdef",
+  "spec_path": "/Users/helloworld10011/symphony-api-runs/s4-61-readable-spending-20261104-200700/spec.json",
+  "spec_sha256": "eff0b473ba3f0e35e56e52d0ff88550e12bab0bd8e7602be62b39bff7e37222b",
+  "context_path": "/Users/helloworld10011/symphony-api-runs/s4-61-readable-spending-20261104-200700/context.txt",
+  "context": {
+    "source_task": "S4-54",
+    "source_state": "/Users/helloworld10011/symphony-api-runs/s4-54-retry-spending-20261104-132052/session.json",
+    "source_state_sha256": "d487956a1c8cc4977cee8850905691f92f6314689aca0906a942e968ad9e333a",
+    "source_commit": "43058a93ce19e6ed35bf347b4e5b24d2bd44a15a",
+    "target_commit": "a5d811d6125b71f00bf0d6cfdafe61e49c6fbc77",
+    "same_git_common_directory_verified": true,
+    "source_role": "lead_only",
+    "reused_read_calls": 9,
+    "files": [
+      {
+        "path": "AGENTS.md",
+        "oid": "f0c8a4949963cf5cddae3dc184cceeaf64da690b",
+        "ranges": [
+          {
+            "offset": 0,
+            "characters": 4096
+          }
+        ]
+      },
+      {
+        "path": "docs/our/reports/data/S4-52-STATISTICS.json",
+        "oid": "1470d2ae8ce39886b993112b7eafddc0193f7a13",
+        "ranges": [
+          {
+            "offset": 0,
+            "characters": 4096
+          }
+        ]
+      },
+      {
+        "path": "ours/bin/api-session",
+        "oid": "0dbc9a4db237465d58715050bc76e9479d4a4ecd",
+        "ranges": [
+          {
+            "offset": 0,
+            "characters": 333
+          }
+        ]
+      },
+      {
+        "path": "ours/hooks/api_budget.py",
+        "oid": "8d6a18ea1a53ddd430a180a7c5f7536c8e27c3bf",
+        "ranges": [
+          {
+            "offset": 0,
+            "characters": 7410
+          }
+        ]
+      },
+      {
+        "path": "ours/tests/test_api_budget.py",
+        "oid": "c983c415ca6120cc2bce851f5df7150fff2184c9",
+        "ranges": [
+          {
+            "offset": 0,
+            "characters": 12288
+          }
+        ]
+      },
+      {
+        "path": "ours/tests/test_api_session_resources.py",
+        "oid": "876320821a9628c41b8038f3d8db6188d0ba86c5",
+        "ranges": [
+          {
+            "offset": 0,
+            "characters": 4096
+          }
+        ]
+      }
+    ],
+    "excluded_files": {
+      "ours/hooks/api_session.py": "blob_changed",
+      "ours/hooks/api_executor.py": "blob_changed",
+      "ours/tests/test_api_session.py": "blob_changed",
+      "ours/README.md": "blob_changed"
+    },
+    "context_sha256": "b701fb8196b10c5693974f7ab8b5d421f032a739770aa99914bac24d845e4b21",
+    "context_bytes": 38877,
+    "source_and_destination_unchanged_by_checks": true,
+    "copied_task_or_reasoning_or_model_result": false,
+    "automatic_cross_card_memory": false,
+    "provider_cache_measured": true,
+    "prefix_identical_for_same_commit_and_parameters": true,
+    "commit_before_context_remains": true,
+    "context_not_sent_to_worker_automatically": true,
+    "cache_source": "https://api-docs.deepseek.com/guides/kv_cache/",
+    "cross_task_cache_economy_measured": false,
+    "first_request_cached_tokens": 0
+  },
+  "project": {
+    "commit": "a5d811d6125b71f00bf0d6cfdafe61e49c6fbc77",
+    "paths": [
+      "AGENTS.md",
+      "docs/our/DEVELOPMENT.md",
+      "docs/our/PROJECT-ARCHITECT.md",
+      "docs/our/reports/data/S4-52-STATISTICS.json",
+      "docs/our/reports/data/S4-54-STATISTICS.json",
+      "ours"
+    ],
+    "files": 104,
+    "read_only": true
+  },
+  "checks": {
+    "native_commands": [
+      "init",
+      "show",
+      "report"
+    ],
+    "mocked_request_with_context": true,
+    "same_prefix_local_comparison": true,
+    "source_and_prepared_state_preserved": true,
+    "related_existing_tests": {
+      "passed": 86,
+      "failed": 0,
+      "skipped": 0,
+      "seconds": 1.94,
+      "new_run": true
+    }
+  },
+  "real_api_requests": 26,
+  "keychain_reads": 2,
+  "new_board_jobs": 0,
+  "service_updated": false,
+  "launch_confirmed": true,
+  "code_implemented": true,
+  "preparation_commit": "16b3bc3d4658e65a808e85498f6c2fa1f6d6d1da",
+  "pr": 105,
+  "archive": "/Users/helloworld10011/symphony-projects/.backups/s4-61-preparation-20261104-200700",
+  "price_or_economy_result": "S4-61-STATISTICS.json",
+  "launch_approval": {
+    "user_reply": "разрешаю, запускай",
+    "recorded_at": "2026-11-04T17:17:45.792489+00:00",
+    "scope": "До результата или новой остановки; модели и лимиты прежние; автоматического повтора нет."
+  },
+  "run_archive": "/Users/helloworld10011/symphony-projects/.backups/s4-61-run-20261104-201758",
+  "launch_record": {
+    "task": "S4-61",
+    "approved": true,
+    "user_reply": "разрешаю, запускай",
+    "recorded_at": "2026-11-04T17:17:58.930886+00:00",
+    "runtime_base": "a5d811d6125b71f00bf0d6cfdafe61e49c6fbc77",
+    "scope": "Новая S4-61 до результата или следующей остановки. Без автоматического повтора.",
+    "models": {
+      "lead": "deepseek-flash/high",
+      "worker": "gpt-6-luna/max, по решению ведущего"
+    },
+    "budget_enforced": false,
+    "limits": {
+      "max_calls": 1000,
+      "output_tokens_per_call": 393216,
+      "output_tokens_total": 2097152,
+      "request_bytes": 16777216
+    },
+    "output_limits": {
+      "deepseek-lead": 393216,
+      "luna-worker": 128000
+    },
+    "prepared_state_sha256": "2776faf0413711906a71297b9bb53b96e3e0643d2408bb9017703a7761c8cdef",
+    "spec_sha256": "eff0b473ba3f0e35e56e52d0ff88550e12bab0bd8e7602be62b39bff7e37222b",
+    "context_sha256": "b701fb8196b10c5693974f7ab8b5d421f032a739770aa99914bac24d845e4b21"
+  },
+  "api_started": true,
+  "execution_observed_at": "2026-11-04T17:35:37.386520+00:00",
+  "final_state_sha256": "fcbf93367b9f835de7337b5f3c6ec9f171c75d7c1490bbabbecc606b5b6d32a1",
+  "paid_result_received": true,
+  "new_api_calls_after_result": 0,
+  "implementation_commit": "73687d14d1beefa89b249acdfa87cb3d646aba47",
+  "pr_url": "https://github.com/Serg10011/oh-my-symphony/pull/105"
+}
