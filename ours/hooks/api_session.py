@@ -21,8 +21,10 @@ import api_project as project
 
 MAX_STATE_BYTES = 16 * 1024 * 1024
 MIN_RESPONSE_TOKENS = 16
-DEFAULT_LIMITS = {"max_calls": 8, "output_tokens_per_call": 2048,
-                  "output_tokens_total": 16384, "request_bytes": 262144}
+MAX_CALLS = 100_000
+MAX_TOTAL_OUTPUT_TOKENS = 100_000_000
+DEFAULT_LIMITS = {"max_calls": 1000, "output_tokens_per_call": api.MAX_OUTPUT_TOKENS,
+                  "output_tokens_total": 2 * 1024 * 1024, "request_bytes": api.MAX_REQUEST_BYTES}
 LEAD_INSTRUCTIONS = """You lead the assigned task. Understand it, choose the solution and
 organize work yourself. Delegate coherent useful parts to Luna only when worthwhile.
 Use a stable part_id for a part, kind=start initially and kind=correction for one
@@ -70,6 +72,8 @@ to have edited files or run tests. File-tool rounds are part of this attempt.
 RESOURCE_INSTRUCTIONS = """The final user message supplies current runtime resources,
 not a new task.
 Remaining resources include this request and are shared across all participants.
+These are emergency ceilings, not the expected task length or a quota to fill.
+Complete the task efficiently; do not spend resources merely because they remain.
 The worker must leave the stated reserve for the lead. On your last available
 call, return your final or clearly partial result instead of requesting more
 tools. These counters do not expand permissions or the assigned limits.
@@ -137,8 +141,8 @@ def validate_spec(raw: dict) -> dict:
     if not isinstance(limits, dict) or set(limits) - set(DEFAULT_LIMITS):
         raise SessionError("invalid_limits")
     limits = DEFAULT_LIMITS | limits
-    bounds = {"max_calls": (1, 64), "output_tokens_per_call": (16, api.MAX_OUTPUT_TOKENS),
-              "output_tokens_total": (16, 64 * api.MAX_OUTPUT_TOKENS),
+    bounds = {"max_calls": (1, MAX_CALLS), "output_tokens_per_call": (16, api.MAX_OUTPUT_TOKENS),
+              "output_tokens_total": (16, MAX_TOTAL_OUTPUT_TOKENS),
               "request_bytes": (1024, api.MAX_REQUEST_BYTES)}
     if any(type(limits[k]) is not int or not low <= limits[k] <= high for k, (low, high) in bounds.items()):
         raise SessionError("invalid_limits")

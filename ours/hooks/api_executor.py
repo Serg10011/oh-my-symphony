@@ -19,6 +19,7 @@ MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 DEFAULT_OUTPUT_TOKENS = 4096
 MAX_OUTPUT_TOKENS = 32768
 TIMEOUT_SECONDS = 120
+GENERATION_READ_TIMEOUT_SECONDS = 600
 NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 
 
@@ -221,7 +222,8 @@ def _exchange(profile: Profile, endpoint: str, body: dict | None, *, environ, tr
     if not all(33 <= ord(char) <= 126 for char in key):
         raise ExecutorError("invalid_api_key")
     try:
-        with httpx.Client(timeout=TIMEOUT_SECONDS, trust_env=False, follow_redirects=False,
+        read_timeout = GENERATION_READ_TIMEOUT_SECONDS if endpoint.endswith("/responses") else TIMEOUT_SECONDS
+        with httpx.Client(timeout=httpx.Timeout(TIMEOUT_SECONDS, read=read_timeout), trust_env=False, follow_redirects=False,
                           transport=transport) as client:
             with client.stream("POST" if body is not None else "GET", endpoint,
                                content=_encode(body) if body is not None else None,

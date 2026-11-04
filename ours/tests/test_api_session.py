@@ -207,7 +207,7 @@ def test_delegation_reserves_a_lead_return(tmp_path, limits):
     (frame(text=None), "empty_result"),
 ])
 def test_uncertain_or_partial_result_stops_without_followup(tmp_path, response, reason):
-    path = state_file(tmp_path)
+    path = state_file(tmp_path, limits={"output_tokens_per_call": 2048})
     transport, sent = exchange([response])
     result = session.run(path, environ=KEYS, transport=transport)
     assert result["stop_reason"] == reason and len(sent) == 1
@@ -228,7 +228,7 @@ def test_provider_output_limit_violation_is_not_hidden(tmp_path):
                                   httpx.Response(429, text="do not expose fake-secret"),
                                   RuntimeError("do not expose fake-secret")])
 def test_api_error_is_not_retried_and_does_not_leak_details(tmp_path, item):
-    path = state_file(tmp_path)
+    path = state_file(tmp_path, limits={"output_tokens_per_call": 2048})
     transport, sent = exchange([item])
     result = session.run(path, environ=KEYS, transport=transport)
     assert result["status"] == "stopped" and result["stop_reason"] == "api_error" and len(sent) == 1
@@ -240,7 +240,7 @@ def test_api_error_is_not_retried_and_does_not_leak_details(tmp_path, item):
 
 
 def test_interrupted_inflight_call_is_never_repeated(tmp_path, monkeypatch):
-    path = state_file(tmp_path)
+    path = state_file(tmp_path, limits={"output_tokens_per_call": 2048})
     calls = []
 
     def interrupt(*args, **kwargs):
@@ -305,7 +305,7 @@ def test_missing_or_invalid_keys_do_not_consume_session(tmp_path, monkeypatch):
                                      {"lead_profile": "luna-worker"}, {"worker_profile": "sol-lead"},
                                      {"worker_profile": None},
                                      {"lead_effort": "medium"}, {"limits": {"unknown": 1}},
-                                     {"limits": {"max_calls": True}}, {"limits": {"max_calls": 65}},
+                                     {"limits": {"max_calls": True}}, {"limits": {"max_calls": 100001}},
                                      {"limits": {"output_tokens_total": 15}}, {"context": 2}])
 def test_invalid_spec_is_rejected_without_state(tmp_path, changes):
     path = tmp_path / "session.json"
