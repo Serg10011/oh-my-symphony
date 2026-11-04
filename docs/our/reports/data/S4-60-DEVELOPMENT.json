@@ -1,0 +1,85 @@
+{
+  "task": "S4-60",
+  "recorded_at": "2026-11-04T14:05:39.480137+00:00",
+  "status": "prepared_and_verified_not_merged_or_applied",
+  "branch": "codex/api-spending-completion",
+  "base_commit": "8ee71bf6655e39ed4c880faf68c579a8d9633e6f",
+  "executor": {
+    "chat": "current_pipeline_architect",
+    "agreed_effort": "max",
+    "actual_model_recorded": null,
+    "recommended_for_difficult_review": "Astra / max",
+    "subagents": 0
+  },
+  "checks": {
+    "ruff_ours": "PASS",
+    "api_suite": {
+      "tests": 374,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0,
+      "passed": 374
+    },
+    "ours_suite": {
+      "tests": 2077,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0,
+      "passed": 2077
+    },
+    "new_regression_cases": 33
+  },
+  "first_full_run": {
+    "result": "interrupted",
+    "passed": 861,
+    "setup_errors": 22,
+    "reason": "Restricted execution denied local test ports; repeated with approved local access."
+  },
+  "real_state_copy_simulation": {
+    "simulation_only": true,
+    "new_real_api_calls": 0,
+    "keychain_reads": 0,
+    "source_sha256": "31fdd4529a3b76c473611341718611e1d8fe7e8b358fbfbdb0a350740557beb4",
+    "original_calls_preserved": 55,
+    "original_request_hashes_verified": 55,
+    "new_mock_requests": 2,
+    "all_request_hashes_verified": 57,
+    "local_read_results": 34,
+    "finished_worker_preserved": true,
+    "unknown_call_47_preserved": true,
+    "original_session_unchanged": true,
+    "real_task_finished": false,
+    "directory": "/var/folders/d1/_0l9vmnj7qb2d_5xjzns1w5w0000gn/T/s4-60-SIMULATION-NOT-PAID-rv6t55yy",
+    "runtime_sha256": {
+      "api_resume.py": "8d9b814e0347b13a44b7eb8148f7b713a57d8ec576f0bfed12fb1cd891b8c464",
+      "api_session.py": "f424f60ac6232ab1ccfc2c4a71052c1622604864762d9ffe369e3639cab66b36",
+      "api_executor.py": "67b115def26c02911324ff515d465ab442e2963307279ae788adc4a6349f156b",
+      "api_budget.py": "769a5e45fa099770baa03a57bf068e55f3622d965bab26265da478a8ebde2b66",
+      "api_project.py": "a979a5f68e95e07789dd0494f61aaea2737f77335f40277f2500adc407cfe16e",
+      "api_cache.py": "e25d0cb1b5091d35108d74bce90579073a652fc61da8084383354d6222c70718"
+    }
+  },
+  "runtime_sha256": {
+    "api_resume.py": "8d9b814e0347b13a44b7eb8148f7b713a57d8ec576f0bfed12fb1cd891b8c464",
+    "api_session.py": "f424f60ac6232ab1ccfc2c4a71052c1622604864762d9ffe369e3639cab66b36",
+    "api_executor.py": "67b115def26c02911324ff515d465ab442e2963307279ae788adc4a6349f156b",
+    "api_budget.py": "769a5e45fa099770baa03a57bf068e55f3622d965bab26265da478a8ebde2b66",
+    "api_project.py": "a979a5f68e95e07789dd0494f61aaea2737f77335f40277f2500adc407cfe16e",
+    "api_cache.py": "e25d0cb1b5091d35108d74bce90579073a652fc61da8084383354d6222c70718"
+  },
+  "real_resume_plan": {
+    "plan_sha256": "53298ca07c0bffdbc6e010d55e3c8c76569af669069dec59270d9d1d7d802c3d",
+    "source_sha256": "31fdd4529a3b76c473611341718611e1d8fe7e8b358fbfbdb0a350740557beb4",
+    "local_read_replies": 34,
+    "next_call_index": 56,
+    "possible_previous_charge": true,
+    "budget_enforced": false,
+    "path": "/Users/helloworld10011/symphony-projects/.backups/s4-60-development-20261104-170539/resume-plan.json"
+  },
+  "new_real_api_calls_for_development": 0,
+  "new_keychain_reads_for_development": 0,
+  "paid_continuation_history": "S4-54-RESUME-STATISTICS.json",
+  "real_task_S4_54_finished": false,
+  "real_cache_savings_measured": false,
+  "archive": "/Users/helloworld10011/symphony-projects/.backups/s4-60-development-20261104-170539"
+}

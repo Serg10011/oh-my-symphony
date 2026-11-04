@@ -80,7 +80,7 @@ def test_lead_worker_correction_and_final_keep_contexts_separate(tmp_path):
     for request in sent:
         body = request["body"]
         if body["model"] == "gpt-6-luna":
-            assert body["reasoning"] == {"effort": "max"} and body["store"] is False
+            assert body["reasoning"] == {"effort": "max", "context": "all_turns"} and body["store"] is False
             assert not body.get("tools") and "Контекст только ведущего" not in body["instructions"]
             assert "private-lead-reasoning" not in json.dumps(body)
             assert request["authorization"] == "Bearer " + KEYS["OPENAI_API_KEY"]
@@ -120,7 +120,7 @@ def test_sol_compositions_keep_assigned_effort_and_solo_needs_no_worker_key(tmp_
     transport, sent = exchange([frame(model="gpt-6.1-sol")])
     result = session.run(path, environ={"OPENAI_API_KEY": KEYS["OPENAI_API_KEY"]}, transport=transport)
     assert result["status"] == "dialogue_complete"
-    assert sent[0]["body"]["reasoning"] == {"effort": "high"}
+    assert sent[0]["body"]["reasoning"] == {"effort": "high", "context": "all_turns"}
     assert bool(sent[0]["body"].get("tools")) is bool(worker)
     assert result["profiles"]["lead"]["effort"] == "high"
 

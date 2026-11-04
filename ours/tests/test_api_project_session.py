@@ -225,4 +225,6 @@ def test_configured_shared_budget_includes_context_from_file_tools(tmp_path):
     assert result["budget"]["input_tokens_committed"] == 24 and len(sent) == 4
     counter, generation = sent[2], sent[3]
     assert counter["body"]["input"] == generation["body"]["input"]
-    assert json.loads([i for i in counter["body"]["input"] if i.get("type") == "function_call_output"][-1]["output"])["text"] == "print('committed')\n"
+    output = [i for i in counter["body"]["input"] if i.get("type") == "function_call_output"][-1]["output"]
+    assert output[-1]["prompt_cache_breakpoint"] == {"mode": "explicit"}
+    assert json.loads(output[-1]["text"])["text"] == "print('committed')\n"

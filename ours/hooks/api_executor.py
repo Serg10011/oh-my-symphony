@@ -50,15 +50,18 @@ class ExecutorError(Exception):
     """Public errors contain no request, credentials or provider error body."""
 
     def __init__(self, code: str, *, charge_possible: bool = False,
-                 http_status: int | None = None):
+                 http_status: int | None = None, failure_class: str | None = None,
+                 phase: str | None = None, request_id: str | None = None):
         super().__init__(code)
         self.code = code
         self.charge_possible = charge_possible
         self.http_status = http_status
+        self.diagnostics = {k: v for k, v in {"failure_class": failure_class,
+                            "phase": phase, "request_id": request_id}.items() if v is not None}
 
     def as_dict(self) -> dict:
         return {"version": 1, "error": self.code, "charge_possible": self.charge_possible,
-                "http_status": self.http_status}
+                "http_status": self.http_status, **self.diagnostics}
 
 
 def profile_for(name: str) -> Profile:
@@ -123,7 +126,7 @@ def _validate_input(value: Any) -> None:
 def prepare(name: str, request: dict) -> tuple[Profile, dict]:
     """Build a bounded request without reading a key or accessing the network."""
     profile = profile_for(name)
-    allowed = {"input", "instructions", "tools", "max_output_tokens", "effort"}
+    allowed = {"input", "instructions", "tools", "max_output_tokens", "effort", "prompt_cache_options", "reasoning_context"}
     if not isinstance(request, dict) or set(request) - allowed:
         raise ExecutorError("unknown_request_field")
     _validate_input(request.get("input"))
@@ -134,6 +137,19 @@ def prepare(name: str, request: dict) -> tuple[Profile, dict]:
         raise ExecutorError("invalid_output_limit")
     body = {"model": profile.model, "input": request["input"],
             "reasoning": {"effort": effort}, "max_output_tokens": limit, "stream": False}
+    if "prompt_cache_options" in request:
+        options = request["prompt_cache_options"]
+        if (profile.provider != "openai" or not isinstance(options, dict)
+                or set(options) - {"mode", "comparison_response_id"} or options.get("mode") != "explicit"
+                or ("comparison_response_id" in options and
+                    (not isinstance(options["comparison_response_id"], str)
+                     or not re.fullmatch(r"resp_[A-Za-z0-9_-]{1,240}", options["comparison_response_id"])))):
+            raise ExecutorError("invalid_cache_options")
+        body["prompt_cache_options"] = dict(options)
+    if "reasoning_context" in request:
+        if profile.provider != "openai" or request["reasoning_context"] != "all_turns":
+            raise ExecutorError("invalid_reasoning_context")
+        body["reasoning"]["context"] = "all_turns"
     if "instructions" in request:
         if not isinstance(request["instructions"], str):
             raise ExecutorError("invalid_instructions")
@@ -220,13 +236,25 @@ def normalize(response: Any, profile: Profile, body: dict) -> dict:
             calls.append({key: item[key] for key in ("call_id", "name", "arguments")})
         elif kind != "reasoning":
             raise ExecutorError("unsupported_response_item", charge_possible=True)
-    return {"version": 1, "profile": profile.name, "provider": profile.provider,
+    result = {"version": 1, "profile": profile.name, "provider": profile.provider,
             "requested_model": profile.model, "model": response["model"],
             "effort": body["reasoning"]["effort"], "id": response["id"],
             "status": response["status"], "output_text": "".join(texts), "function_calls": calls,
             "service_tier": response.get("service_tier"),
             "refusals": refusals, "output": response["output"],
             "usage": usage_fields(response.get("usage")), "charge_possible": True}
+    reasoning = response.get("reasoning")
+    if (isinstance(reasoning, dict) and isinstance(reasoning.get("context"), str)
+            and reasoning["context"] in {"current_turn", "all_turns"}):
+        result["reasoning_context"] = reasoning["context"]
+    diagnostics = response.get("prompt_cache_diagnostics")
+    if isinstance(diagnostics, dict):
+        safe = {k: v for k, v in diagnostics.items() if
+                (k in {"type", "reason"} and isinstance(v, str) and re.fullmatch(r"[a-z_]{1,80}", v))
+                or (k in {"comparison_reusable_tokens", "cache_missed_tokens"} and type(v) is int and 0 <= v <= 1_050_000)}
+        if safe:
+            result["prompt_cache_diagnostics"] = safe
+    return result
 
 
 def _exchange(profile: Profile, endpoint: str, body: dict | None, *, environ, transport):
@@ -237,6 +265,7 @@ def _exchange(profile: Profile, endpoint: str, body: dict | None, *, environ, tr
         raise ExecutorError("missing_api_key")
     if not all(33 <= ord(char) <= 126 for char in key):
         raise ExecutorError("invalid_api_key")
+    phase, request_id = "send_or_headers", None
     try:
         read_timeout = GENERATION_READ_TIMEOUT_SECONDS if endpoint.endswith("/responses") else TIMEOUT_SECONDS
         with httpx.Client(timeout=httpx.Timeout(TIMEOUT_SECONDS, read=read_timeout), trust_env=False, follow_redirects=False,
@@ -244,15 +273,25 @@ def _exchange(profile: Profile, endpoint: str, body: dict | None, *, environ, tr
             with client.stream("POST" if body is not None else "GET", endpoint,
                                content=_encode(body) if body is not None else None,
                                headers={"Authorization": "Bearer " + key, "Content-Type": "application/json"}) as response:
+                phase = "response_body"
+                candidate = response.headers.get("x-request-id", "")
+                if re.fullmatch(r"[A-Za-z0-9_-]{1,200}", candidate):
+                    request_id = candidate
                 if response.status_code != 200:
-                    raise ExecutorError("http_error", http_status=response.status_code, charge_possible=True)
+                    raise ExecutorError("http_error", http_status=response.status_code, charge_possible=True,
+                                        phase="response_headers", request_id=request_id)
                 data = bytearray()
                 for chunk in response.iter_bytes(chunk_size=65536):
                     data.extend(chunk)
                     if len(data) > MAX_RESPONSE_BYTES:
                         raise ExecutorError("response_too_large", charge_possible=True)
-    except httpx.HTTPError:
-        raise ExecutorError("network_error", charge_possible=True) from None
+    except httpx.HTTPError as exc:
+        known = {"ConnectTimeout", "ReadTimeout", "WriteTimeout", "PoolTimeout", "ConnectError", "ReadError",
+                 "WriteError", "CloseError", "LocalProtocolError", "RemoteProtocolError", "ProxyError",
+                 "UnsupportedProtocol", "DecodingError", "TooManyRedirects", "HTTPStatusError"}
+        failure = type(exc).__name__ if type(exc).__name__ in known else "HTTPError"
+        raise ExecutorError("network_error", charge_possible=True, failure_class=failure,
+                            phase=phase, request_id=request_id) from None
     try:
         return json.loads(data, parse_constant=_reject_constant)
     except (ValueError, UnicodeError, RecursionError):

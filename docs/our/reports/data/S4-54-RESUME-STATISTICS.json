@@ -1,0 +1,242 @@
+{
+  "task": "S4-54",
+  "recorded_at": "2026-11-04T13:47:48.990923+00:00",
+  "source_state": "/Users/helloworld10011/symphony-api-runs/s4-54-retry-spending-20261104-132052/session.json",
+  "source_sha256": "31fdd4529a3b76c473611341718611e1d8fe7e8b358fbfbdb0a350740557beb4",
+  "generation_attempts": 55,
+  "received_responses": 54,
+  "unknown_call_indices": [
+    47
+  ],
+  "new_received_responses": 8,
+  "new_estimated_usd": "0.544512200",
+  "estimated_total_received_usd": "0.846189668",
+  "previous_estimate_received_usd": "0.301677468",
+  "providers": {
+    "deepseek-lead": {
+      "received_responses": 10,
+      "estimated_usd": "0.032999718",
+      "new_responses": 0,
+      "input_tokens": 257397,
+      "cached_input_tokens": 189056,
+      "output_tokens": 36969
+    },
+    "luna-worker": {
+      "received_responses": 44,
+      "estimated_usd": "0.813189950",
+      "new_responses": 8,
+      "input_tokens": 4321123,
+      "cached_input_tokens": 0,
+      "output_tokens": 62506
+    }
+  },
+  "new_calls": [
+    {
+      "index": 48,
+      "profile": "luna-worker",
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 207400,
+        "output_tokens": 3085,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 207397,
+        "reasoning_tokens": 2138,
+        "total_tokens": 210485,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "estimated_usd": "0.027467425",
+      "long_context_input_factor": 1,
+      "provider_billed_usd": null
+    },
+    {
+      "index": 49,
+      "profile": "luna-worker",
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 244400,
+        "output_tokens": 1112,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 244397,
+        "reasoning_tokens": 193,
+        "total_tokens": 245512,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "estimated_usd": "0.031105925",
+      "long_context_input_factor": 1,
+      "provider_billed_usd": null
+    },
+    {
+      "index": 50,
+      "profile": "luna-worker",
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 278376,
+        "output_tokens": 499,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 278373,
+        "reasoning_tokens": 206,
+        "total_tokens": 278875,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "estimated_usd": "0.0699681",
+      "long_context_input_factor": 2,
+      "provider_billed_usd": null
+    },
+    {
+      "index": 51,
+      "profile": "luna-worker",
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 288756,
+        "output_tokens": 627,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 288753,
+        "reasoning_tokens": 582,
+        "total_tokens": 289383,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "estimated_usd": "0.0726591",
+      "long_context_input_factor": 2,
+      "provider_billed_usd": null
+    },
+    {
+      "index": 52,
+      "profile": "luna-worker",
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 289740,
+        "output_tokens": 1653,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 289737,
+        "reasoning_tokens": 703,
+        "total_tokens": 291393,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "estimated_usd": "0.0736746",
+      "long_context_input_factor": 2,
+      "provider_billed_usd": null
+    },
+    {
+      "index": 53,
+      "profile": "luna-worker",
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 327364,
+        "output_tokens": 768,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 327361,
+        "reasoning_tokens": 149,
+        "total_tokens": 328132,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "estimated_usd": "0.08241685",
+      "long_context_input_factor": 2,
+      "provider_billed_usd": null
+    },
+    {
+      "index": 54,
+      "profile": "luna-worker",
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 348051,
+        "output_tokens": 4098,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 348048,
+        "reasoning_tokens": 3200,
+        "total_tokens": 352149,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "estimated_usd": "0.0900861",
+      "long_context_input_factor": 2,
+      "provider_billed_usd": null
+    },
+    {
+      "index": 55,
+      "profile": "luna-worker",
+      "model": "gpt-6-luna",
+      "usage": {
+        "input_tokens": 384412,
+        "output_tokens": 1375,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 384409,
+        "reasoning_tokens": 281,
+        "total_tokens": 385787,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "estimated_usd": "0.0971341",
+      "long_context_input_factor": 2,
+      "provider_billed_usd": null
+    }
+  ],
+  "pricing": {
+    "checked_date": "2026-11-04",
+    "scope": "Post-run estimates only; no balance or provider invoice requested",
+    "sources": [
+      "https://api-docs.deepseek.com/quick_start/pricing/",
+      "https://developers.openai.com/api/docs/models/gpt-6-luna",
+      "https://developers.openai.com/api/docs/guides/prompt-caching"
+    ],
+    "deepseek_flash_per_million": {
+      "off_peak": {
+        "input": ".15",
+        "cached": ".003",
+        "output": ".6"
+      },
+      "peak": {
+        "input": ".3",
+        "cached": ".006",
+        "output": "1.2"
+      },
+      "peak_utc_intervals": [
+        [
+          "01:00",
+          "04:00"
+        ],
+        [
+          "06:00",
+          "10:00"
+        ]
+      ],
+      "peak_weekdays": "Monday-Friday, except Chinese public holidays; all other times off-peak"
+    },
+    "luna_standard_global_per_million": {
+      "input": ".1",
+      "cached": ".01",
+      "write_30m": ".125",
+      "write_12h": ".25",
+      "output": ".5"
+    },
+    "luna_long_context": {
+      "threshold_input_tokens": 272000,
+      "input_cache_multiplier": 2,
+      "output_multiplier": "1.5"
+    },
+    "cache_ttl_requested": null,
+    "documented_default_cache_ttl": "30m",
+    "regional_settings_verified": false,
+    "provider_invoice_verified": false,
+    "costs_are_estimates": true,
+    "cache_and_reasoning_are_subsets": true
+  },
+  "provider_invoice_verified": false,
+  "unknown_is_not_zero": true,
+  "file_calls": 426,
+  "last_batch_size": 34,
+  "stop_reason": "invalid_tool_batch",
+  "result": "no_final_patch",
+  "runtime_code_for_trial": "d8a7b63",
+  "real_task_complete": false,
+  "resume_archive": "/Users/helloworld10011/symphony-projects/.backups/s4-54-resume-20261104-162607",
+  "original_47_calls_preserved": true,
+  "keychain_programmatic_reads": 2,
+  "user_observed_dialogs": 4,
+  "accounting_note": "Use this cumulative total instead of adding it to the previous snapshot. Unknown call 47 remains additional; the first separate 24-response trial is not included."
+}

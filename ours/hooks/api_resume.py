@@ -1,8 +1,10 @@
-"""Explicit recovery at a verified network-error boundary; never automatic retries."""
+"""Explicit recovery at verified network or unapplied read-batch boundaries."""
 
 from __future__ import annotations
 
 import hashlib
+from copy import deepcopy
+import json
 import os
 from pathlib import Path
 
@@ -40,36 +42,56 @@ def _pending(history):
 def _verify_request(state, call, history):
     if call.get("history_items") != len(history) + 1 or not isinstance(call.get("resources"), dict):
         _reject()
-    request = session._build_request(state, history, call["output_cap"], call["resources"], part_id=call.get("part_id"))
+    request = session._build_request(state, history, call["output_cap"], call["resources"],
+                                     part_id=call.get("part_id"), request_version=call.get("request_version", 1))
     _, body = session.api.prepare(call["profile"], request)
     if _digest(session._encode(body)) != call.get("request_sha256"):
         raise session.SessionError("resume_request_changed")
 
 
 def _boundary(state):
-    if (state["status"] != "stopped" or state.get("stop_reason") != "api_error"
+    if (state["status"] != "stopped" or state.get("stop_reason") not in {"api_error", "invalid_tool_batch"}
             or not state["calls"] or state.get("result") is not None):
         raise session.SessionError("resume_not_supported")
     last = state["calls"][-1]
+    read_batch = state["stop_reason"] == "invalid_tool_batch"
     error = last.get("error", {})
-    if (last["status"] != "error" or error.get("error") != "network_error"
+    if not read_batch and (last["status"] != "error" or error.get("error") != "network_error"
             or error.get("charge_possible") is not True or error.get("http_status") is not None):
         raise session.SessionError("resume_not_supported")
+    if read_batch:
+        calls = last.get("response", {}).get("function_calls", [])
+        names = {t["name"] for t in (session.project.LEGACY_TOOLS if last.get("request_version", 1) == 1 else session.project.TOOLS)}
+        if ("project" not in state["spec"] or len(calls) <= 32
+                or any(c["name"] not in names or not isinstance(c["call_id"], str) or not 1 <= len(c["call_id"]) <= 256 for c in calls)):
+            raise session.SessionError("resume_not_supported")
     if state["profiles"] != session._profiles(state["spec"]):
         raise session.SessionError("profile_changed_since_init")
+    if not state["lead_history"] or state["lead_history"][0] != {"role": "user", "content": state["spec"]["task"]}:
+        _reject()
     resumes = state.get("resumptions", [])
     if not isinstance(resumes, list):
         _reject()
     accounted = set()
     for event in resumes:
-        previous, following = event["uncertain_call_index"], event["next_call_index"]
+        previous = event.get("source_call_index", event["uncertain_call_index"])
+        following = event["next_call_index"]
         if (type(previous) is not int or type(following) is not int or previous in accounted
                 or not 1 <= previous < following <= len(state["calls"]) or following != previous + 1
-                or state["calls"][previous - 1]["status"] != "error"
                 or state["calls"][following - 1].get("resume_of") != previous):
             _reject()
+        old = state["calls"][previous - 1]
+        kind = event.get("recovery_kind", "network_error")
+        if kind == "network_error":
+            if old["status"] != "error" or old.get("error", {}).get("error") != "network_error":
+                _reject()
+        elif kind == "unapplied_read_batch":
+            if old["status"] != "received" or len(old.get("response", {}).get("function_calls", [])) <= 32:
+                _reject()
+        else:
+            _reject()
         accounted.add(previous)
-    for call in state["calls"][:-1]:
+    for call in state["calls"] if read_batch else state["calls"][:-1]:
         if call["status"] == "error" and call["index"] in accounted:
             if call.get("error", {}).get("error") != "network_error":
                 _reject()
@@ -89,14 +111,21 @@ def _boundary(state):
     expected_profile = state["spec"]["worker_profile" if part_id is not None else "lead_profile"]
     if last["profile"] != expected_profile:
         _reject()
-    for part in state["parts"].values():
-        if _pending(part["history"]):
+    for key, part in state["parts"].items():
+        if _pending(part["history"]) and not (read_batch and key == part_id):
             _reject()
     pending = _pending(state["lead_history"])
     history = state["lead_history"] if part_id is None else state["parts"][part_id]["history"]
-    _verify_request(state, last, history)
+    if read_batch:
+        start = last["history_items"] - 1
+        if (start < 1 or history[start:] != last["response"]["output"]
+                or _pending(history) != last["response"]["function_calls"]):
+            _reject()
+        _verify_request(state, last, history[:start])
+    else:
+        _verify_request(state, last, history)
     if part_id is None:
-        if pending:
+        if pending and not read_batch:
             _reject()
     else:
         if not pending or pending[0]["name"] != "delegate_luna":
@@ -153,6 +182,17 @@ def _plan(path, raw, state):
         cap = min(session._output_limits(state)[last["profile"]], session.api.output_limit(last["profile"]),
                   remaining - (session.MIN_RESPONSE_TOKENS if worker else 0))
         history = state["parts"][last["part_id"]]["history"] if worker else state["lead_history"]
+        prepared = []
+        read_batch = state["stop_reason"] == "invalid_tool_batch"
+        if read_batch:
+            history = deepcopy(history)
+            for index, call in enumerate(last["response"]["function_calls"]):
+                answer = session._project_answer(state, call, deferred=index >= session.PROJECT_CALLS_PER_RESPONSE)
+                if answer[1]:
+                    raise session.SessionError("resume_project_unavailable")
+                prepared.append((call, answer))
+                history.append({"type": "function_call_output", "call_id": call["call_id"],
+                                "output": json.dumps(answer[0], ensure_ascii=False)})
         resources = session._resources(state, cap, worker=worker)
         request = session._build_request(state, history, cap, resources, part_id=last.get("part_id"))
         _, body = session.api.prepare(last["profile"], request)
@@ -160,20 +200,23 @@ def _plan(path, raw, state):
         if len(encoded) > spec["limits"]["request_bytes"]:
             raise session.SessionError("request_size_limit")
         runtime = {name: _digest(Path(__file__).with_name(name).read_bytes()) for name in
-                   ("api_resume.py", "api_session.py", "api_executor.py", "api_budget.py", "api_project.py")}
+                   ("api_resume.py", "api_session.py", "api_executor.py", "api_budget.py", "api_project.py", "api_cache.py")}
         plan = {"version": 1, "status": "resume_ready", "state_path": str(path),
                 "state_sha256": _digest(raw), "runtime_sha256": runtime,
-                "uncertain_call_index": last["index"], "next_call_index": last["index"] + 1,
+                "uncertain_call_index": None if read_batch else last["index"], "next_call_index": last["index"] + 1,
+                "source_call_index": last["index"], "recovery_kind": "unapplied_read_batch" if read_batch else "network_error",
+                "local_read_replies": len(prepared), "local_replies_sha256": _digest(session._encode(prepared)),
                 "profile": last["profile"], "part_id": last.get("part_id"), "profiles": state["profiles"],
                 "pending_lead_tool_ids": [c["call_id"] for c in pending],
                 "resources": resources, "limits": spec["limits"], "output_limits": session._output_limits(state),
                 "next_request_sha256": _digest(encoded), "next_request_bytes": len(encoded),
                 "budget_enforced": "budget" in spec, "budget": session.summary(state).get("budget"),
                 "project_digest": state.get("project_snapshot", {}).get("digest"),
-                "possible_previous_charge": True, "provider_retrieval_available": False,
+                "possible_previous_charge": any(c["status"] == "error" and c.get("error", {}).get("charge_possible") for c in state["calls"]),
+                "provider_retrieval_available": False, "next_request_version": 2,
                 "new_api_requests": 0, "scope": "Continue the same task within its remaining grants; stop again on failure"}
         plan["plan_sha256"] = _digest(session._encode(plan))
-        return plan, pending
+        return plan, pending, prepared
     except (KeyError, TypeError, ValueError, IndexError, StopIteration, AttributeError):
         _reject()
     except (session.api.ExecutorError, session.budget.BudgetError, session.project.ProjectError) as exc:
@@ -224,7 +267,7 @@ def resume(path, *, expected_plan_sha256, accept_possible_charge=False, environ=
     path = session._path(path)
     with session._lock(path):
         raw, state = _read_locked(path)
-        planned, pending = _plan(path, raw, state)
+        planned, pending, prepared = _plan(path, raw, state)
         if expected_plan_sha256 != planned["plan_sha256"]:
             raise session.SessionError("resume_plan_changed")
         if require_budget and "budget" not in state["spec"]:
@@ -235,6 +278,7 @@ def resume(path, *, expected_plan_sha256, accept_possible_charge=False, environ=
         state.setdefault("resumptions", []).append({
             "plan_sha256": planned["plan_sha256"], "source_state_sha256": planned["state_sha256"],
             "backup": str(backup), "uncertain_call_index": planned["uncertain_call_index"],
+            "source_call_index": planned["source_call_index"], "recovery_kind": planned["recovery_kind"],
             "next_call_index": planned["next_call_index"], "part_id": planned["part_id"],
             "accepted_at": session._now(), "possible_previous_charge_acknowledged": True,
             "previous_stop_reason": state["stop_reason"], "previous_finished_at": state.get("finished_at"),
@@ -242,6 +286,9 @@ def resume(path, *, expected_plan_sha256, accept_possible_charge=False, environ=
         state.update(status="running", stop_reason=None)
         state.pop("finished_at", None)
         session._save(path, state)
+        history = state["parts"][planned["part_id"]]["history"] if planned["part_id"] is not None else state["lead_history"]
+        for call, answer in prepared:
+            session._project_call(path, state, call, history, part_id=planned["part_id"], prepared=answer)
         if planned["part_id"] is not None:
             session._dispatch(path, state, pending, environ=env, transport=transport, resumed_part=planned["part_id"])
         return session._lead_loop(path, state, environ=env, transport=transport)
