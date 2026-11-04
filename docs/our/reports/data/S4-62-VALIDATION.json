@@ -46,7 +46,8 @@
     "followup_scope": "После полного прогона уточнены русские причины остановки, добавлена обработка некорректного Unicode команды и переносимая фикстура новых тестов; они проверены отдельным прогоном 159/3. Это не второй полный прогон.",
     "skips": "Три явные проверки macOS выполняются отдельно с SYMPHONY_TEST_NATIVE_SANDBOX=1; все три прошли.",
     "ruff": "PASS",
-    "diff_check": "PASS"
+    "diff_check": "PASS",
+    "new_relative_links_checked": 8
   },
   "prior_runs": [
     {
@@ -129,5 +130,9 @@
   "task_complete": false,
   "accepted": false,
   "merged": false,
-  "applied": false
+  "applied": false,
+  "implementation_commit": "c70f73073d829ae2a25b492bb0985c68ec8f0697",
+  "pr": 106,
+  "pr_url": "https://github.com/Serg10011/oh-my-symphony/pull/106",
+  "pr_draft": true
 }
