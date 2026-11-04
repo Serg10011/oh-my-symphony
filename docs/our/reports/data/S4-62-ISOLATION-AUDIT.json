@@ -1,0 +1,126 @@
+{
+  "task": "S4-62",
+  "iteration": "4: native network audit and worker proposal",
+  "recorded_at": "2026-11-05T02:08:54.599046+03:00",
+  "parent_commit": "d8785047886d9402a7e2866c1f9ff2ecff323ab9",
+  "status": "proposal_awaiting_user_approval",
+  "assigned_model": "Astra",
+  "assigned_effort": "max",
+  "profiles": {
+    "network_off": {
+      "result": {
+        "can_bind_own_server": false,
+        "bind_errno": 1,
+        "can_reach_other_host_service": false,
+        "connect_errno": 1,
+        "outside_file_denied": true,
+        "credentials_absent": true
+      },
+      "seconds": 0.089,
+      "raw_sha256": "3b91e1bbc17e2b939bd42aafce7945ac1efd4b86cde78ec8ddbfb91e809667f2"
+    },
+    "localhost_allowlist": {
+      "result": {
+        "can_bind_own_server": false,
+        "bind_errno": 1,
+        "can_reach_other_host_service": false,
+        "connect_errno": 1,
+        "outside_file_denied": true,
+        "credentials_absent": true
+      },
+      "seconds": 0.086,
+      "raw_sha256": "3b91e1bbc17e2b939bd42aafce7945ac1efd4b86cde78ec8ddbfb91e809667f2"
+    },
+    "proxy_local_binding": {
+      "result": {
+        "can_bind_own_server": true,
+        "can_reach_other_host_service": true,
+        "outside_file_denied": true,
+        "credentials_absent": true
+      },
+      "seconds": 0.057,
+      "raw_sha256": "07ca2035da71303ebfa0f1094bf13ce6dc2c976fb48fee44b9dad1d4770a7b35"
+    },
+    "network_without_proxy": {
+      "result": {
+        "can_bind_own_server": true,
+        "can_reach_other_host_service": true,
+        "outside_file_denied": true,
+        "credentials_absent": true
+      },
+      "seconds": 0.069,
+      "raw_sha256": "07ca2035da71303ebfa0f1094bf13ce6dc2c976fb48fee44b9dad1d4770a7b35"
+    }
+  },
+  "probe_files_sha256": {
+    "probe-extra.py": "d46d158e19cff57542c040b3ed3405e957b74bba3694fb7118ba9432c01a1d02",
+    "probe.py": "e3e9efeb2674a04d17a4f46fd075f5a1991c1fb89fd65a134aeb1106428aa864"
+  },
+  "host": {
+    "arch": "arm64",
+    "macos_version": "27.0.1",
+    "physical_memory_bytes": 17179869184,
+    "system_disk_free_observed_gib": [
+      7.9,
+      9.8
+    ],
+    "external_disk": "/Volumes/ssd",
+    "filesystem": "apfs",
+    "external_free_bytes_at_record": 1409024000000,
+    "parallels_vms": [
+      {
+        "name": "Windows 11",
+        "state": "stopped"
+      }
+    ]
+  },
+  "proposal": {
+    "engine": "Lima/VZ",
+    "guest": "Linux ARM64",
+    "directory": "/Volumes/ssd/symphony-checks",
+    "cpus": 2,
+    "memory_gib": 4,
+    "virtual_disk_gib": 24,
+    "initial_storage_budget_gib": 32,
+    "plain_mode": true,
+    "autostart": false,
+    "host_mounts": false,
+    "provider_keys_in_guest": false,
+    "task_network": "private loopback only; mechanism and denial probes still to implement",
+    "baseline": "base and candidate in same pinned guest environment; old macOS baseline cannot be used",
+    "approved": false,
+    "installed": false
+  },
+  "changes": {
+    "runtime_code": false,
+    "live_checkout": false,
+    "production_config": false,
+    "virtual_machines_started": false,
+    "real_api_calls": 0,
+    "api_cost_usd": "0"
+  },
+  "sources": [
+    "https://learn.chatgpt.com/docs/permissions",
+    "https://learn.chatgpt.com/docs/config-file/config-reference",
+    "https://developers.openai.com/api/docs/guides/agents-api/environments/security",
+    "https://lima-vm.io/docs/config/vmtype/vz/",
+    "https://lima-vm.io/docs/config/plain/",
+    "https://lima-vm.io/docs/config/environment-variables/",
+    "https://lima-vm.io/docs/installation/"
+  ],
+  "limitations": [
+    "Native results describe four explicit profiles on this installed binary, not all possible macOS isolation tools.",
+    "The VM proposal is not an implemented runner or a permission to install one.",
+    "Linux baseline and platform-specific skips require separate handling before production use."
+  ],
+  "codex_cli_version": "0.166.0-alpha.6",
+  "codex_cli_sha256": "508388df35319042107560d095b271a98a512f59a542848c908b23ed1bad4b44",
+  "archive": "/Users/helloworld10011/symphony-projects/.backups/s4-62-isolation-audit-20261105-021057",
+  "validation": {
+    "native_profiles_checked": 4,
+    "native_assertions": "passed",
+    "relative_links_checked": 271,
+    "diff_check": "passed",
+    "pytest": "not_repeated_documentation_and_local_audit_only"
+  }
+}
