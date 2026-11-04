@@ -22,6 +22,7 @@ import sys
 import time
 
 import api_executor as api
+import api_candidate as candidate
 import api_project as project
 import api_session as session
 from symphony.errors import SymphonyError
@@ -116,12 +117,13 @@ class Board:
         spec["project"], snapshot = project.snapshot(spec["project"])
         code = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in sorted(Path(__file__).parent.glob("api_*.py"))}
+        rules = candidate.rules_snapshot(self.workflow.parent)
         binding = {"card": self.card_digest(front, body), "spec": spec,
                    "snapshot": snapshot["digest"], "profiles": session._profiles(spec),
                    "context": self.context, "settings": raw, "code": code,
-                   "workflow_sha256": hashlib.sha256(self.workflow.read_bytes()).hexdigest()}
+                   "workflow_sha256": hashlib.sha256(self.workflow.read_bytes()).hexdigest(), "rules": rules}
         return {"binding": _digest(binding), "card_digest": binding["card"], "spec": spec,
-                "profiles": binding["profiles"], "project_digest": snapshot["digest"]}
+                "profiles": binding["profiles"], "project_digest": snapshot["digest"], "rules": rules}
 
     def _load(self) -> dict | None:
         if not self.path.exists():
@@ -216,6 +218,11 @@ class Board:
             state = session._load(self.session_path)
             result["session"] = session.summary(state)
             result["report_text"] = session.render_report(session.spend_report(state))
+        if value.get("candidate"):
+            result["candidate"] = candidate.public_report(value["candidate"])
+            result["delivery_status"] = value["candidate"]["status"]
+            result["report_text"] = (result.get("report_text", "") + "\n\n"
+                                     + candidate.render_report(value["candidate"]))
         return result
 
     def stop(self) -> dict:
@@ -246,7 +253,11 @@ class Board:
         value = self._load()
         if not value or value["status"] in {"queued", "running"}:
             raise BoardError("api_result_not_ready")
-        return session.review(self.session_path, offset=offset)
+        result = session.review(self.session_path, offset=offset)
+        revision = value.get("candidate", {}).get("revision")
+        if revision is not None and result["revision"] != revision:
+            raise BoardError("api_candidate_result_changed")
+        return result
 
     def run(self, run_id, *, credentials=None, transport=None, cancelled=None):
         with session._lock(self.root / "owner"):
@@ -260,7 +271,7 @@ class Board:
                 raise BoardError("api_assignment_not_queued")
             try:
                 unchanged = self.proposal()["binding"] == value["binding"]
-            except (BoardError, session.SessionError, project.ProjectError, OSError, ValueError):
+            except (BoardError, candidate.CandidateError, session.SessionError, project.ProjectError, OSError, ValueError):
                 unchanged = False
             if not unchanged:
                 value.update(status="stopped", reason="api_assignment_changed")
@@ -289,11 +300,14 @@ class Board:
                                   credential_loader=credentials or keychain_credentials)
             value.update(status="result" if outcome["status"] == "dialogue_complete" else "stopped",
                          reason=outcome["stop_reason"])
+            if outcome["status"] == "dialogue_complete":
+                value["candidate"] = candidate.public_report(candidate.prepare(self.session_path, self.workflow.parent,
+                    self.identifier, value["rules"], cancelled=should_stop))
         except Interrupted:
             if self.session_path.exists():
                 session.interrupt(self.session_path, "operator_stopped")
             value.update(status="stopped", reason="operator_stopped")
-        except (BoardError, session.SessionError, session.workspace.WorkspaceError,
+        except (BoardError, candidate.CandidateError, session.SessionError, session.workspace.WorkspaceError,
                 session.sandbox.SandboxError, project.ProjectError, OSError):
             if self.session_path.exists():
                 session.interrupt(self.session_path, "board_execution_failed")
@@ -302,7 +316,7 @@ class Board:
             value["finished_at"] = session._now()
             self._save(value)
         self._hold(value, "API-команда завершила запуск. Результат и расходы — в панели карточки. "
-                   "Автоматическая доставка и обязательные проверки доски ещё не подключены; "
+                   "Проверка и кандидат изменений — там же. Полный прогон и доставка ещё не выполнены; "
                    "завершение диалога не означает приёмку. Платного повтора не будет.")
         return self.show()
 
@@ -370,7 +384,7 @@ def cli(argv=None):
             result = getattr(board, args.action)()
         print(json.dumps(result, ensure_ascii=False, allow_nan=False))
         return 0
-    except (BoardError, session.SessionError, project.ProjectError, OSError, ValueError, KeyError) as exc:
+    except (BoardError, candidate.CandidateError, session.SessionError, project.ProjectError, OSError, ValueError, KeyError) as exc:
         # Detailed provider/OS error bodies may contain credentials. This is a
         # fixed bridge error, not a swallowed success or a license to retry.
         code = str(exc) if isinstance(exc, (BoardError, session.SessionError)) else "api_board_action_refused"
