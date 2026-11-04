@@ -1,0 +1,289 @@
+{
+  "tasks": [
+    "S4-56",
+    "S4-57"
+  ],
+  "accepted_head": "cf06b81585b1986c63421d37d29fbaa857d890ad",
+  "accepted_pr": 99,
+  "merge_commit": "06e23e6723e60ab43759a039862c92c860095904",
+  "implementation_commit": "428d0f48e48ae2bcfe9f3df11bc76fd3fddf2cf1",
+  "accepted": true,
+  "applied": true,
+  "post_merge_exit_code": 0,
+  "post_merge_started_at": "2026-11-04T09:25:47.655980+00:00",
+  "post_merge_finished_at": "2026-11-04T09:37:35.116163+00:00",
+  "verified_at": "2026-11-04T09:40:03.395913+00:00",
+  "checks": {
+    "git:/Users/helloworld10011/dev/oh-my-symphony": true,
+    "git:/Users/helloworld10011/dev/oms-pipeline": true,
+    "applied_state": true,
+    "new_full_baseline": true,
+    "baseline_history_preserved": true,
+    "oms_config_only_measured_timeouts_changed": true,
+    "anthropic_policy_preserved:levels": true,
+    "anthropic_policy_preserved:limits": true,
+    "anthropic_policy_preserved:billing": true,
+    "anthropic_policy_preserved:agent": true,
+    "anthropic_policy_preserved:service": true,
+    "oms_workflow_matches_generator": true,
+    "merging_inactive": true,
+    "merging_preserved": true,
+    "only_done_resolves_dependencies": true,
+    "agent_policy_only_test_timeout_changed": true,
+    "claude_policy_only_stall_timeout_changed": true,
+    "oms_settings_only_test_timeouts_changed": true,
+    "oms_prompts_match_installed_source": true,
+    "oms_progress_only_timestamp_changed": true,
+    "cards_artifacts_eve_and_other_files_preserved": true,
+    "oms:kanban:file_set": true,
+    "oms:artifacts:file_set": true,
+    "oms:wiki:file_set": true,
+    "oms:prompts:file_set": true,
+    "oms:bin:file_set": true,
+    "oms:.ours-state:file_set": true,
+    "eve:kanban:file_set": true,
+    "eve:artifacts:file_set": true,
+    "eve:wiki:file_set": true,
+    "eve:prompts:file_set": true,
+    "eve:bin:file_set": true,
+    "eve:.ours-state:file_set": true,
+    "history:oms": true,
+    "history:eve": true,
+    "oms_restarted": true,
+    "eve_still_off": true,
+    "queue_pid_preserved": true,
+    "queue_idle": true,
+    "inbox_empty": true,
+    "oms_api_idle": true,
+    "dispatch_hold_preserved": true,
+    "unaffected_api_sources_preserved": true,
+    "overview_pid_preserved": true,
+    "overview_sources_preserved": true,
+    "overview_alive_readonly": true,
+    "worktree_paths_preserved": true,
+    "installed_api_tests": true,
+    "installed_api_commands_passive": true,
+    "installed_both_budget_modes_passive": true,
+    "installed_both_read_modes_passive": true,
+    "installed_all_read_budget_pairs": true,
+    "original_api_artifacts_preserved": true,
+    "installed_flash_profiles_verified": true,
+    "installed_flash_effort_choices": true,
+    "tested_source:/Users/helloworld10011/dev/oh-my-symphony": true,
+    "tested_source:/Users/helloworld10011/dev/oms-pipeline": true,
+    "doctor_and_restart_succeeded": true,
+    "full_junit_preserved": true
+  },
+  "baseline": {
+    "base_branch": "our-main",
+    "base_sha": "06e23e6723e60ab43759a039862c92c860095904",
+    "passed": 6123,
+    "skipped": 142,
+    "failed": 0,
+    "setup_s": 11.2,
+    "tests_s": 690.1,
+    "measured_at": "2026-11-04T09:37:32Z"
+  },
+  "baseline_before": {
+    "base_branch": "our-main",
+    "base_sha": "debed2aa79047413994ca27f17a9479afabb9bb0",
+    "passed": 6071,
+    "skipped": 142,
+    "failed": 0,
+    "setup_s": 10.4,
+    "tests_s": 607.1,
+    "measured_at": "2026-11-03T20:26:36Z"
+  },
+  "history_preserved": {
+    "/Users/helloworld10011/symphony-projects/oms/.symphony/state.db": {
+      "runs": true,
+      "run_events": true,
+      "pm_workspaces": true,
+      "pm_operations": true,
+      "pm_approvals": true,
+      "pm_handoff_batches": true,
+      "pm_handoff_items": true,
+      "pm_managed_tickets": true,
+      "pm_exchange_records": true,
+      "pm_journals": true,
+      "pm_dispatch_permits": true,
+      "pm_authority_revocations": true,
+      "pm_legacy_conversions": true,
+      "pm_verification_records": true,
+      "pm_acceptances": true,
+      "pm_manual_verification_records": true,
+      "pm_coverage_waivers": true,
+      "pm_planning_reserved_ids": true
+    },
+    "/Users/helloworld10011/symphony-projects/eve/.symphony/state.db": {
+      "runs": true,
+      "run_events": true,
+      "pm_workspaces": true,
+      "pm_operations": true,
+      "pm_approvals": true,
+      "pm_handoff_batches": true,
+      "pm_handoff_items": true,
+      "pm_managed_tickets": true,
+      "pm_exchange_records": true,
+      "pm_journals": true,
+      "pm_dispatch_permits": true,
+      "pm_authority_revocations": true,
+      "pm_legacy_conversions": true,
+      "pm_verification_records": true,
+      "pm_acceptances": true,
+      "pm_manual_verification_records": true,
+      "pm_coverage_waivers": true,
+      "pm_planning_reserved_ids": true
+    }
+  },
+  "services_after": {
+    "oms": {
+      "rc": 0,
+      "pid": 18005
+    },
+    "eve": {
+      "rc": 113,
+      "pid": null
+    },
+    "inbox-runner": {
+      "rc": 0,
+      "pid": 57583
+    },
+    "overview": {
+      "rc": 0,
+      "pid": 8768
+    }
+  },
+  "timeouts_before": {
+    "tests_s": 1260,
+    "gate_ms": 1320000,
+    "hooks_ms": 1320000
+  },
+  "timeouts_after": {
+    "tests_s": 1440,
+    "gate_ms": 1500000,
+    "hooks_ms": 1500000
+  },
+  "unexpected_changes": [],
+  "full_junit_counts": {
+    "main": {
+      "tests": 4257,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 141
+    },
+    "timing": {
+      "tests": 12,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 1
+    },
+    "ours": {
+      "tests": 1996,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "all": {
+      "tests": 6265,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 142
+    }
+  },
+  "new_test_run": true,
+  "new_baseline_measure": true,
+  "service_restart": true,
+  "new_pipeline_jobs": false,
+  "eve_board_updated": false,
+  "overview_service_pid_preserved": true,
+  "paid_api_calls": false,
+  "api_tasks_executed": false,
+  "archive": "/Users/helloworld10011/symphony-projects/.backups/s4-57-apply-20261104-122328",
+  "protected_paths": 174,
+  "sqlite_copies": 2,
+  "installed_api_tests": {
+    "tests": 293,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "passive_commands": 64,
+  "profile_catalog_checks": 2,
+  "source_sha256": {
+    "AGENTS.md": "655885be33422d99b0bc250b8184aa41b323bad2f0f2ad0f17dcc04272fcdb44",
+    "docs/our/DECISIONS.md": "f58d852fac4acd0412ec9764b241cd5fe7158ff6e3f93907eb2bf589353c9d1c",
+    "docs/our/DEVELOPMENT.md": "3db864a3287663eba9aaa2b966e4b85520df9e85c78b31939618e1a9514ff134",
+    "docs/our/PROJECT-ARCHITECT.md": "1ed3eeb83939bb76be0e38892d17453abe35c4628b998b8393ea891d57bb3f1e",
+    "docs/our/ROADMAP.md": "11540424ed95c9f02bde30780edd73912c20b400f1fa3952156b9b804429dac7",
+    "docs/our/reports/REPORT-45.md": "4348e4290231261205323c9088009fd718ab594913e158663f042fff64551474",
+    "docs/our/reports/REPORT-46.md": "6ad7c049fc63a91a0798acbb906f10d962a4345758595000c9aa7f917abb0cbb",
+    "docs/our/reports/REPORT-47.md": "a1568e18083c7f1ba2db20f3a5594cc2a4420b27b009940c3c93147c13b6dd72",
+    "docs/our/reports/data/S4-54-STATISTICS.json": "319fb6b2274ff59ee9e5c47be1abbbacaaf1833df203c045249c0aa0acd0d0f2",
+    "docs/our/reports/data/S4-56-DEVELOPMENT.json": "c52a6368c1f3cd25194abf2885f7ecb7da956183a768b81f036ddfd3441f99d2",
+    "docs/our/reports/data/S4-57-DEVELOPMENT.json": "6041a7cf0e57d09a72e954c51981ce52a4b9bb356a0ffea318881272f0d97888",
+    "docs/our/reports/data/S4-57-MODEL-LIMITS.json": "bdb95361efa9e507f4193380f0f348f81a863a88b89a3f29e5746276dc580b2f",
+    "docs/our/tasks/TASK-S4-54.md": "6f85440b55ea60e1bddafdc3d21060746bfc3adff3d47fea94003dfa78e19dc5",
+    "docs/our/tasks/TASK-S4-56.md": "b1d27e6965e3d6f46c601930e0745af0101b3d7dfdf963bd5dea3f944911eeb7",
+    "docs/our/tasks/TASK-S4-57.md": "0564564fafeeafc36c8a6a7784e501917b0308afd0400c8a473bdb61e7eb4813",
+    "docs/our/tasks/data/S4-54-ORIGINAL-PRO-SESSION.json": "63602869df92ed9a15fabbc7ce422e6c3b089d35d1758c3cb9c9756ed9be80c3",
+    "docs/our/tasks/data/S4-54-SESSION.json": "57a188dfb4f6230535e5446eb059e94dd3b99a9015a826ddc29b82e65987ad06",
+    "ours/README.md": "2ed7d1634be312ffa36f1a00cfff9e9bf199c03bdfe2205e3f8af0a10ce8f221",
+    "ours/hooks/api_executor.py": "9c7e8068ee8047bd21d98d12b695038f71947b39d17a1afaf736b7d33bd91cfd",
+    "ours/hooks/api_session.py": "c59c249a5d4f993ecc0ae108e79759cb1f468cc2cd467217bf79b74056e515fb",
+    "ours/tests/test_api_budget.py": "9d88777b40e985c4756eece42877346b4e8af8cfb93f652d4425874fe47a3fc6",
+    "ours/tests/test_api_executor.py": "d6cf3088ee8da741e3fb3866a8b0d6f29739fd77d594e87b80e4ece88186ae01",
+    "ours/tests/test_api_flash_migration.py": "8f79c854f2e3e5acb94d3a3be6e345da9fc167f6f9942e2c3c83b5f994bcf6d9",
+    "ours/tests/test_api_model_output_limits.py": "dd5f4791526cf217f023e94b44386ac9ba96d9e85bd83347729756fdd4a26c27",
+    "ours/tests/test_api_project_session.py": "c1e78500b4052a58ad0258bf75e83b300310ee923987fb695bd019ce7f4b8b8c",
+    "ours/tests/test_api_session.py": "647f8b75b2609e14b4013f65d415a4d93881bad13237ae9e9ba34684b33fb6cf",
+    "ours/tests/test_api_session_emergency_limits.py": "fc8d5deb5a5dab3dd946ff21791a30c19df2f894e9c2098c59397daaf77aa0bf",
+    "ours/tests/test_api_session_resources.py": "f70d6a0034c48ddeb3269cefa32d39a7a5124f5df430f078c3e8627f8b303499"
+  },
+  "user_approval": "вливай и го — в ответ на запрос слияния PR №99 и штатного применения S4-56/S4-57",
+  "applying_agent": {
+    "model": "gpt-6.1-sol",
+    "agreed_effort": "max"
+  },
+  "implementation_commits": {
+    "S4-56": "dfdd6b2ff2b0868105fcc063a513b4ef0debb973",
+    "S4-57-first": "ea2fd8fa6decd07e2a94f061937af07701d8901b",
+    "S4-57-model-limits": "428d0f48e48ae2bcfe9f3df11bc76fd3fddf2cf1"
+  },
+  "new_session_defaults": {
+    "max_calls": 1000,
+    "output_tokens_total": 2097152,
+    "request_bytes": 16777216
+  },
+  "per_model_output": {
+    "deepseek-flash": 393216,
+    "gpt-6-luna": 128000,
+    "gpt-6.1-sol": 128000
+  },
+  "state_bytes": 134217728,
+  "response_bytes": 16777216,
+  "saved_grants_preserved": true,
+  "pinned_per_participant_grants": true,
+  "lead_reserve_returns_control": true,
+  "deepseek_profile_model": "deepseek-flash",
+  "deepseek_default_effort": "high",
+  "deepseek_effort_policy": {
+    "ordinary": "high",
+    "increased_complexity": "max",
+    "assigned_before_launch": true
+  },
+  "worker_model": "gpt-6-luna",
+  "worker_effort": "max",
+  "tariff_version": "2026-11-03-standard-peak-v2",
+  "old_pro_sessions_preserved": true,
+  "default_api_budget_required": false,
+  "api_execution_registered_on_boards": false,
+  "model_filesystem_write": false,
+  "model_shell": false,
+  "scope": "Actual primary PR 99 application; later history synchronization recorded separately",
+  "history_sync_pending_at_primary_application": true,
+  "history_sync": {
+    "pull_request": "https://github.com/Serg10011/oh-my-symphony/pull/100",
+    "actual_result_file": "/Users/helloworld10011/symphony-projects/.backups/s4-57-apply-20261104-122328/history-sync/result.json"
+  }
+}
