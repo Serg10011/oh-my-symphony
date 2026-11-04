@@ -28,7 +28,7 @@ CLOSED_NAMES = frozenset({"credentials", "credentials.json", "secrets", "secrets
                          "secrets.yaml", "secrets.yml", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
                          ".netrc", ".git-credentials", ".npmrc", ".pypirc", ".mcp.json"})
 CLOSED_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".keystore")
-TOOL_NAMES = frozenset({"list_project_files", "read_project_file"})
+TOOL_NAMES = frozenset({"list_project_files", "read_project_file", "search_project_files"})
 TOOLS = [
     {"type": "function", "name": "list_project_files",
      "description": "List granted committed project files. Use prefix='' and offset=0 initially; follow next_offset.",
@@ -42,6 +42,15 @@ TOOLS = [
          "max_chars": {"type": "integer", "minimum": 1, "maximum": MAX_CHARS}},
          "required": ["path", "offset", "max_chars"], "additionalProperties": False}, "strict": True},
 ]
+LEGACY_TOOLS = list(TOOLS)
+TOOLS.append({"type": "function", "name": "search_project_files",
+    "description": "Search literal strings only in granted files of the fixed commit. Results include line numbers and bounded snippets. Start file_offset=0,line_offset=0; continue using next_cursor. No regular expressions or commands.",
+    "parameters": {"type": "object", "properties": {
+        "queries": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 256}, "minItems": 1, "maxItems": 8},
+        "prefix": {"type": "string"}, "case_sensitive": {"type": "boolean"},
+        "file_offset": {"type": "integer", "minimum": 0}, "line_offset": {"type": "integer", "minimum": 0}},
+        "required": ["queries", "prefix", "case_sensitive", "file_offset", "line_offset"],
+        "additionalProperties": False}, "strict": True})
 
 
 class ProjectError(Exception):
@@ -225,6 +234,8 @@ def _number(value, maximum: int) -> bool:
 def call(snapshot: dict, name: str, args: dict) -> dict:
     if not isinstance(args, dict):
         raise ProjectError("invalid_project_query")
+    if name == "search_project_files":
+        return _search(snapshot, args)
     if name == "list_project_files":
         if (set(args) != {"prefix", "offset"} or not _number(args["offset"], MAX_FILES)
                 or not isinstance(args["prefix"], str)):
@@ -251,6 +262,16 @@ def call(snapshot: dict, name: str, args: dict) -> dict:
     if (not _number(args["offset"], MAX_FILE_BYTES) or not _number(args["max_chars"], MAX_CHARS)
             or args["max_chars"] == 0):
         raise ProjectError("invalid_project_query")
+    text = _read_text(snapshot, path)
+    start = args["offset"]
+    if start > len(text):
+        raise ProjectError("invalid_project_range")
+    end = min(len(text), start + args["max_chars"])
+    return {"path": path, "commit": snapshot["commit"], "offset": start, "next_offset": end,
+            "eof": end == len(text), "text": text[start:end]}
+
+
+def _read_text(snapshot, path):
     entry = snapshot["files"].get(path)
     if entry is None:
         raise ProjectError("project_file_unavailable")
@@ -265,9 +286,68 @@ def call(snapshot: dict, name: str, args: dict) -> dict:
         raise ProjectError("project_file_not_text") from None
     if "\x00" in text:
         raise ProjectError("project_file_not_text")
-    start = args["offset"]
-    if start > len(text):
+    return text
+
+
+def _search(snapshot, args):
+    if (set(args) != {"queries", "prefix", "case_sensitive", "file_offset", "line_offset"}
+            or not isinstance(args["queries"], list) or not 1 <= len(args["queries"]) <= 8
+            or any(not isinstance(q, str) or not 1 <= len(q) <= 256 or "\x00" in q for q in args["queries"])
+            or not isinstance(args["prefix"], str) or type(args["case_sensitive"]) is not bool
+            or not _number(args["file_offset"], MAX_FILES) or not _number(args["line_offset"], MAX_FILE_BYTES)):
+        raise ProjectError("invalid_project_query")
+    prefix = args["prefix"]
+    if prefix:
+        _relative(prefix)
+    names = sorted(p for p in snapshot["files"] if not prefix or p == prefix or p.startswith(prefix + "/"))
+    start, line_start = args["file_offset"], args["line_offset"]
+    if start > len(names) or (start == len(names) and line_start):
         raise ProjectError("invalid_project_range")
-    end = min(len(text), start + args["max_chars"])
-    return {"path": path, "commit": snapshot["commit"], "offset": start, "next_offset": end,
-            "eof": end == len(text), "text": text[start:end]}
+    queries = args["queries"] if args["case_sensitive"] else [q.casefold() for q in args["queries"]]
+    output = {"commit": snapshot["commit"], "matches": [], "files_total": len(names),
+              "files_scanned": 0, "skipped_nontext": 0, "next_cursor": None}
+    scanned_bytes = 0
+    for index in range(start, len(names)):
+        path = names[index]
+        if output["files_scanned"] >= 100 or scanned_bytes + snapshot["files"][path]["bytes"] > 4 * MAX_FILE_BYTES:
+            output["next_cursor"] = {"file_offset": index, "line_offset": 0}
+            return output
+        scanned_bytes += snapshot["files"][path]["bytes"]
+        output["files_scanned"] += 1
+        try:
+            text = _read_text(snapshot, path)
+        except ProjectError as exc:
+            if str(exc) != "project_file_not_text":
+                raise
+            output["skipped_nontext"] += 1
+            line_start = 0
+            continue
+        lines = text.splitlines()
+        if line_start > len(lines):
+            raise ProjectError("invalid_project_range")
+        for number in range(line_start, len(lines)):
+            line = lines[number]
+            candidate = line if args["case_sensitive"] else line.casefold()
+            if not any(q in candidate for q in queries):
+                continue
+            found = min(candidate.find(q) for q in queries if q in candidate)
+            if not args["case_sensitive"]:
+                folded = 0
+                for position, character in enumerate(line):
+                    folded += len(character.casefold())
+                    if folded > found:
+                        found = position
+                        break
+            begin = max(0, found - 80)
+            item = {"path": path, "line": number + 1, "text": line[begin:begin + 400],
+                    "truncated": begin > 0 or len(line) > begin + 400}
+            if len(output["matches"]) >= 50:
+                output["next_cursor"] = {"file_offset": index, "line_offset": number}
+                return output
+            output["matches"].append(item)
+            if len(_json(output)) > MAX_REPLY_BYTES - 128:
+                output["matches"].pop()
+                output["next_cursor"] = {"file_offset": index, "line_offset": number}
+                return output
+        line_start = 0
+    return output

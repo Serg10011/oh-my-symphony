@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 import tempfile
@@ -18,11 +19,13 @@ from datetime import datetime, timezone
 import api_executor as api
 import api_budget as budget
 import api_project as project
+import api_cache
 
 MAX_STATE_BYTES = 128 * 1024 * 1024
 MIN_RESPONSE_TOKENS = 16
 MAX_CALLS = 100_000
 MAX_TOTAL_OUTPUT_TOKENS = 100_000_000
+PROJECT_CALLS_PER_RESPONSE = 256
 DEFAULT_LIMITS = {"max_calls": 1000, "output_tokens_per_call": api.MAX_OUTPUT_TOKENS,
                   "output_tokens_total": 2 * 1024 * 1024, "request_bytes": api.MAX_REQUEST_BYTES}
 LEAD_INSTRUCTIONS = """You lead the assigned task. Understand it, choose the solution and
@@ -279,7 +282,8 @@ def _load(path: Path, *, raw: bytes | None = None) -> dict:
                 or call.get("profile") not in (spec["lead_profile"], spec["worker_profile"])
                 or type(call.get("output_cap")) is not int or not 16 <= call["output_cap"] <= spec["limits"]["output_tokens_per_call"]
                 or call["output_cap"] > _output_limits(state).get(call["profile"], 0)
-                or call.get("status") not in ("in_flight", "received", "error")):
+                or call.get("status") not in ("in_flight", "received", "error")
+                or type(call.get("request_version", 1)) is not int or call.get("request_version", 1) not in (1, 2)):
             raise SessionError("invalid_state")
         if call["status"] == "received" and (not isinstance(call.get("response"), dict)
                                               or not isinstance(call["response"].get("usage"), dict)):
@@ -303,7 +307,7 @@ def _load(path: Path, *, raw: bytes | None = None) -> dict:
         except project.ProjectError:
             raise SessionError("invalid_project_state") from None
         records = state.get("file_calls")
-        if not isinstance(records, list) or len(records) > spec["limits"]["max_calls"] * 32:
+        if not isinstance(records, list):
             raise SessionError("invalid_project_state")
         for index, record in enumerate(records, 1):
             if (not isinstance(record, dict) or type(record.get("index")) is not int
@@ -452,7 +456,7 @@ def _credentials(spec: dict, environ) -> None:
             raise SessionError("invalid_api_key")
 
 
-def _build_request(state, history, cap, resources, *, part_id=None):
+def _build_request(state, history, cap, resources, *, part_id=None, request_version=2):
     """Pure request construction, also used to verify a saved recovery boundary."""
     spec, limits = state["spec"], state["spec"]["limits"]
     if part_id is None:
@@ -468,9 +472,21 @@ def _build_request(state, history, cap, resources, *, part_id=None):
         if part_id is None:
             instructions += "\nProject context:\n" + spec["context"]
         request["instructions"] = instructions
-        request["tools"] = list(project.TOOLS) + ([DELEGATE_TOOL] if part_id is None and spec["worker_profile"] else [])
+        request["tools"] = list(project.TOOLS if request_version == 2 else project.LEGACY_TOOLS) + ([DELEGATE_TOOL] if part_id is None and spec["worker_profile"] else [])
+        if request_version == 2:
+            request["instructions"] += "\nUse search_project_files for discovery before reading many files. Follow returned cursors; read offsets are Unicode characters, not file bytes."
     # Append transient counters after the stable context; never accumulate them in history.
     request["instructions"] += "\n" + RESOURCE_INSTRUCTIONS
+    profile = spec["worker_profile"] if part_id is not None else spec["lead_profile"]
+    if request_version == 2 and api.profile_for(profile).provider == "openai":
+        history = api_cache.input_with_breakpoints(history, state["calls"], part_id)
+        request["prompt_cache_options"] = {"mode": "explicit"}
+        request["reasoning_context"] = "all_turns"
+        previous = next((c for c in reversed(state["calls"]) if c.get("part_id") == part_id
+                         and c.get("status") == "received" and c.get("history_items", 0) - 1 < len(history)), None)
+        identifier = previous.get("response", {}).get("id") if previous else None
+        if isinstance(identifier, str) and re.fullmatch(r"resp_[A-Za-z0-9_-]{1,240}", identifier):
+            request["prompt_cache_options"]["comparison_response_id"] = identifier
     request["input"] = history + [{"role": "user", "content": RESOURCE_PREFIX + json.dumps(resources)}]
     return request
 
@@ -515,12 +531,13 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport)
             _stop(path, state, reason)
             return None
     call = {"index": len(state["calls"]) + 1, "profile": profile, "part_id": part_id,
+            "request_version": 2,
             "output_cap": cap, "request_sha256": hashlib.sha256(encoded).hexdigest(),
             "history_items": len(request["input"]), "resources": resources,
             "status": "in_flight", "started_at": _now()}
     resumes = state.get("resumptions", [])
     if resumes and resumes[-1]["next_call_index"] == call["index"]:
-        call["resume_of"] = resumes[-1]["uncertain_call_index"]
+        call["resume_of"] = resumes[-1].get("source_call_index", resumes[-1]["uncertain_call_index"])
     if reservation is not None:
         call["budget_reservation"] = reservation
     state["calls"].append(call)
@@ -569,7 +586,8 @@ def _arguments(call, parts):
 
 def _batch(path, state, calls, seen) -> bool:
     ids = [c["call_id"] for c in calls]
-    if (len(calls) > 32 or len(set(ids)) != len(ids) or seen.intersection(ids)
+    read_only = "project" in state["spec"] and all(c["name"] in project.TOOL_NAMES for c in calls)
+    if ((len(calls) > 32 and not read_only) or len(set(ids)) != len(ids) or seen.intersection(ids)
             or ("project" in state["spec"] and any(len(value) > 256 for value in ids))):
         _stop(path, state, "invalid_tool_batch")
         return False
@@ -577,7 +595,20 @@ def _batch(path, state, calls, seen) -> bool:
     return True
 
 
-def _project_call(path, state, call, history, *, part_id=None) -> bool:
+def _project_answer(state, call, *, deferred=False):
+    if deferred:
+        return {"error": "project_batch_deferred", "message": "Retry this tool call in the next response; this batch reached its local execution allowance."}, False
+    try:
+        return project.call(state["project_snapshot"], call["name"], _decode(call["arguments"])), False
+    except (project.ProjectError, SessionError) as exc:
+        fatal = str(exc) in {"project_git_failed", "project_git_timeout", "project_git_unavailable",
+                             "project_output_limit", "project_content_changed", "invalid_project_state"}
+        return {"error": str(exc)}, fatal
+    except Exception:
+        return {"error": "project_tool_failed"}, True
+
+
+def _project_call(path, state, call, history, *, part_id=None, deferred=False, prepared=None) -> bool:
     record = {"index": len(state["file_calls"]) + 1,
               "profile": state["spec"]["worker_profile"] if part_id else state["spec"]["lead_profile"],
               "part_id": part_id, "call_id": call["call_id"], "name": call["name"],
@@ -585,15 +616,7 @@ def _project_call(path, state, call, history, *, part_id=None) -> bool:
               "status": "in_flight", "started_at": _now()}
     state["file_calls"].append(record)
     _save(path, state)
-    fatal = False
-    try:
-        output = project.call(state["project_snapshot"], call["name"], _decode(call["arguments"]))
-    except (project.ProjectError, SessionError) as exc:
-        output = {"error": str(exc)}
-        fatal = str(exc) in {"project_git_failed", "project_git_timeout", "project_git_unavailable",
-                             "project_output_limit", "project_content_changed", "invalid_project_state"}
-    except Exception:
-        output, fatal = {"error": "project_tool_failed"}, True
+    output, fatal = prepared if prepared is not None else _project_answer(state, call, deferred=deferred)
     record.update(status="error" if "error" in output else "completed", finished_at=_now(),
                   reply_bytes=len(_encode(output)))
     if "error" in output:
@@ -624,8 +647,9 @@ def _worker(path, state, part_id, part, *, environ, transport, partial=()):
         if calls and "project" in state["spec"]:
             if not _batch(path, state, calls, seen):
                 return None
-            for call in calls:
-                if not _project_call(path, state, call, part["history"], part_id=part_id):
+            for index, call in enumerate(calls):
+                if not _project_call(path, state, call, part["history"], part_id=part_id,
+                                     deferred=index >= PROJECT_CALLS_PER_RESPONSE):
                     return None
             continue
         if not response["output_text"].strip():
@@ -638,9 +662,9 @@ def _worker(path, state, part_id, part, *, environ, transport, partial=()):
 def _dispatch(path, state, calls, *, environ, transport, resumed_part=None):
     """Finish a lead batch; a recovered worker keeps its existing attempt/history."""
     spec = state["spec"]
-    for call in calls:
+    for index, call in enumerate(calls):
         if "project" in spec and call["name"] in project.TOOL_NAMES:
-            if not _project_call(path, state, call, state["lead_history"]):
+            if not _project_call(path, state, call, state["lead_history"], deferred=index >= PROJECT_CALLS_PER_RESPONSE):
                 return
             continue
         if resumed_part is not None:
