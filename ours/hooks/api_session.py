@@ -626,6 +626,230 @@ def report(path) -> dict:
     return spend_report(_load(_path(path)))
 
 
+REPORT_ASSUMPTIONS = {
+    "tariff_pinned_at_session_init":
+        "тариф зафиксирован в снимке сессии и не меняется задним числом",
+    "local_catalog_used_for_session_without_budget":
+        "сессия без общего бюджета считается по встроенному каталогу, зафиксированному при чтении",
+    "cache_tokens_are_included_in_input_tokens":
+        "токены кеша входят во входные токены и второй раз не прибавляются",
+    "reasoning_tokens_are_included_in_output_tokens":
+        "токены рассуждений входят в выходные токены",
+    "catalog_peak_prices_cache_write_rate_and_regional_factor_are_conservative":
+        "учтены пиковые каталожные ставки, запись кеша и региональная надбавка с запасом",
+    "unknown_usage_is_not_estimated":
+        "запрос без подтверждённого расхода не оценивается и показывается как н/д, а не как ноль",
+    "unknown_cache_writes_priced_at_catalog_write_rate":
+        "неизвестный объём записи в кеш оценён сверху каталожной ставкой записи",
+    "provider_invoice_not_verified":
+        "счёт провайдера не сверен: фактические списания неизвестны и могут отличаться от оценки",
+}
+
+REPORT_TARIFF_SOURCES = {"session_snapshot": "снимок сессии", "builtin_catalog": "встроенный каталог"}
+REPORT_STATUSES = {"prepared": "подготовлена", "running": "выполняется", "stopped": "остановлена",
+                   "dialogue_complete": "диалог завершён; приёмка результата отдельно"}
+REPORT_STOP_REASONS = {
+    "call_limit": "достигнут аварийный предел числа запросов",
+    "output_limit": "исчерпан общий запас выходных токенов",
+    "invalid_request": "не удалось сформировать корректный запрос",
+    "request_size_limit": "запрос превышает допустимый размер",
+    "preflight_error": "не выполнена предварительная проверка бюджета",
+    "api_error": "ошибка при обращении к провайдеру",
+    "unknown_usage": "провайдер не подтвердил расход токенов",
+    "provider_output_limit": "ответ достиг предела выходных токенов провайдера",
+    "incomplete_response": "получен незавершённый ответ",
+    "model_refusal": "модель отказалась выполнять запрос",
+    "invalid_tool_batch": "некорректный пакет вызовов инструментов",
+    "project_tool_error": "ошибка чтения материалов проекта",
+    "empty_worker_result": "исполнитель не вернул результат",
+    "empty_result": "ведущий не вернул результат",
+    "interrupted_no_automatic_retry": "прерванный запуск; автоматического повтора нет",
+    "tariff_snapshot_changed": "сохранённый тариф отличается от текущего",
+    "tariff_expired": "истёк срок проверки тарифа",
+    "unpriced_model": "для модели нет тарифа",
+    "input_budget_exhausted": "исчерпан бюджет входных токенов",
+    "money_budget_exhausted": "исчерпан денежный бюджет",
+    "billing_contract_unverified": "условия тарификации ответа не подтверждены",
+    "billing_contract_exceeded": "ответ превысил зарезервированный расход",
+    "untrusted_budget_usage": "счётчики расхода не прошли проверку",
+}
+REPORT_ESTIMATE_REASONS = {
+    "unknown_usage": "расход токенов неизвестен",
+    "unknown_cached_input": "доля кеша во входе неизвестна",
+    "unpriced_model": "для модели нет тарифа",
+    "invalid_tariff": "тариф не прошёл проверку",
+    "inconsistent_usage": "счётчики токенов противоречивы",
+}
+
+
+def _label(value, empty: str = "—") -> str:
+    """Keep a recorded text or show that it is missing, never invent a value."""
+    return value if isinstance(value, str) and value.strip() else empty
+
+
+def _count(value) -> str:
+    """Show only confirmed counters; an unknown value stays unknown, never zero."""
+    if type(value) is not int or value < 0:
+        return "н/д"
+    return f"{value:,}".replace(",", " ")
+
+
+def _report_label(value, labels: dict) -> str:
+    """Translate known codes, retaining an unfamiliar code for diagnosis."""
+    if not isinstance(value, str) or not value.strip():
+        return "—"
+    return labels.get(value, f"неизвестное значение (код: {value})")
+
+
+def _usd(value) -> str:
+    """Format an already recorded amount; an unreadable amount stays unknown."""
+    try:
+        return budget.display(budget.money(value)) + " USD"
+    except budget.BudgetError:
+        return "н/д"
+
+
+def _counter_line(title: str, total, subset, subset_title: str) -> str:
+    """One counter with its subset: cached tokens and reasoning are subsets."""
+    if type(total) is not int or total < 0:
+        return f"{title}: н/д"
+    if type(subset) is not int or subset < 0:
+        return f"{title}: {_count(total)} (в том числе {subset_title}: н/д)"
+    return f"{title}: {_count(total)} (в том числе {subset_title}: {_count(subset)})"
+
+
+def _model_cost_line(row: dict) -> str:
+    """Describe a model subtotal honestly: complete, partial or absent."""
+    total, known = row.get("estimated_usd"), row.get("estimated_known_usd")
+    if isinstance(total, str):
+        return f"стоимость: {_usd(total)} — осторожная оценка по каталогу"
+    if row.get("priced") is not True:
+        return "стоимость: нет оценки — модели нет в каталоге тарифов"
+    if type(row.get("estimated_requests")) is int and row.get("estimated_requests"):
+        return (f"стоимость: неполная, известная часть {_usd(known)}"
+                f" за {_count(row.get('estimated_requests'))} из {_count(row.get('calls'))} запросов")
+    return "стоимость: нет оценки — расход или тариф запроса непроверяемы"
+
+
+def _rates_line(rates: dict) -> str:
+    """Catalog rates per million tokens without inventing missing numbers."""
+    parts = []
+    for key, title in (("input", "вход"), ("cached", "кеш"), ("write", "запись"), ("output", "выход")):
+        value = rates.get(key)
+        parts.append(f"{title} {value}" if isinstance(value, str) else f"{title} н/д")
+    return ", ".join(parts)
+
+
+def render_report(data: dict) -> str:
+    """Operator-readable Russian text over the same report data; no I/O, keys or network."""
+    if not isinstance(data, dict):
+        raise SessionError("invalid_report")
+    totals = data.get("totals") if isinstance(data.get("totals"), dict) else {}
+    cost = data.get("cost") if isinstance(data.get("cost"), dict) else {}
+    models = data.get("by_model") if isinstance(data.get("by_model"), dict) else {}
+    budget_row = data.get("budget") if isinstance(data.get("budget"), dict) else None
+    lines = ["Отчёт о расходе сессии api-session",
+             "Локальная оценка по сохранённым счётчикам: провайдер не опрашивается, счёт не сверяется.",
+             "",
+             "Сессия"]
+    lines.append(f"  статус: {_report_label(data.get('status'), REPORT_STATUSES)}")
+    lines.append(f"  причина остановки: {_report_label(data.get('stop_reason'), REPORT_STOP_REASONS)}")
+    lines.append(f"  создана: {_label(data.get('created_at'))}")
+    lines.append(f"  начата: {_label(data.get('started_at'))}")
+    lines.append(f"  завершена: {_label(data.get('finished_at'))}")
+    lines.append(f"  запросов: {_count(totals.get('calls'))}"
+                 f" · без подтверждённого расхода: {_count(totals.get('unknown_usage_calls'))}")
+    if budget_row is None:
+        lines.append("  бюджет: не задан — ниже сохранённые счётчики и оценка стоимости")
+    else:
+        lines.append(f"  бюджет: включён · до {_usd(budget_row.get('max_usd'))} и"
+                     f" {_count(budget_row.get('input_tokens_total'))} входных токенов")
+        lines.append(f"  сумма исходных резервов: {_usd(budget_row.get('reserved_cost_usd'))} ·"
+                     f" верхняя оценка расхода: {_usd(budget_row.get('generation_cost_upper_usd'))}")
+        lines.append("  входных токенов списано по бюджету:"
+                     f" {_count(budget_row.get('input_tokens_committed'))}")
+        lines.append(f"  проверок до запроса: {_count(budget_row.get('preflight_requests'))}")
+        breach = "да, резерв не освобождён" if budget_row.get("contract_breached") else "нет"
+        lines.append("  нарушение тарифного контракта: " + breach)
+    lines += ["", "Итог по моделям"]
+    if not models:
+        lines.append("  запросов ещё не было")
+    for name in sorted(models):
+        row = models[name] if isinstance(models[name], dict) else {}
+        lines.append(f"  {name}: запросов {_count(row.get('calls'))}")
+        profiles = sorted({item.get("profile") for item in data.get("requests") or []
+                           if isinstance(item, dict) and item.get("model") == name
+                           and isinstance(item.get("profile"), str)})
+        if profiles:
+            lines.append("    профили: " + ", ".join(profiles))
+        lines.append("    " + _counter_line("вход", row.get("input_tokens"),
+                                           row.get("cached_input_tokens"), "из кеша"))
+        lines.append("    " + _counter_line("выход", row.get("output_tokens"),
+                                           row.get("reasoning_tokens"), "рассуждения"))
+        lines.append(f"    всего токенов: {_count(row.get('total_tokens'))}")
+        lines.append("    " + _model_cost_line(row))
+        rates = row.get("rates_per_million_tokens")
+        if isinstance(rates, dict):
+            lines.append("    тариф в USD за 1 млн токенов: " + _rates_line(rates)
+                         + f" · региональный коэффициент {_label(row.get('regional_factor'))}")
+            if row.get("long_context_surcharge"):
+                lines.append("    при входе отдельного запроса свыше 272 000 токенов:"
+                             " ставки входа, чтения и записи кеша ×2, выхода ×1,5")
+    lines += ["", "Токены и кеш за сессию"]
+    lines.append("  " + _counter_line("вход", totals.get("input_tokens"),
+                                      totals.get("cached_input_tokens"), "из кеша"))
+    lines.append("  " + _counter_line("выход", totals.get("output_tokens"),
+                                      totals.get("reasoning_tokens"), "рассуждения"))
+    lines.append(f"  всего токенов: {_count(totals.get('total_tokens'))}")
+    unknown = totals.get("unknown_usage_calls")
+    if type(unknown) is int and unknown:
+        lines.append(f"  без подтверждённого расхода: {_count(unknown)} запрос(ей):"
+                     " их токены и стоимость не оцениваются")
+    lines += ["", "Стоимость и полнота оценки"]
+    if isinstance(cost.get("estimated_total_usd"), str):
+        amount = _usd(cost.get("estimated_total_usd"))
+        lines.append(f"  оценка за всю сессию: {amount} — осторожная, по каталогу")
+    else:
+        lines.append("  оценка за всю сессию: полной суммы нет")
+    lines.append(f"  известная часть: {_usd(cost.get('estimated_known_usd'))} за"
+                 f" {_count(cost.get('estimated_requests'))} из {_count(totals.get('calls'))} запросов")
+    missing = cost.get("requests_without_estimate")
+    note = " — их списание не считается нулевым" if type(missing) is int and missing else ""
+    lines.append(f"  запросов без оценки: {_count(missing)}" + note)
+    for request in data.get("requests") or []:
+        if isinstance(request, dict) and request.get("estimated_usd") is None:
+            reason = _report_label(request.get("estimate_status"), REPORT_ESTIMATE_REASONS)
+            lines.append(f"    №{_count(request.get('index'))} · {_label(request.get('model'))}: {reason}")
+    unknown_writes = cost.get("cache_write_unknown_calls")
+    if type(unknown_writes) is int and unknown_writes:
+        lines.append(f"  запросов с неизвестной записью в кеш: {_count(unknown_writes)}:"
+                     " оценены ставкой записи сверху")
+    unpriced = cost.get("unpriced_models")
+    unpriced = ([item for item in unpriced if isinstance(item, str)]
+                if isinstance(unpriced, list) else [])
+    lines.append("  модели вне каталога: " + (", ".join(unpriced) if unpriced else "нет"))
+    if cost.get("provider_billed_total_usd") is None:
+        lines.append("  счёт провайдера: не сверен, фактические списания неизвестны")
+    else:
+        lines.append("  счёт провайдера: " + _usd(cost.get("provider_billed_total_usd")))
+    tariff = cost.get("tariff") if isinstance(cost.get("tariff"), dict) else {}
+    source = tariff.get("source")
+    lines += ["", "Тариф"]
+    lines.append(f"  версия: {_label(tariff.get('version'))} · проверен: {_label(tariff.get('verified_on'))}"
+                 f" · действует до: {_label(tariff.get('valid_until'))}")
+    lines.append("  источник: " + REPORT_TARIFF_SOURCES.get(source, _label(source)))
+    assumptions = cost.get("assumptions")
+    assumptions = ([item for item in assumptions if isinstance(item, str)]
+                   if isinstance(assumptions, list) else [])
+    lines += ["", "Основы оценки"]
+    if not assumptions:
+        lines.append("  допущения не сохранены")
+    for number, code in enumerate(assumptions, start=1):
+        lines.append(f"  {number}. {REPORT_ASSUMPTIONS.get(code, code)}")
+    lines += ["", "Машинный формат тех же данных: api-session report --state <файл> --format json"]
+    return "\n".join(lines)
+
+
 def _stop(path: Path, state: dict, reason: str) -> None:
     state.update(status="stopped", stop_reason=reason, finished_at=_now())
     _save(path, state)
@@ -947,6 +1171,9 @@ def cli(argv=None) -> int:
         command.add_argument("--state", required=True)
         if name == "init":
             command.add_argument("--spec", default="-", help="JSON specification, default stdin")
+        elif name == "report":
+            command.add_argument("--format", choices=["json", "text"], default="json",
+                                 help="Output format; json keeps the existing machine view")
         elif name in {"run", "resume"}:
             command.add_argument("--require-budget", action="store_true",
                                  help="Reject a session without a configured shared input and USD budget")
@@ -977,7 +1204,10 @@ def cli(argv=None) -> int:
                                         require_budget=args.require_budget))
         else:
             result = run(args.state, require_budget=args.require_budget)
-        print(json.dumps(result, ensure_ascii=False, allow_nan=False))
+        if args.command == "report" and args.format == "text":
+            print(render_report(result))
+        else:
+            print(json.dumps(result, ensure_ascii=False, allow_nan=False))
         # A spend report is a local historical view: the exit code reflects the read, not the dialogue.
         return 0 if args.command == "report" else 3 if result["status"] in ("stopped", "running") else 0
     except (SessionError, OSError) as exc:
