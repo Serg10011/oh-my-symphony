@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
+
 import argparse
 from contextlib import contextmanager
 from copy import deepcopy
@@ -86,6 +88,7 @@ tools. These counters do not expand permissions or the assigned limits.
 """
 RESOURCE_PREFIX = "Runtime resources: "
 REPORT_KIND = "api_session_spend"
+_CANCELLATION = ContextVar("api_session_cancellation", default=None)
 USAGE_KEYS = ("input_tokens", "output_tokens", "cached_input_tokens",
               "cache_write_input_tokens", "reasoning_tokens")
 
@@ -693,6 +696,8 @@ REPORT_TARIFF_SOURCES = {"session_snapshot": "снимок сессии", "built
 REPORT_STATUSES = {"prepared": "подготовлена", "running": "выполняется", "stopped": "остановлена",
                    "dialogue_complete": "диалог завершён; приёмка результата отдельно"}
 REPORT_STOP_REASONS = {
+    "operator_stopped": "остановлено оператором или после потери связи с доской",
+    "board_execution_failed": "процесс API-команды прерван; автоматического повтора нет",
     "call_limit": "достигнут аварийный предел числа запросов",
     "output_limit": "исчерпан общий запас выходных токенов",
     "invalid_request": "не удалось сформировать корректный запрос",
@@ -901,6 +906,26 @@ def _stop(path: Path, state: dict, reason: str) -> None:
     _save(path, state)
 
 
+def _cancelled(path: Path, state: dict) -> bool:
+    callback = _CANCELLATION.get()
+    if callback is not None and callback():
+        _stop(path, state, "operator_stopped")
+        return True
+    return False
+
+
+def interrupt(path, reason="operator_stopped") -> dict:
+    """Record a stopped controller without replaying an in-flight request."""
+    if reason not in {"operator_stopped", "board_execution_failed"}:
+        raise SessionError("invalid_stop_reason")
+    path = _path(path)
+    with _lock(path):
+        state = _load(path)
+        if state["status"] in {"running", "prepared"}:
+            _stop(path, state, reason)
+        return summary(state)
+
+
 def _credentials(spec: dict, environ) -> None:
     for name in [spec["lead_profile"], spec["worker_profile"]]:
         if name is None:
@@ -960,6 +985,8 @@ def _build_request(state, history, cap, resources, *, part_id=None, request_vers
 
 
 def _request(path, state, profile, history, *, part_id=None, environ, transport):
+    if _cancelled(path, state):
+        return None
     spec, limits = state["spec"], state["spec"]["limits"]
     if len(state["calls"]) >= limits["max_calls"]:
         _stop(path, state, "call_limit")
@@ -1073,7 +1100,8 @@ def _project_answer(state, call, *, deferred=False, before_command=None):
     try:
         if "execution" in state["spec"]:
             return workspace.call(state["spec"], state["execution_state"], call["name"],
-                                  _decode(call["arguments"]), before_command=before_command), False
+                                  _decode(call["arguments"]), before_command=before_command,
+                                  cancelled=_CANCELLATION.get()), False
         return project.call(state["project_snapshot"], call["name"], _decode(call["arguments"])), False
     except (workspace.WorkspaceError, sandbox.SandboxError) as exc:
         recoverable = {"invalid_workspace_query", "workspace_edit_conflict", "workspace_path_denied",
@@ -1089,6 +1117,8 @@ def _project_answer(state, call, *, deferred=False, before_command=None):
 
 
 def _project_call(path, state, call, history, *, part_id=None, deferred=False, prepared=None) -> bool:
+    if _cancelled(path, state):
+        return False
     record = {"index": len(state["file_calls"]) + 1,
               "profile": state["spec"]["worker_profile"] if part_id else state["spec"]["lead_profile"],
               "part_id": part_id, "call_id": call["call_id"], "name": call["name"],
@@ -1217,7 +1247,17 @@ def _lead_loop(path, state, *, environ, transport):
     return summary(state)
 
 
-def run(path, *, environ=None, transport=None, require_budget=False) -> dict:
+def run(path, *, environ=None, transport=None, require_budget=False, cancelled=None,
+        credential_loader=None) -> dict:
+    token = _CANCELLATION.set(cancelled)
+    try:
+        return _run(path, environ=environ, transport=transport, require_budget=require_budget,
+                    credential_loader=credential_loader)
+    finally:
+        _CANCELLATION.reset(token)
+
+
+def _run(path, *, environ=None, transport=None, require_budget=False, credential_loader=None) -> dict:
     path = _path(path)
     with _lock(path):
         state = _load(path)
@@ -1236,7 +1276,10 @@ def run(path, *, environ=None, transport=None, require_budget=False) -> dict:
                 state["execution_preflight"] = {"error": str(exc)}
                 _stop(path, state, "execution_preflight_failed")
                 return summary(state)
-        env = dict(os.environ if environ is None else environ)
+        if _cancelled(path, state):
+            return summary(state)
+        env = dict(credential_loader(state["spec"]) if credential_loader is not None
+                   else os.environ if environ is None else environ)
         _credentials(state["spec"], env)
         if require_budget and "budget" not in state["spec"]:
             raise SessionError("budget_required")

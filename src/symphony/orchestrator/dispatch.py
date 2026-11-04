@@ -1321,8 +1321,11 @@ def _dispatch_env_for(
 # dispatch (§16.4)
 # ------------------------------------------------------------------
 
-def _executor_for(self: Orchestrator, cfg: ServiceConfig) -> TicketExecutor:
+def _executor_for(self: Orchestrator, cfg: ServiceConfig, agent_kind: str | None = None) -> TicketExecutor:
     """Pick the execution strategy for one dispatch."""
+    from ..api_team import ApiTeamExecutor, api_profile
+    if api_profile(cfg, agent_kind) is not None:
+        return ApiTeamExecutor(self)
     return LegacyStageExecutor(self)
 
 
@@ -1532,7 +1535,8 @@ def _dispatch(
     # Execution mode is chosen once, here, and fixed for the run's
     # lifetime. Deciding later would let a mid-run config reload switch
     # a ticket between the stage loop and a DAG.
-    executor = self._executor_for(cfg)
+    executor = self._executor_for(cfg, agent_kind)
+    entry.execution_mode = getattr(executor, "mode", "legacy_stage_loop")
     run_context = TicketRunContext(
         issue=issue,
         attempt=attempt,

@@ -99,7 +99,9 @@ async def handle_worker_exit(
         return
     terminal_cancelled = False
     cfg = orch._workflow_state.current()
-    if cfg is not None and reason == "normal" and not entry.workspace_cleanup_started:
+    from ..api_team import api_profile
+    api_run = entry.execution_mode == "api-team-v1" or (cfg is not None and api_profile(cfg, entry.agent_kind) is not None)
+    if cfg is not None and not api_run and reason == "normal" and not entry.workspace_cleanup_started:
         await orch._enforce_factory_exit_contract(cfg, entry)
     if reason == "cancelled" and cfg is not None:
         # Reconcile can cancel a worker after its card is archived/stopped.
@@ -114,6 +116,14 @@ async def handle_worker_exit(
     if not defer_lease_finish:
         orch._finish_run_lease(issue_id, entry, reason, error)
     debug = _record_exit_accounting(orch, issue_id, entry, reason, error)
+
+    if api_run or reason in {"api_team_finished", "api_team_interrupted", "api_team_failed"}:
+        orch._dispatch_state.cancel_pending_retry(issue_id)
+        orch._claimed.discard(issue_id)
+        orch._paused_issue_ids.add(issue_id)
+        orch._set_issue_flags(issue_id, paused=True, pause_reason="API-запуск завершён; автоматического повтора нет")
+        await _emit_worker_exit(orch, issue_id, entry, reason, error)
+        return
 
     if (
         terminal_cancelled

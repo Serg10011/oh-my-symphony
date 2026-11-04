@@ -384,7 +384,7 @@ def _mutate(spec: dict, value: dict, name: str, args: dict) -> dict:
     return {"path": path, "sha256": _sha(data), "bytes": len(data)}
 
 
-def call(spec: dict, value: dict, name: str, args: dict, *, before_command=None) -> dict:
+def call(spec: dict, value: dict, name: str, args: dict, *, before_command=None, cancelled=None) -> dict:
     if not isinstance(args, dict):
         raise WorkspaceError("invalid_workspace_query")
     if name in {"write_project_file", "delete_project_file"}:
@@ -398,7 +398,8 @@ def call(spec: dict, value: dict, name: str, args: dict, *, before_command=None)
         if before_command is not None:
             before_command()
         try:
-            result = sandbox.run(policy(spec, value), args["command"], timeout=args["timeout_seconds"])
+            options = {"cancelled": cancelled} if cancelled is not None else {}
+            result = sandbox.run(policy(spec, value), args["command"], timeout=args["timeout_seconds"], **options)
         finally:
             try:
                 revision = _seal(spec, value)

@@ -2349,3 +2349,13 @@ a { color: inherit; }
 .execution-limit-list { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); gap: 0.5rem 0.75rem; font-size: 0.8125rem; }
 .execution-limit-list dt, .execution-limit-list dd { margin: 0; overflow-wrap: anywhere; }
 .execution-limit-list dd { font-variant-numeric: tabular-nums; }
+/* API-team evidence stays readable without resetting the issue drawer. */
+.api-team-panel { margin: 20px 0; padding: 16px; border: 1px solid var(--border); border-radius: 10px; }
+.api-team-panel details { margin: 10px 0; }
+.api-team-panel summary { cursor: pointer; overflow-wrap: anywhere; }
+.api-team-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+.api-team-actions [hidden] { display: none; }
+.api-team-assignment { display: grid; grid-template-columns: minmax(100px, 1fr) minmax(0, 2fr); gap: 6px 12px; font-size: 13px; }
+.api-team-assignment dd { margin: 0; overflow-wrap: anywhere; }
+.api-team-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; padding: 10px; font-size: 12px; }
+.api-team-error { color: var(--danger, #c43d3d); }

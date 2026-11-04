@@ -109,7 +109,7 @@ def _environment(policy: Policy) -> dict[str, str]:
 
 
 def run(policy: Policy, command: str, *, timeout: int = 600,
-        output_limit: int = MAX_OUTPUT_BYTES) -> dict:
+        output_limit: int = MAX_OUTPUT_BYTES, cancelled=None) -> dict:
     """Return bounded output, including nonzero exits; never retry a command."""
     if type(timeout) is not int or not 1 <= timeout <= MAX_TIMEOUT_SECONDS:
         raise SandboxError("sandbox_timeout_invalid")
@@ -133,6 +133,9 @@ def run(policy: Policy, command: str, *, timeout: int = 600,
                                    close_fds=True)
         selector.register(process.stdout, selectors.EVENT_READ)
         while selector.get_map():
+            if cancelled is not None and cancelled():
+                reason = "operator_stopped"
+                break
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 reason = "timeout"
@@ -154,6 +157,9 @@ def run(policy: Policy, command: str, *, timeout: int = 600,
             # group cleanup below, so that PID cannot be recycled into an
             # unrelated process group between wait() and killpg().
             while os.waitid(os.P_PID, process.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is None:
+                if cancelled is not None and cancelled():
+                    reason = "operator_stopped"
+                    break
                 if time.monotonic() >= deadline:
                     reason = "timeout"
                     break

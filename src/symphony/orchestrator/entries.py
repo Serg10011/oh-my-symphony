@@ -31,6 +31,7 @@ class RunningEntry:
     workspace_path: Path
     attempt_kind: str = "initial"
     agent_kind: str = ""
+    execution_mode: str = "legacy_stage_loop"
     run_id: str = ""
     pm_dispatch_permit: "DispatchPermit | None" = None
     # A recovered attempt always owns a new run id. The predecessor link is

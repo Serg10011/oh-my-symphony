@@ -1211,6 +1211,8 @@ def _validated_agent_profiles(value: Any) -> dict[str, AgentProfileConfig]:
                 value=continuation_flag,
             )
         position = raw.get("continuation_position", "append")
+        if fmt == "api-team-v1" and (flags or continuation_flag or raw.get("resume_across_turns")):
+            raise ConfigValidationError(f"{label}: API teams do not support CLI continuation or unattended flags")
         if position not in SUPPORTED_PROFILE_CONTINUATION_POSITIONS:
             raise ConfigValidationError(
                 f"{label}.continuation_position must be one of "

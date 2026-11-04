@@ -1,0 +1,153 @@
+"""Opt-in whole-ticket API bridge; existing stage backends remain unchanged.
+
+The configured command is trusted operator code. HTTP callers cannot change its
+argv, settings path, project grants or action vocabulary. API/provider logic stays
+in the fork's ours/ tools rather than becoming a second orchestrator.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import shlex
+from typing import Any
+
+from ._shell import process_identity, terminate_process_tree
+from .errors import SymphonyError
+from .workflow import AgentProfileConfig, ServiceConfig
+
+FORMAT = "api-team-v1"
+MAX_REPLY_BYTES = 8 * 1024 * 1024
+PUBLIC_ERRORS = {
+    "api_assignment_changed": "Задача или настройки изменились. Посмотри назначение заново перед подтверждением",
+    "api_confirmation_expired": "Время подтверждения истекло. Посмотри назначение заново",
+    "invalid_api_confirmation": "Подтверждение недействительно. Посмотри назначение заново",
+    "api_assignment_already_used": "Это назначение уже использовано. Обнови панель, чтобы увидеть результат",
+    "api_result_not_ready": "Изменения будут доступны после завершения или остановки команды",
+    "api_card_must_wait_for_confirmation": "Перед подготовкой назначения переведи карточку в needs_human",
+    "api_keychain_unavailable": "Не удалось получить ключ из Связки ключей",
+    "session_busy": "Команда обновляет журнал. Повтори чтение через несколько секунд",
+}
+
+
+def api_profile(cfg: ServiceConfig, kind: str | None) -> AgentProfileConfig | None:
+    profile = cfg.agent_profile(kind or "")
+    return profile if profile is not None and profile.format == FORMAT else None
+
+
+def board_context(cfg: ServiceConfig, kind: str, identifier: str) -> dict[str, Any]:
+    profile = api_profile(cfg, kind)
+    if profile is None or cfg.tracker.kind != "file" or cfg.tracker.board_root is None:
+        raise SymphonyError("API-команда не настроена для этой карточки")
+    if "needs_human" not in cfg.tracker.terminal_states:
+        raise SymphonyError("Для API-команды нужен статус needs_human")
+    return {"workflow": str(cfg.workflow_path.resolve()), "board_root": str(cfg.tracker.board_root.resolve()),
+            "repo": str((cfg.code_repo or cfg.workflow_path.parent).resolve()),
+            "identifier": identifier, "agent_kind": kind, "command": profile.command,
+            "active_states": list(cfg.tracker.active_states), "terminal_states": list(cfg.tracker.terminal_states),
+            "base_branch": cfg.agent.feature_base_branch,
+            "process_timeout_seconds": profile.turn_timeout_ms / 1000}
+
+
+async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
+                 payload: dict | None = None, run_id: str | None = None, heartbeat=None) -> dict:
+    if action not in {"prepare", "confirm", "show", "stop", "review", "run"}:
+        raise SymphonyError("Неизвестное действие API-команды")
+    profile = api_profile(cfg, kind)
+    context = board_context(cfg, kind, identifier)
+    assert profile is not None
+    argv = shlex.split(profile.command)
+    if not argv or not Path(argv[0]).is_absolute():
+        raise SymphonyError("Команда API-команды должна начинаться с полного пути")
+    message = json.dumps({"context": context, "payload": payload or {}, "run_id": run_id},
+                         ensure_ascii=False).encode()
+    # No provider credentials, Python/shell startup settings or proxies leak to
+    # the subprocess. The trusted runner obtains keys only for an approved run.
+    env = {"PATH": os.defpath, "HOME": str(Path.home()), "LANG": "en_US.UTF-8",
+           "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1"}
+    proc = await asyncio.create_subprocess_exec(*argv, "--action", action,
+        cwd=cfg.workflow_path.parent, env=env, stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True)
+    identity = await asyncio.to_thread(process_identity, proc.pid)
+    stdin, stdout = proc.stdin, proc.stdout
+    assert stdin is not None and stdout is not None
+    async def exchange():
+        stdin.write(message)
+        await stdin.drain()
+        stdin.close()
+        chunks = bytearray()
+        while block := await stdout.read(min(65536, MAX_REPLY_BYTES + 1 - len(chunks))):
+            chunks.extend(block)
+            if len(chunks) > MAX_REPLY_BYTES:
+                raise SymphonyError("Ответ API-команды превышает допустимый размер")
+        await proc.wait()
+        try:
+            reply = json.loads(chunks)
+        except (ValueError, UnicodeError):
+            raise SymphonyError("API-команда не вернула читаемый результат") from None
+        if not isinstance(reply, dict) or proc.returncode != 0 or "error" in reply:
+            code = reply.get("error", "api_bridge_failed") if isinstance(reply, dict) else "api_bridge_failed"
+            # Public runner errors are fixed machine codes, not stderr.
+            if not isinstance(code, str) or not code.replace("_", "").isalnum() or len(code) > 100:
+                code = "api_bridge_failed"
+            raise SymphonyError(PUBLIC_ERRORS.get(code, f"Действие API-команды отклонено (код: {code})"), reason=code)
+        return reply
+    task = asyncio.create_task(exchange())
+    timeout = profile.turn_timeout_ms / 1000 if action == "run" else 60
+    try:
+        async with asyncio.timeout(timeout):
+            while not task.done():
+                await asyncio.wait({task}, timeout=1)
+                if heartbeat is not None:
+                    await heartbeat()
+            return await task
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if proc.returncode is None:
+            await asyncio.shield(terminate_process_tree(proc, identity=identity, term_timeout=5))
+
+
+class ApiTeamExecutor:
+    mode = FORMAT
+
+    def __init__(self, orchestrator):
+        self.orchestrator = orchestrator
+
+    async def execute(self, context) -> None:
+        orch = self.orchestrator
+        owning_task = asyncio.current_task()
+        stopped = False
+        reason, error = "api_team_finished", None
+        async def heartbeat():
+            nonlocal stopped
+            entry = orch._dispatch_state.entry_owned_by(context.issue.id, owning_task)
+            if entry is None:
+                raise asyncio.CancelledError()
+            # Provider requests have their own bounded wait. The bridge process
+            # being alive is activity, not evidence that a task was accepted.
+            entry.last_codex_timestamp = datetime.now(timezone.utc)
+            if orch.is_paused(context.issue.id) and not stopped:
+                await invoke(context.cfg, context.agent_kind, context.issue.identifier, "stop")
+                stopped = True
+        try:
+            result = await invoke(context.cfg, context.agent_kind, context.issue.identifier, "run",
+                                  run_id=context.run_id, heartbeat=heartbeat)
+            entry = orch._dispatch_state.entry_owned_by(context.issue.id, owning_task)
+            if entry is not None:
+                orch._append_run_event(entry, "api_team_finished", {
+                    "status": result.get("status"), "accepted": False, "delivered": False})
+        except asyncio.CancelledError:
+            reason = "api_team_interrupted"
+            raise
+        except Exception:
+            reason, error = "api_team_failed", "API-команда остановлена; требуется проверка панели карточки"
+        finally:
+            # Paid sessions never inherit the legacy automatic stage retry.
+            await asyncio.shield(orch._on_worker_exit(context.issue.id, reason, error,
+                                                      owning_task=owning_task))
