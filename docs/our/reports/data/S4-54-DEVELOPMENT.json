@@ -136,8 +136,8 @@
     "ours/tests/test_api_session_report_edges.py": "361f0b14536eb9be8e5046df8a23a88e24b881c13ae4d032bc5257321d7e29b2"
   },
   "development_archive": "/Users/helloworld10011/symphony-projects/.backups/s4-54-report-development-20261104-181341",
-  "implementation_commit": null,
-  "pr": null,
+  "implementation_commit": "443fc094039f5a91e496209c40adca96b397f22a",
+  "pr": "https://github.com/Serg10011/oh-my-symphony/pull/104",
   "human_accepted": false,
   "merged": false,
   "live_applied": false
