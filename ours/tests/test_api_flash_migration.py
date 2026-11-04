@@ -23,7 +23,7 @@ def offline(monkeypatch):
 @pytest.mark.parametrize("completed", [False, True])
 def test_pro_history_survives_flash_migration_without_reassignment(tmp_path, monkeypatch, with_budget, completed):
     path = tmp_path / "legacy-pro.json"
-    spec = {"task": "Сохранить результат прежней модели"}
+    spec = {"task": "Сохранить результат прежней модели", "limits": {"output_tokens_per_call": 32768}}
     if with_budget:
         spec["budget"] = {"max_usd": "2", "input_tokens_total": 3_000_000}
     legacy_catalog = deepcopy(budget.CATALOG)

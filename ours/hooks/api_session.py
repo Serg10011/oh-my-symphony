@@ -19,7 +19,7 @@ import api_executor as api
 import api_budget as budget
 import api_project as project
 
-MAX_STATE_BYTES = 16 * 1024 * 1024
+MAX_STATE_BYTES = 128 * 1024 * 1024
 MIN_RESPONSE_TOKENS = 16
 MAX_CALLS = 100_000
 MAX_TOTAL_OUTPUT_TOKENS = 100_000_000
@@ -140,7 +140,10 @@ def validate_spec(raw: dict) -> dict:
     limits = raw.get("limits", {})
     if not isinstance(limits, dict) or set(limits) - set(DEFAULT_LIMITS):
         raise SessionError("invalid_limits")
-    limits = DEFAULT_LIMITS | limits
+    defaults = dict(DEFAULT_LIMITS)
+    if "output_tokens_per_call" not in limits:
+        defaults["output_tokens_per_call"] = min(defaults["output_tokens_per_call"], api.output_limit(lead))
+    limits = defaults | limits
     bounds = {"max_calls": (1, MAX_CALLS), "output_tokens_per_call": (16, api.MAX_OUTPUT_TOKENS),
               "output_tokens_total": (16, MAX_TOTAL_OUTPUT_TOKENS),
               "request_bytes": (1024, api.MAX_REQUEST_BYTES)}
@@ -148,7 +151,7 @@ def validate_spec(raw: dict) -> dict:
         raise SessionError("invalid_limits")
     effort = raw.get("lead_effort", api.profile_for(lead).effort)
     try:
-        api.prepare(lead, {"input": raw["task"], "effort": effort})
+        api.validate_effort(lead, effort)
     except api.ExecutorError:
         raise SessionError("invalid_lead_effort") from None
     result = {"task": raw["task"], "context": context, "lead_profile": lead,
@@ -256,12 +259,20 @@ def _load(path: Path) -> dict:
         raise SessionError("invalid_state")
     calls = state["calls"]
     spec = state["spec"]
+    if "output_limits" in state:
+        pinned = state["output_limits"]
+        names = {p for p in (spec["lead_profile"], spec["worker_profile"]) if p}
+        if (not isinstance(pinned, dict) or set(pinned) != names
+                or any(type(v) is not int or not 16 <= v <= spec["limits"]["output_tokens_per_call"]
+                       for v in pinned.values())):
+            raise SessionError("invalid_output_limits")
     if len(calls) > spec["limits"]["max_calls"]:
         raise SessionError("invalid_state")
     for index, call in enumerate(calls, 1):
         if (not isinstance(call, dict) or call.get("index") != index
                 or call.get("profile") not in (spec["lead_profile"], spec["worker_profile"])
                 or type(call.get("output_cap")) is not int or not 16 <= call["output_cap"] <= spec["limits"]["output_tokens_per_call"]
+                or call["output_cap"] > _output_limits(state).get(call["profile"], 0)
                 or call.get("status") not in ("in_flight", "received", "error")):
             raise SessionError("invalid_state")
         if call["status"] == "received" and (not isinstance(call.get("response"), dict)
@@ -311,6 +322,8 @@ def create(path, spec: dict) -> dict:
     spec, path = validate_spec(spec), _path(path)
     state = {"version": 1, "status": "prepared", "spec": spec, "created_at": _now(),
              "profiles": _profiles(spec),
+             "output_limits": {p: min(spec["limits"]["output_tokens_per_call"], api.output_limit(p))
+                               for p in (spec["lead_profile"], spec["worker_profile"]) if p},
              "lead_history": [{"role": "user", "content": spec["task"]}], "parts": {},
              "calls": [], "tool_errors": [], "result": None, "stop_reason": None}
     if "project" in spec:
@@ -370,6 +383,12 @@ def _resources(state: dict, cap: int, *, worker: bool) -> dict:
     return result
 
 
+def _output_limits(state: dict) -> dict:
+    # Legacy states have a complete explicit grant; never replace it with new defaults.
+    return state.get("output_limits", {p: state["spec"]["limits"]["output_tokens_per_call"]
+                                      for p in (state["spec"]["lead_profile"], state["spec"]["worker_profile"]) if p})
+
+
 def summary(state: dict) -> dict:
     usage = {}
     for profile in dict.fromkeys([state["spec"]["lead_profile"], state["spec"]["worker_profile"]]):
@@ -388,7 +407,7 @@ def summary(state: dict) -> dict:
             "profiles": state["profiles"],
             "lead_profile": state["spec"]["lead_profile"], "worker_profile": state["spec"]["worker_profile"],
             "calls": len(state["calls"]), "output_tokens_committed": _spent(state),
-            "limits": state["spec"]["limits"], "usage": usage, "cost_usd": None,
+            "limits": state["spec"]["limits"], "output_limits": _output_limits(state), "usage": usage, "cost_usd": None,
             "budget_enforced": "budget" in state["spec"],
             "parts": {key: {"attempts": p["attempts"]} for key, p in state["parts"].items()},
             "tool_errors": state["tool_errors"], "stop_reason": state["stop_reason"], "result": state["result"]}
@@ -431,7 +450,8 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport)
         _stop(path, state, "call_limit")
         return None
     remaining = limits["output_tokens_total"] - _spent(state)
-    cap = min(limits["output_tokens_per_call"], remaining - (MIN_RESPONSE_TOKENS if part_id else 0))
+    cap = min(_output_limits(state)[profile], api.output_limit(profile),
+              remaining - (MIN_RESPONSE_TOKENS if part_id else 0))
     if cap < MIN_RESPONSE_TOKENS:
         _stop(path, state, "output_limit")
         return None

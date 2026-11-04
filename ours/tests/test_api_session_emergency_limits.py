@@ -25,8 +25,8 @@ def offline(monkeypatch):
 def test_long_lead_worker_chain_passes_old_call_and_total_output_limits(tmp_path):
     root = repository(tmp_path)
     path = state_file(tmp_path, root)
-    limits = {"max_calls": 1000, "output_tokens_per_call": 32768,
-              "output_tokens_total": 2097152, "request_bytes": 1048576}
+    limits = {"max_calls": 1000, "output_tokens_per_call": 393216,
+              "output_tokens_total": 2097152, "request_bytes": 16777216}
     assert session.show(path)["limits"] == limits
     usage = {"input_tokens": 12, "output_tokens": 256, "total_tokens": 268}
     frames = [frame(None, [tool(call_id=f"lead_{i}")], usage=usage) for i in range(66)]
@@ -41,7 +41,8 @@ def test_long_lead_worker_chain_passes_old_call_and_total_output_limits(tmp_path
     assert result["parts"] == {"part_1": {"attempts": 1}}
     assert resources(sent[64]["body"])["calls_remaining"] == 936
     assert resources(sent[-1]["body"])["calls_remaining"] == 866
-    assert all(r["body"]["max_output_tokens"] == 32768 for r in sent)
+    assert all(r["body"]["max_output_tokens"] == (393216 if r["body"]["model"] == "deepseek-flash" else 128000)
+               for r in sent)
     assert tool_outputs(sent[-1]["body"])["assign"]["text"] == "Worker result"
     before = path.read_bytes()
     assert session.show(path) == session.run(path, environ={}, transport=transport) == result
@@ -82,12 +83,16 @@ def test_large_call_limit_and_budget_preflights_are_shared_and_persisted(tmp_pat
 @pytest.mark.parametrize("legacy", [
     {"max_calls": 8, "output_tokens_per_call": 2048, "output_tokens_total": 16384, "request_bytes": 262144},
     {"max_calls": 24, "output_tokens_per_call": 16384, "output_tokens_total": 98304, "request_bytes": 262144},
+    {"max_calls": 1000, "output_tokens_per_call": 32768, "output_tokens_total": 2097152, "request_bytes": 1048576},
 ])
 def test_saved_legacy_defaults_are_not_upgraded_on_read_or_run(tmp_path, monkeypatch, legacy):
     root = repository(tmp_path)
     with monkeypatch.context() as patch:
         patch.setattr(session, "DEFAULT_LIMITS", legacy)
         path = state_file(tmp_path, root)
+    old = json.loads(path.read_text())
+    del old["output_limits"]
+    path.write_text(json.dumps(old))
     before = path.read_bytes()
     assert session.show(path)["limits"] == legacy and path.read_bytes() == before
     transport, sent = exchange([frame("Result within the original grant")])
@@ -101,8 +106,8 @@ def test_saved_legacy_defaults_are_not_upgraded_on_read_or_run(tmp_path, monkeyp
 def test_explicit_limits_above_old_ceiling_and_partial_defaults_are_retained(tmp_path):
     path = tmp_path / "large.json"
     session.create(path, {"task": "Explicit allowance", "limits": {"max_calls": 5000, "output_tokens_total": 4000000}})
-    assert session.show(path)["limits"] == {"max_calls": 5000, "output_tokens_per_call": 32768,
-                                           "output_tokens_total": 4000000, "request_bytes": 1048576}
+    assert session.show(path)["limits"] == {"max_calls": 5000, "output_tokens_per_call": 393216,
+                                           "output_tokens_total": 4000000, "request_bytes": 16777216}
 
 
 @pytest.mark.parametrize("limits", [
@@ -130,7 +135,7 @@ def test_new_output_default_is_fully_reserved_on_unknown_usage(tmp_path):
     session.create(path, {"task": "Unknown charge"})
     transport, sent = exchange([frame(usage=None)])
     result = session.run(path, environ=KEYS, transport=transport)
-    assert result["stop_reason"] == "unknown_usage" and result["output_tokens_committed"] == 32768
+    assert result["stop_reason"] == "unknown_usage" and result["output_tokens_committed"] == 393216
     assert session.run(path, environ={}, transport=transport) == result and len(sent) == 1
 
 
