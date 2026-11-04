@@ -4,6 +4,8 @@
   "status": "prepared_and_verified_not_merged_or_applied",
   "branch": "codex/api-spending-completion",
   "base_commit": "8ee71bf6655e39ed4c880faf68c579a8d9633e6f",
+  "implementation_commit": "009c2e4e2d5ba6867c43343795205617bc5cf088",
+  "pull_request": "https://github.com/Serg10011/oh-my-symphony/pull/103",
   "executor": {
     "chat": "current_pipeline_architect",
     "agreed_effort": "max",
