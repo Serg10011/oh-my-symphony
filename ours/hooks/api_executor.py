@@ -14,11 +14,15 @@ from typing import Any, Mapping
 
 import httpx
 
-MAX_REQUEST_BYTES = 1024 * 1024
-MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_REQUEST_BYTES = 16 * 1024 * 1024
+MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 DEFAULT_OUTPUT_TOKENS = 4096
-MAX_OUTPUT_TOKENS = 32768
+# Published provider limits, verified 2026-11-04; Pro is retained for history.
+MODEL_OUTPUT_LIMITS = {"deepseek-flash": 393216, "deepseek-v4-pro": 393216,
+                       "gpt-6-luna": 128000, "gpt-6.1-sol": 128000}
+MAX_OUTPUT_TOKENS = max(MODEL_OUTPUT_LIMITS.values())
 TIMEOUT_SECONDS = 120
+GENERATION_READ_TIMEOUT_SECONDS = 600
 NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 
 
@@ -62,6 +66,21 @@ def profile_for(name: str) -> Profile:
         return PROFILES[name]
     except (KeyError, TypeError):
         raise ExecutorError("unknown_profile") from None
+
+
+def output_limit(name: str) -> int:
+    """Use the assigned model's verified cap, never another model's fallback."""
+    model = profile_for(name).model
+    if model not in MODEL_OUTPUT_LIMITS:
+        raise ExecutorError("model_output_limit_unverified")
+    return MODEL_OUTPUT_LIMITS[model]
+
+
+def validate_effort(name: str, effort: str) -> None:
+    profile = profile_for(name)
+    choices = {"high", "max", "low"} if profile.provider == "deepseek" else {"low", "medium", "high", "xhigh", "max"}
+    if not isinstance(effort, str) or effort not in choices or (name == "luna-worker" and effort != "max"):
+        raise ExecutorError("invalid_effort")
 
 
 def _encode(value: Any) -> bytes:
@@ -109,11 +128,9 @@ def prepare(name: str, request: dict) -> tuple[Profile, dict]:
         raise ExecutorError("unknown_request_field")
     _validate_input(request.get("input"))
     effort = request.get("effort", profile.effort)
-    choices = {"high", "max", "low"} if profile.provider == "deepseek" else {"low", "medium", "high", "xhigh", "max"}
-    if not isinstance(effort, str) or effort not in choices or (name == "luna-worker" and effort != "max"):
-        raise ExecutorError("invalid_effort")
+    validate_effort(name, effort)
     limit = request.get("max_output_tokens", DEFAULT_OUTPUT_TOKENS)
-    if type(limit) is not int or not 16 <= limit <= MAX_OUTPUT_TOKENS:
+    if type(limit) is not int or not 16 <= limit <= output_limit(name):
         raise ExecutorError("invalid_output_limit")
     body = {"model": profile.model, "input": request["input"],
             "reasoning": {"effort": effort}, "max_output_tokens": limit, "stream": False}
@@ -221,7 +238,8 @@ def _exchange(profile: Profile, endpoint: str, body: dict | None, *, environ, tr
     if not all(33 <= ord(char) <= 126 for char in key):
         raise ExecutorError("invalid_api_key")
     try:
-        with httpx.Client(timeout=TIMEOUT_SECONDS, trust_env=False, follow_redirects=False,
+        read_timeout = GENERATION_READ_TIMEOUT_SECONDS if endpoint.endswith("/responses") else TIMEOUT_SECONDS
+        with httpx.Client(timeout=httpx.Timeout(TIMEOUT_SECONDS, read=read_timeout), trust_env=False, follow_redirects=False,
                           transport=transport) as client:
             with client.stream("POST" if body is not None else "GET", endpoint,
                                content=_encode(body) if body is not None else None,

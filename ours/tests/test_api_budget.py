@@ -122,7 +122,7 @@ def test_exhaustion_is_detected_before_generation(tmp_path, inputs, dollars, rea
 
 
 def test_worker_spending_cannot_use_an_independent_budget(tmp_path):
-    path = create(tmp_path, worker="luna-worker", dollars="0.023")
+    path = create(tmp_path, worker="luna-worker", dollars="0.023", limits={"output_tokens_per_call": 2048})
     transport, sent = exchange([frame(output=2000, calls=[delegate()])])
     result = session.run(path, environ=KEYS, transport=transport)
     assert result["stop_reason"] == "money_budget_exhausted" and result["calls"] == 1
@@ -197,7 +197,7 @@ def test_unknown_generation_retains_full_reservation_and_never_repeats(tmp_path,
                                            ({"model": "different-model"}, "billing_contract_unverified"),
                                            ({"written": 13}, "untrusted_budget_usage")])
 def test_unverified_billing_contract_does_not_release_reservation(tmp_path, changes, reason):
-    path = create(tmp_path)
+    path = create(tmp_path, limits={"output_tokens_per_call": 2048})
     transport, sent = exchange([frame(**changes)])
     result = session.run(path, environ=KEYS, transport=transport)
     assert result["stop_reason"] == reason and result["budget"]["contract_breached"]
@@ -324,9 +324,9 @@ def test_cli_keeps_configured_budget_without_strict_flag(tmp_path, monkeypatch, 
 @pytest.mark.parametrize("kind", ["call_limit", "provider_output_limit", "unknown_usage"])
 def test_cli_without_budget_still_stops_at_technical_bounds(tmp_path, monkeypatch, capsys, kind):
     path = tmp_path / "bounded.json"
-    spec = {"task": "Проверить остановку без денежного потолка"}
+    spec = {"task": "Проверить остановку без денежного потолка", "limits": {"output_tokens_per_call": 2048}}
     if kind == "call_limit":
-        spec["limits"] = {"max_calls": 1}
+        spec["limits"]["max_calls"] = 1
         response = frame("deepseek-flash", calls=[delegate()])
     else:
         response = (frame("deepseek-flash", output=2049) if kind == "provider_output_limit"

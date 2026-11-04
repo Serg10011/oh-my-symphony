@@ -87,7 +87,7 @@ def test_missing_usage_remains_unknown():
 
 @pytest.mark.parametrize("changes", [
     {"input": ""}, {"input": False}, {"input": [False]}, {"effort": []}, {"effort": "ultra"},
-    {"max_output_tokens": True}, {"max_output_tokens": 15}, {"max_output_tokens": 32769},
+    {"max_output_tokens": True}, {"max_output_tokens": 15}, {"max_output_tokens": 128001},
     {"instructions": {}}, {"base_url": "https://wrong.invalid"}, {"model": "other"},
     {"api_key": "fake-key"}, {"stream": True}, {"previous_response_id": "resp_previous"},
     {"tools": [{"type": "web_search"}]}, {"tools": [TOOL, TOOL]},

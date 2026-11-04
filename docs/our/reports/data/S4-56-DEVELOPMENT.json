@@ -1,0 +1,78 @@
+{
+  "task": "S4-56",
+  "date": "2026-11-04",
+  "status": "prepared_tested_awaiting_acceptance",
+  "implementation_commit": "dfdd6b2ff2b0868105fcc063a513b4ef0debb973",
+  "base_commit": "e19dd14b54cd99a72f6969b6909079cbbc9db285",
+  "branch": "codex/api-session-spending",
+  "pull_request": "https://github.com/Serg10011/oh-my-symphony/pull/99",
+  "executor": {
+    "role": "pipeline_architect_developer",
+    "agreed_model": "gpt-6.1-sol",
+    "effort": "max",
+    "new_agents": 0
+  },
+  "authorization": {
+    "user_reply": "го",
+    "scope": "S4-56 implementation and local checks; no paid API, merge or live update"
+  },
+  "checks": {
+    "ruff_ours": "PASS",
+    "pytest_ours": {
+      "passed": 1956,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "reported_seconds": 498.3
+    },
+    "api_subset_of_ours": {
+      "passed": 253,
+      "new_resource_scenarios": 12
+    },
+    "standalone_checks_before_full_suite": {
+      "existing_api_passed": 241,
+      "new_scenarios_passed": 12
+    },
+    "source_sha256": {
+      "ours/hooks/api_session.py": "aec2c07362b8a9dba6c3764e81170eb70dc50df2b151d2d61de4e71511a429b1",
+      "ours/tests/test_api_session.py": "6fe8d0c6303b662891e4751c5093c0652e71d0e880a7b492af704fa651404a78",
+      "ours/tests/test_api_project_session.py": "c1e78500b4052a58ad0258bf75e83b300310ee923987fb695bd019ce7f4b8b8c",
+      "ours/tests/test_api_session_resources.py": "f70d6a0034c48ddeb3269cefa32d39a7a5124f5df430f078c3e8627f8b303499"
+    },
+    "historical_local_show": {
+      "original_trial": {
+        "calls": 23,
+        "status": "stopped",
+        "exit_code": 3
+      },
+      "final_trial": {
+        "calls": 24,
+        "status": "stopped",
+        "exit_code": 3
+      },
+      "original_pro_preparation": {
+        "calls": 0,
+        "status": "prepared",
+        "exit_code": 0
+      }
+    },
+    "private_artifacts_unchanged": 6,
+    "live_copies": {
+      "commit": "e19dd14b54cd99a72f6969b6909079cbbc9db285",
+      "both_clean": true
+    }
+  },
+  "paid_api_calls": 0,
+  "keychain_reads": 0,
+  "accepted_by_user": false,
+  "merged": false,
+  "applied_to_live_system": false,
+  "limitations": [
+    "Stub transports verify mechanics, not real model completion or cache savings.",
+    "The lead reserve is one call and a minimum of 16 output tokens, not an input or USD reserve.",
+    "Real errors remain terminal and stopped sessions cannot restart.",
+    "S4-54 spending report is still unimplemented; its 24 paid answers are historical, not new calls."
+  ],
+  "local_logs": "/private/tmp/s4-56-development-20261104-102018",
+  "archive": "/Users/helloworld10011/symphony-projects/.backups/s4-56-development-20261104-103112"
+}

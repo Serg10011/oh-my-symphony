@@ -1,0 +1,309 @@
+{
+  "task": "S4-57",
+  "revision": "model_output_limits",
+  "date": "2026-11-04",
+  "status": "prepared_tested_awaiting_acceptance",
+  "starting_head": "bf3aaea9df7bf0516f20631d7d645d351d7037bc",
+  "base_commit": "e19dd14b54cd99a72f6969b6909079cbbc9db285",
+  "branch": "codex/api-session-spending",
+  "pull_request": "https://github.com/Serg10011/oh-my-symphony/pull/99",
+  "authorization": {
+    "user_reply": "Го дальше",
+    "scope": "Continue S4-57 implementation and local checks after reviewing token limits; no merge, live update or paid launch"
+  },
+  "executor": {
+    "model": "gpt-6-astra",
+    "agreed_effort": "max",
+    "recommended_return": "gpt-6.1-sol / max",
+    "model_switch_performed": false,
+    "new_agents": 0
+  },
+  "model_output_tokens": {
+    "deepseek-flash": 393216,
+    "gpt-6-luna": 128000,
+    "gpt-6.1-sol": 128000
+  },
+  "official_sources": [
+    {
+      "url": "https://api-docs.deepseek.com/api/list-models/",
+      "checked": "2026-11-04"
+    },
+    {
+      "url": "https://api-docs.deepseek.com/quick_start/pricing/",
+      "checked": "2026-11-04"
+    },
+    {
+      "url": "https://developers.openai.com/api/docs/models/gpt-6-luna",
+      "checked": "2026-11-04"
+    },
+    {
+      "url": "https://developers.openai.com/api/docs/models/gpt-6.1-sol",
+      "checked": "2026-11-04"
+    }
+  ],
+  "session_defaults": {
+    "max_calls": 1000,
+    "output_tokens_per_call": "assigned lead model maximum, with a separately saved grant for each participant",
+    "output_tokens_total": 2097152,
+    "request_bytes": 16777216
+  },
+  "transport_response_bytes": 16777216,
+  "state_bytes": 134217728,
+  "transport_timeout_seconds": {
+    "generation_read": 600,
+    "preflight_read": 120,
+    "connect": 120,
+    "write": 120,
+    "pool": 120,
+    "automatic_retries": 0
+  },
+  "existing_state_policy": "complete stored limits unchanged; missing output_limits uses the original grant; show never writes",
+  "new_state_policy": "pin each participant grant; request uses minimum of saved grant, current model cap and shared remaining output after reserve",
+  "checks": {
+    "ruff_ours": "PASS",
+    "api_subset_of_ours": {
+      "passed": 293,
+      "seconds": 11.21,
+      "added_scenarios": 21,
+      "new_test_file_scenarios": 20,
+      "additional_legacy_case": 1
+    },
+    "pytest_ours": {
+      "passed": 1996,
+      "failed": 0,
+      "errors": 0,
+      "skipped": 0,
+      "reported_seconds": 487.19,
+      "junit_seconds": 486.902
+    },
+    "source_sha256": {
+      "ours/hooks/api_budget.py": "769a5e45fa099770baa03a57bf068e55f3622d965bab26265da478a8ebde2b66",
+      "ours/hooks/api_executor.py": "9c7e8068ee8047bd21d98d12b695038f71947b39d17a1afaf736b7d33bd91cfd",
+      "ours/hooks/api_project.py": "4330a812dde2d34b676d20939f1e23f667132e64d8c3e3c47f877510f6f226de",
+      "ours/hooks/api_session.py": "c59c249a5d4f993ecc0ae108e79759cb1f468cc2cd467217bf79b74056e515fb",
+      "ours/tests/test_api_budget.py": "9d88777b40e985c4756eece42877346b4e8af8cfb93f652d4425874fe47a3fc6",
+      "ours/tests/test_api_executor.py": "d6cf3088ee8da741e3fb3866a8b0d6f29739fd77d594e87b80e4ece88186ae01",
+      "ours/tests/test_api_flash_migration.py": "8f79c854f2e3e5acb94d3a3be6e345da9fc167f6f9942e2c3c83b5f994bcf6d9",
+      "ours/tests/test_api_model_output_limits.py": "dd5f4791526cf217f023e94b44386ac9ba96d9e85bd83347729756fdd4a26c27",
+      "ours/tests/test_api_project.py": "5fd4cebf1097c410d4df783105bd43a501b09156373583aba56b872e7f20aa60",
+      "ours/tests/test_api_project_session.py": "c1e78500b4052a58ad0258bf75e83b300310ee923987fb695bd019ce7f4b8b8c",
+      "ours/tests/test_api_session.py": "647f8b75b2609e14b4013f65d415a4d93881bad13237ae9e9ba34684b33fb6cf",
+      "ours/tests/test_api_session_emergency_limits.py": "fc8d5deb5a5dab3dd946ff21791a30c19df2f894e9c2098c59397daaf77aa0bf",
+      "ours/tests/test_api_session_resources.py": "f70d6a0034c48ddeb3269cefa32d39a7a5124f5df430f078c3e8627f8b303499"
+    },
+    "historical_show": [
+      {
+        "state": "/Users/helloworld10011/symphony-api-runs/s4-54-flash-spending-20261104-090827/session.json",
+        "exit_code": 3,
+        "status": "stopped",
+        "calls": 23,
+        "limits": {
+          "max_calls": 24,
+          "output_tokens_per_call": 16384,
+          "output_tokens_total": 98304,
+          "request_bytes": 262144
+        },
+        "output_limits": {
+          "deepseek-lead": 16384,
+          "luna-worker": 16384
+        }
+      },
+      {
+        "state": "/Users/helloworld10011/symphony-api-runs/s4-54-flash-spending-20261104-090827/session-with-reserved-lead-return.json",
+        "exit_code": 3,
+        "status": "stopped",
+        "calls": 24,
+        "limits": {
+          "max_calls": 24,
+          "output_tokens_per_call": 16384,
+          "output_tokens_total": 98304,
+          "request_bytes": 262144
+        },
+        "output_limits": {
+          "deepseek-lead": 16384,
+          "luna-worker": 16384
+        }
+      },
+      {
+        "state": "/Users/helloworld10011/symphony-api-runs/s4-54-api-spending-20261103-224450/session.json",
+        "exit_code": 0,
+        "status": "prepared",
+        "calls": 0,
+        "limits": {
+          "max_calls": 24,
+          "output_tokens_per_call": 16384,
+          "output_tokens_total": 98304,
+          "request_bytes": 262144
+        },
+        "output_limits": {
+          "deepseek-lead": 16384,
+          "luna-worker": 16384
+        }
+      }
+    ],
+    "private_artifacts_unchanged": 6,
+    "live_copies": [
+      {
+        "path": "/Users/helloworld10011/dev/oh-my-symphony",
+        "branch": "our-main",
+        "commit": "e19dd14b54cd99a72f6969b6909079cbbc9db285",
+        "clean": true
+      },
+      {
+        "path": "/Users/helloworld10011/dev/oms-pipeline",
+        "branch": "our-main",
+        "commit": "e19dd14b54cd99a72f6969b6909079cbbc9db285",
+        "clean": true
+      }
+    ],
+    "source_unchanged_after_full_run": true
+  },
+  "historical_comparison": {
+    "date": "2026-11-04",
+    "scope": "Read-only historical evidence; all recorded attempts included; no new model calls",
+    "stats": {
+      "OMS-6": {
+        "turns": 14,
+        "input_uncached": 380,
+        "cache": 11824621,
+        "output": 262427,
+        "total": 12087428
+      },
+      "OMS-9": {
+        "turns": 3,
+        "input_uncached": 58,
+        "cache": 1262239,
+        "output": 14739,
+        "total": 1277036
+      },
+      "OMS-9-1": {
+        "turns": 2,
+        "input_uncached": 56,
+        "cache": 1823511,
+        "output": 23696,
+        "total": 1847263
+      },
+      "OMS-9-2": {
+        "turns": 2,
+        "input_uncached": 46,
+        "cache": 864355,
+        "output": 14124,
+        "total": 878525
+      },
+      "OMS-9-3": {
+        "turns": 2,
+        "input_uncached": 54,
+        "cache": 1352812,
+        "output": 33669,
+        "total": 1386535
+      }
+    },
+    "oms_9_family": {
+      "turns": 9,
+      "input_uncached": 214,
+      "cache": 5302917,
+      "output": 86228,
+      "total": 5389359
+    },
+    "claude_response_usage": {
+      "OMS-6": {
+        "claude-haiku-5-5": {
+          "responses": 187,
+          "output_tokens": 262427,
+          "max_response_output_tokens": 16779,
+          "input_uncached": 380,
+          "cache_read": 10952255,
+          "cache_creation": 872366
+        }
+      },
+      "OMS-9": {
+        "claude-sonnet-5-5": {
+          "responses": 29,
+          "output_tokens": 14739,
+          "max_response_output_tokens": 1818,
+          "input_uncached": 58,
+          "cache_read": 1159978,
+          "cache_creation": 102261
+        }
+      },
+      "OMS-9-1": {
+        "claude-sonnet-5-5": {
+          "responses": 28,
+          "output_tokens": 23696,
+          "max_response_output_tokens": 7336,
+          "input_uncached": 56,
+          "cache_read": 1684811,
+          "cache_creation": 138700
+        }
+      },
+      "OMS-9-2": {
+        "claude-haiku-5-5": {
+          "responses": 23,
+          "output_tokens": 14124,
+          "max_response_output_tokens": 1474,
+          "input_uncached": 46,
+          "cache_read": 805086,
+          "cache_creation": 59269
+        }
+      },
+      "OMS-9-3": {
+        "claude-haiku-5-5": {
+          "responses": 27,
+          "output_tokens": 33669,
+          "max_response_output_tokens": 3655,
+          "input_uncached": 54,
+          "cache_read": 1247682,
+          "cache_creation": 105130
+        }
+      }
+    },
+    "deduplication": "assistant message.id; maximum output_tokens record per id; content not exported",
+    "source_sha256": {
+      "/Users/helloworld10011/symphony-projects/oms/.symphony/stats.jsonl": "1299be8c60f2b2fd4661e47afabc41f5db2cc9f762ed48e96fc0760bdff90ddc",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-6/1abc9cc2-7e0e-48af-958b-6a10a03f11df.jsonl": "533626a94da2a0ae7a67b775fffcc9bdf7093ecee9054f4aadb1f5319947842c",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-6/1ca0262e-2ca3-4605-b04f-72d76fc053c7.jsonl": "d744263051687e94aba81bac5fa5eccc70e31013a92310956dfefe92f7428c3a",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-6/1f21e817-e011-4424-98c1-e2f040ee1f02.jsonl": "869e6f69364a7d3f3c47e3572c306147e05b177413fe0d03bc3a06c76d0c9c84",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-6/286b7d99-a5c0-4078-80b6-30d5c8501c65.jsonl": "f2dea56e4cc3a6cfc2bb4df2969117f7bda2d2a53984024ca08a940e590caa82",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-6/30cb523a-a05d-40bc-ae1e-b81aefb1e0d1.jsonl": "bde850cf9ee215c7bdaa6df33066cf328118b7fc79b5daf58dd6e943785b3eaa",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-6/406fe3fc-fb3d-4279-8e4a-d369add4d8fb.jsonl": "d92d8623c66cfaa5b4de4d2d8ab8d3bb3e49b11471a630f312cc79cdc215ca54",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-6/5d33af30-9251-4d53-949a-da03b9adef36.jsonl": "4daeb43c9fd31dc962e9f009e015ed41dc660f7677785cb25accb705b891f143",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-6/6a39f643-f6d7-457d-a67a-199889b30b61.jsonl": "47c71df3c874ee9a1e2e17b2ddf868172df340168b7ae975c55743d65949dc76",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-6/76a0c337-82b1-4a4a-ae58-adf344c3da1b.jsonl": "aea7f437961b71f3211e2098bf5948ba2527c6d29ff1af1bb0901de3dea90559",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-6/a22daf23-ed17-409a-862c-553e22eb6ae4.jsonl": "7d14655d8dbd8ba3b6bcc40f0f2018aed6cab0bcc945177d1b5fdb11abe3485d",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-6/a88f9948-7e3a-45b5-8d3b-27db6d25afba.jsonl": "13712798013c76fb822f87350e8e9fae911fd7bedf5ae0338293e3028bc23233",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-6/b21388f7-3818-4c70-ac55-40b8ebbdd5a1.jsonl": "73e6b6d4298393f7f19e6eb8eb6386144edafb0804f493bcf0e1044b8d4695b7",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-6/bc594bf9-da11-46e5-9b9a-579124f8dbc1.jsonl": "f8da454afea65b01fc37d37fdaa38d65124c3ea326d694aa352a4e5e9360eb83",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-6/d953e3e3-590f-4ff3-a098-4910cd40c6b5.jsonl": "7d3b9a2cfac5f32bb9650db8ac649ebe791aff32d9688aa8640fc82f34b10693",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-9/1e40f69e-f198-4c97-838e-2d878db7fd92.jsonl": "97585fd7bd6cc5af6fd49fa7ec0542838df35832097edf96b0fcc58d7b8bd024",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-9/261b3b89-7e60-4362-ba1e-622e6d214e76.jsonl": "3b0d36d47fa90c4c1ea49ec5cb3cad674bb1a5385867fa61416c48bf3ddd32c4",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-9/525d879f-8cca-4690-9b76-15426f96925f.jsonl": "e55504808bc8ee6e67d2174f42d8bf4bd98c5daec7a3f9710789855188f78ae0",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-9-1/d0c412da-9409-4f61-b49d-1e19eed1d0da.jsonl": "3edc49de869787236252c434641548584a3d2907e45058481b402080c0703169",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-9-1/e24bd73c-4804-49ae-91f6-57ead0a76065.jsonl": "c423f3d2a12095b1484db3c0df16c9486e5b08bd04ac4b409feeb10707b322d9",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-9-2/7b701b0c-48e2-45ad-999d-a853e21ca2b4.jsonl": "f4e0e2eee2f5137a83bff5da3053e0169f60c03c35d16491e802f8eb0c52475b",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-9-2/b6bd7251-e6a8-4152-8b68-9581f07a1924.jsonl": "08df690c104dcfaf38baf5e86380363858cac02e63df0e260095e21734d509d8",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-9-3/d68701cf-2bff-482d-adee-3b62ad671cd9.jsonl": "f8affb1d31b731bf105f0444a48ffa44e5679185a89dad45a6582f0eff356f01",
+      "/Users/helloworld10011/.claude/projects/-Users-helloworld10011-symphony-workspaces-oms-OMS-9-3/f9dd6651-67ea-4187-86a3-52b0c3f91725.jsonl": "2daf91d53925c02a4593be3bb0456591464316b396f95b1f559bedf2ea052f12"
+    }
+  },
+  "budget_enabled_automatically": false,
+  "flash_full_context_reservation_usd": "0.786432",
+  "new_paid_api_calls": 0,
+  "keychain_reads": 0,
+  "accepted_by_user": false,
+  "merged": false,
+  "applied_to_live_system": false,
+  "limitations": [
+    "Limits do not guarantee completion or economical behavior.",
+    "Total output excludes repeated input and cache; per-response output includes reasoning.",
+    "Provider context capacity is unchanged; no automatic compaction or resumption.",
+    "Generation read timeout remains 600 seconds without incoming data, not an absolute response deadline.",
+    "Old code with lower token or byte limits may not read new states; preserve a compatible runtime when rolling back.",
+    "The fixed lead reserve remains a technical minimum of 16 output tokens, not a guaranteed useful final answer.",
+    "No paid provider validation in this revision; large payload tests use synthetic data, not measured tokenizer output."
+  ],
+  "previous_revision": "S4-57-DEVELOPMENT.json",
+  "local_logs": "/private/tmp/s4-57-model-limits-20261104-090228",
+  "core_and_dependencies_unchanged": true,
+  "archive": "/Users/helloworld10011/symphony-projects/.backups/s4-57-model-limits-20261104-090228",
+  "implementation_commit": "428d0f48e48ae2bcfe9f3df11bc76fd3fddf2cf1"
+}

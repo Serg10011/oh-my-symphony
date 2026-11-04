@@ -93,10 +93,10 @@ def test_worker_file_round_cannot_consume_the_reserved_lead_call(tmp_path):
     root = repository(tmp_path)
     path = state_file(tmp_path, root, limits={"max_calls": 3})
     transport, sent = exchange([frame(None, [delegate()]),
-                                frame(None, [tool()], model="gpt-6-luna")])
+                                frame(None, [tool()], model="gpt-6-luna"), frame("Lead received the interrupted worker")])
     result = session.run(path, environ=KEYS, transport=transport)
-    assert result["status"] == "stopped" and result["stop_reason"] == "budget_reserves_lead_return"
-    assert result["calls"] == len(sent) == 2 and result["project"]["file_calls"] == 1
+    assert result["status"] == "dialogue_complete" and result["tool_errors"][-1]["error"] == "budget_reserves_lead_return"
+    assert result["calls"] == len(sent) == 3 and result["project"]["file_calls"] == 1
     assert result["parts"]["part_1"]["attempts"] == 1
 
 
@@ -114,7 +114,7 @@ def test_denied_queries_return_data_errors_without_host_reads(tmp_path, monkeypa
     assert result["tool_errors"] and result["project"]["file_calls"] == 1
     raw = json.loads(path.read_text())
     assert raw["file_calls"][0]["status"] == "error"
-    assert json.loads(sent[1]["body"]["input"][-1]["output"])["error"] == result["tool_errors"][0]["error"]
+    assert json.loads([i for i in sent[1]["body"]["input"] if i.get("type") == "function_call_output"][-1]["output"])["error"] == result["tool_errors"][0]["error"]
 
 
 def test_integrity_failure_stops_before_another_provider_request(tmp_path, monkeypatch):
@@ -145,7 +145,7 @@ def test_file_audit_is_persisted_before_read_and_results_before_next_request(tmp
     transport, sent = exchange([frame(None, [tool()]), frame("Final")])
     result = session.run(path, environ=KEYS, transport=transport)
     assert result["status"] == "dialogue_complete" and observed == ["in_flight"]
-    assert json.loads(sent[1]["body"]["input"][-1]["output"])["text"] == "print('committed')\n"
+    assert json.loads([i for i in sent[1]["body"]["input"] if i.get("type") == "function_call_output"][-1]["output"])["text"] == "print('committed')\n"
     raw = json.loads(path.read_text())
     assert raw["file_calls"][0]["status"] == "completed" and raw["file_calls"][0]["reply_bytes"] > 0
 
@@ -225,4 +225,4 @@ def test_configured_shared_budget_includes_context_from_file_tools(tmp_path):
     assert result["budget"]["input_tokens_committed"] == 24 and len(sent) == 4
     counter, generation = sent[2], sent[3]
     assert counter["body"]["input"] == generation["body"]["input"]
-    assert json.loads(counter["body"]["input"][-1]["output"])["text"] == "print('committed')\n"
+    assert json.loads([i for i in counter["body"]["input"] if i.get("type") == "function_call_output"][-1]["output"])["text"] == "print('committed')\n"
