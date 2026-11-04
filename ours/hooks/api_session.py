@@ -238,7 +238,7 @@ def _save(path: Path, state: dict) -> None:
             os.unlink(temporary)
 
 
-def _load(path: Path) -> dict:
+def _read_state(path: Path) -> bytes:
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as source:
@@ -248,6 +248,12 @@ def _load(path: Path) -> dict:
         raise SessionError("state_read_failed") from None
     if len(raw) > MAX_STATE_BYTES:
         raise SessionError("state_too_large")
+    return raw
+
+
+def _load(path: Path, *, raw: bytes | None = None) -> dict:
+    if raw is None:
+        raw = _read_state(path)
     state = _decode(raw)
     if (not isinstance(state, dict) or type(state.get("version")) is not int or state["version"] != 1
             or state.get("status") not in ("prepared", "running", "dialogue_complete", "stopped")
@@ -421,6 +427,8 @@ def summary(state: dict) -> dict:
         result["project"] = {"commit": snapshot["commit"], "paths": snapshot["paths"],
                              "files": len(snapshot["files"]), "digest": snapshot["digest"],
                              "file_calls": len(state["file_calls"]), "read_only": True}
+    if "resumptions" in state:
+        result["resumptions"] = state["resumptions"]
     return result
 
 
@@ -444,17 +452,9 @@ def _credentials(spec: dict, environ) -> None:
             raise SessionError("invalid_api_key")
 
 
-def _request(path, state, profile, history, *, part_id=None, environ, transport):
+def _build_request(state, history, cap, resources, *, part_id=None):
+    """Pure request construction, also used to verify a saved recovery boundary."""
     spec, limits = state["spec"], state["spec"]["limits"]
-    if len(state["calls"]) >= limits["max_calls"]:
-        _stop(path, state, "call_limit")
-        return None
-    remaining = limits["output_tokens_total"] - _spent(state)
-    cap = min(_output_limits(state)[profile], api.output_limit(profile),
-              remaining - (MIN_RESPONSE_TOKENS if part_id else 0))
-    if cap < MIN_RESPONSE_TOKENS:
-        _stop(path, state, "output_limit")
-        return None
     if part_id is None:
         instructions = LEAD_INSTRUCTIONS + "\nLimits: " + json.dumps(limits) + "\nProject context:\n" + spec["context"]
         request = {"input": history, "instructions": instructions, "effort": spec["lead_effort"],
@@ -469,10 +469,25 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport)
             instructions += "\nProject context:\n" + spec["context"]
         request["instructions"] = instructions
         request["tools"] = list(project.TOOLS) + ([DELEGATE_TOOL] if part_id is None and spec["worker_profile"] else [])
-    resources = _resources(state, cap, worker=part_id is not None)
     # Append transient counters after the stable context; never accumulate them in history.
     request["instructions"] += "\n" + RESOURCE_INSTRUCTIONS
     request["input"] = history + [{"role": "user", "content": RESOURCE_PREFIX + json.dumps(resources)}]
+    return request
+
+
+def _request(path, state, profile, history, *, part_id=None, environ, transport):
+    spec, limits = state["spec"], state["spec"]["limits"]
+    if len(state["calls"]) >= limits["max_calls"]:
+        _stop(path, state, "call_limit")
+        return None
+    remaining = limits["output_tokens_total"] - _spent(state)
+    cap = min(_output_limits(state)[profile], api.output_limit(profile),
+              remaining - (MIN_RESPONSE_TOKENS if part_id else 0))
+    if cap < MIN_RESPONSE_TOKENS:
+        _stop(path, state, "output_limit")
+        return None
+    resources = _resources(state, cap, worker=part_id is not None)
+    request = _build_request(state, history, cap, resources, part_id=part_id)
     try:
         _, body = api.prepare(profile, request)
         encoded = _encode(body)
@@ -503,6 +518,9 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport)
             "output_cap": cap, "request_sha256": hashlib.sha256(encoded).hexdigest(),
             "history_items": len(request["input"]), "resources": resources,
             "status": "in_flight", "started_at": _now()}
+    resumes = state.get("resumptions", [])
+    if resumes and resumes[-1]["next_call_index"] == call["index"]:
+        call["resume_of"] = resumes[-1]["uncertain_call_index"]
     if reservation is not None:
         call["budget_reservation"] = reservation
     state["calls"].append(call)
@@ -589,9 +607,9 @@ def _project_call(path, state, call, history, *, part_id=None) -> bool:
     return not fatal
 
 
-def _worker(path, state, part_id, part, *, environ, transport):
+def _worker(path, state, part_id, part, *, environ, transport, partial=()):
     seen = {item["call_id"] for item in part["history"] if item.get("type") == "function_call"}
-    partial = []
+    partial = list(partial)
     while state["status"] == "running":
         if not _worker_has_room(state):
             return _WorkerOutcome("\n\n".join(partial), "budget_reserves_lead_return")
@@ -617,6 +635,76 @@ def _worker(path, state, part_id, part, *, environ, transport):
     return None
 
 
+def _dispatch(path, state, calls, *, environ, transport, resumed_part=None):
+    """Finish a lead batch; a recovered worker keeps its existing attempt/history."""
+    spec = state["spec"]
+    for call in calls:
+        if "project" in spec and call["name"] in project.TOOL_NAMES:
+            if not _project_call(path, state, call, state["lead_history"]):
+                return
+            continue
+        if resumed_part is not None:
+            part_id = resumed_part
+            part = state["parts"][part_id]
+            # All prior user messages are assignments; resource footers are transient.
+            start = max(i for i, item in enumerate(part["history"]) if item.get("role") == "user")
+            partial = [c["response"]["output_text"] for c in state["calls"]
+                       if c.get("part_id") == part_id and c["status"] == "received"
+                       and c["history_items"] - 1 > start and c["response"]["output_text"].strip()]
+            worker = _worker(path, state, part_id, part, environ=environ, transport=transport, partial=partial)
+            if worker is None:
+                return
+            output = {"part_id": part_id, "attempt": part["attempts"], "text": worker.text}
+            if worker.error:
+                output.update(error=worker.error, partial=True)
+                state["tool_errors"].append({"call_id": call["call_id"], "error": worker.error})
+            resumed_part = None
+        else:
+            args, error = _arguments(call, state["parts"])
+            if not error and not _worker_has_room(state):
+                error = "budget_reserves_lead_return"
+            if error:
+                output = {"error": error}
+                state["tool_errors"].append({"call_id": call["call_id"], "error": error})
+            else:
+                part_id = args["part_id"]
+                part = state["parts"].setdefault(part_id, {"attempts": 0, "history": []})
+                part["history"].append({"role": "user", "content": args["message"]})
+                part["attempts"] += 1
+                worker = _worker(path, state, part_id, part, environ=environ, transport=transport)
+                if worker is None:
+                    return
+                output = {"part_id": part_id, "attempt": part["attempts"], "text": worker.text}
+                if worker.error:
+                    output.update(error=worker.error, partial=True)
+                    state["tool_errors"].append({"call_id": call["call_id"], "error": worker.error})
+        state["lead_history"].append({"type": "function_call_output", "call_id": call["call_id"],
+                                      "output": json.dumps(output, ensure_ascii=False)})
+        _save(path, state)
+
+
+def _lead_loop(path, state, *, environ, transport):
+    seen = {item["call_id"] for item in state["lead_history"] if item.get("type") == "function_call"}
+    while state["status"] == "running":
+        spec = state["spec"]
+        response = _request(path, state, spec["lead_profile"], state["lead_history"], environ=environ, transport=transport)
+        if response is None:
+            break
+        state["lead_history"].extend(response["output"])
+        calls = response["function_calls"]
+        if not _batch(path, state, calls, seen):
+            break
+        if not calls:
+            if not response["output_text"].strip():
+                _stop(path, state, "empty_result")
+            else:
+                state.update(status="dialogue_complete", result=response["output_text"], finished_at=_now())
+                _save(path, state)
+            break
+        _dispatch(path, state, calls, environ=environ, transport=transport)
+    return summary(state)
+
+
 def run(path, *, environ=None, transport=None, require_budget=False) -> dict:
     path = _path(path)
     with _lock(path):
@@ -638,63 +726,24 @@ def run(path, *, environ=None, transport=None, require_budget=False) -> dict:
                 raise SessionError(str(exc)) from None
         state.update(status="running", started_at=_now())
         _save(path, state)
-        seen = set()
-        while state["status"] == "running":
-            spec = state["spec"]
-            response = _request(path, state, spec["lead_profile"], state["lead_history"], environ=env, transport=transport)
-            if response is None:
-                break
-            state["lead_history"].extend(response["output"])
-            calls = response["function_calls"]
-            if not _batch(path, state, calls, seen):
-                break
-            if not calls:
-                if not response["output_text"].strip():
-                    _stop(path, state, "empty_result")
-                else:
-                    state.update(status="dialogue_complete", result=response["output_text"], finished_at=_now())
-                    _save(path, state)
-                break
-            for call in calls:
-                if "project" in spec and call["name"] in project.TOOL_NAMES:
-                    if not _project_call(path, state, call, state["lead_history"]):
-                        break
-                    continue
-                args, error = _arguments(call, state["parts"])
-                if not error and not _worker_has_room(state):
-                    error = "budget_reserves_lead_return"
-                if error:
-                    output = {"error": error}
-                    state["tool_errors"].append({"call_id": call["call_id"], "error": error})
-                else:
-                    part_id = args["part_id"]
-                    part = state["parts"].setdefault(part_id, {"attempts": 0, "history": []})
-                    part["history"].append({"role": "user", "content": args["message"]})
-                    part["attempts"] += 1
-                    worker = _worker(path, state, part_id, part, environ=env, transport=transport)
-                    if worker is None:
-                        break
-                    output = {"part_id": part_id, "attempt": part["attempts"], "text": worker.text}
-                    if worker.error:
-                        output.update(error=worker.error, partial=True)
-                        state["tool_errors"].append({"call_id": call["call_id"], "error": worker.error})
-                state["lead_history"].append({"type": "function_call_output", "call_id": call["call_id"],
-                                              "output": json.dumps(output, ensure_ascii=False)})
-                _save(path, state)
-        return summary(state)
+        return _lead_loop(path, state, environ=env, transport=transport)
 
 
 def cli(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ["init", "show", "run"]:
+    for name in ["init", "show", "run", "resume-plan", "resume"]:
         command = commands.add_parser(name)
         command.add_argument("--state", required=True)
         if name == "init":
             command.add_argument("--spec", default="-", help="JSON specification, default stdin")
-        elif name == "run":
+        elif name in {"run", "resume"}:
             command.add_argument("--require-budget", action="store_true",
                                  help="Reject a session without a configured shared input and USD budget")
+            if name == "resume":
+                command.add_argument("--plan-sha256", required=True, help="Exact digest returned by resume-plan")
+                command.add_argument("--accept-possible-charge", action="store_true",
+                                     help="Acknowledge that the lost response may already have been charged")
     args = parser.parse_args(argv)
     try:
         if args.command == "init":
@@ -708,6 +757,12 @@ def cli(argv=None) -> int:
             result = create(args.state, _decode(raw))
         elif args.command == "show":
             result = show(args.state)
+        elif args.command in {"resume-plan", "resume"}:
+            import api_resume
+            result = (api_resume.plan(args.state) if args.command == "resume-plan" else
+                      api_resume.resume(args.state, expected_plan_sha256=args.plan_sha256,
+                                        accept_possible_charge=args.accept_possible_charge,
+                                        require_budget=args.require_budget))
         else:
             result = run(args.state, require_budget=args.require_budget)
         print(json.dumps(result, ensure_ascii=False, allow_nan=False))
