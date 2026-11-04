@@ -280,6 +280,10 @@
   "api_execution_registered_on_boards": false,
   "model_filesystem_write": false,
   "model_shell": false,
-  "history_sync_pending": true,
-  "scope": "Actual primary PR 99 application; later history synchronization recorded separately"
+  "scope": "Actual primary PR 99 application; later history synchronization recorded separately",
+  "history_sync_pending_at_primary_application": true,
+  "history_sync": {
+    "pull_request": "https://github.com/Serg10011/oh-my-symphony/pull/100",
+    "actual_result_file": "/Users/helloworld10011/symphony-projects/.backups/s4-57-apply-20261104-122328/history-sync/result.json"
+  }
 }
