@@ -1,4 +1,4 @@
-"""Bounded lead/Luna dialogue with optional read-only Git project tools and a local spend report."""
+"""Bounded API team with explicit read-only or isolated editable project access."""
 
 from __future__ import annotations
 
@@ -21,6 +21,8 @@ import api_executor as api
 import api_budget as budget
 import api_project as project
 import api_cache
+import api_workspace as workspace
+import api_sandbox as sandbox
 
 MAX_STATE_BYTES = 128 * 1024 * 1024
 MIN_RESPONSE_TOKENS = 16
@@ -134,7 +136,7 @@ def _text(value, limit: int, *, empty: bool = False) -> bool:
 
 
 def validate_spec(raw: dict) -> dict:
-    allowed = {"task", "context", "lead_profile", "worker_profile", "lead_effort", "limits", "budget", "project"}
+    allowed = {"task", "context", "lead_profile", "worker_profile", "lead_effort", "limits", "budget", "project", "execution"}
     if not isinstance(raw, dict) or set(raw) - allowed or not _text(raw.get("task"), 65536):
         raise SessionError("invalid_spec")
     lead, worker = raw.get("lead_profile", "deepseek-lead"), raw.get("worker_profile", "luna-worker")
@@ -172,6 +174,13 @@ def validate_spec(raw: dict) -> dict:
         try:
             result["project"] = project.validate(raw["project"])
         except project.ProjectError as exc:
+            raise SessionError(str(exc)) from None
+    if "execution" in raw:
+        if "project" not in result:
+            raise SessionError("execution_requires_project")
+        try:
+            result["execution"] = workspace.validate(raw["execution"])
+        except workspace.WorkspaceError as exc:
             raise SessionError(str(exc)) from None
     return result
 
@@ -316,7 +325,7 @@ def _load(path: Path, *, raw: bytes | None = None) -> dict:
         for index, record in enumerate(records, 1):
             if (not isinstance(record, dict) or type(record.get("index")) is not int
                     or record["index"] != index or not isinstance(record.get("name"), str)
-                    or record["name"] not in project.TOOL_NAMES or not isinstance(record.get("status"), str)
+                    or record["name"] not in _tool_names(state) or not isinstance(record.get("status"), str)
                     or record["status"] not in {"in_flight", "completed", "error"}
                     or not isinstance(record.get("call_id"), str) or not 1 <= len(record["call_id"]) <= 256):
                 raise SessionError("invalid_project_state")
@@ -329,6 +338,13 @@ def _load(path: Path, *, raw: bytes | None = None) -> dict:
             raise SessionError("invalid_project_state")
     elif "project_snapshot" in state or "file_calls" in state:
         raise SessionError("invalid_project_state")
+    if "execution" in spec:
+        try:
+            workspace.validate_state(state.get("execution_state"), spec, state["project_snapshot"])
+        except workspace.WorkspaceError as exc:
+            raise SessionError(str(exc)) from None
+    elif "execution_state" in state:
+        raise SessionError("invalid_execution_state")
     return state
 
 
@@ -359,6 +375,12 @@ def create(path, spec: dict) -> dict:
         except FileExistsError:
             raise SessionError("state_already_exists") from None
         os.close(fd)
+        if "execution" in spec:
+            try:
+                state["execution_state"] = workspace.create(path, spec, state["project_snapshot"])
+            except (workspace.WorkspaceError, sandbox.SandboxError, project.ProjectError) as exc:
+                path.unlink()  # Only the empty file just created exclusively above.
+                raise SessionError(str(exc)) from None
         _save(path, state)
     return summary(state)
 
@@ -434,7 +456,13 @@ def summary(state: dict) -> dict:
         snapshot = state["project_snapshot"]
         result["project"] = {"commit": snapshot["commit"], "paths": snapshot["paths"],
                              "files": len(snapshot["files"]), "digest": snapshot["digest"],
-                             "file_calls": len(state["file_calls"]), "read_only": True}
+                             "file_calls": len(state["file_calls"]), "read_only": "execution" not in state["spec"]}
+    if "execution" in state["spec"]:
+        result["execution"] = {"mode": "isolated_source_copy", "network": False,
+                               "automatic_retry": False, "source_repository_modified": False,
+                               "workspace": state["execution_state"]["root"],
+                               "preflight": state.get("execution_preflight"),
+                               "result": state.get("execution_result")}
     if "resumptions" in state:
         result["resumptions"] = state["resumptions"]
     return result
@@ -442,6 +470,22 @@ def summary(state: dict) -> dict:
 
 def show(path) -> dict:
     return summary(_load(_path(path)))
+
+
+def review(path, *, offset=0) -> dict:
+    path = _path(path)
+    with _lock(path):
+        state = _load(path)
+        if "execution" not in state["spec"]:
+            raise SessionError("execution_not_enabled")
+        if state["status"] == "running":
+            raise SessionError("execution_review_not_ready")
+        try:
+            workspace.validate_state(state["execution_state"], state["spec"], state["project_snapshot"], path)
+            result = workspace.review(state["spec"], state["execution_state"], state["project_snapshot"], offset)
+        except (workspace.WorkspaceError, project.ProjectError) as exc:
+            raise SessionError(str(exc)) from None
+        return {"version": 1, "status": state["status"], "task_acceptance": "not_evaluated", **result}
 
 
 def _tariff(state: dict) -> tuple[dict, str]:
@@ -660,7 +704,9 @@ REPORT_STOP_REASONS = {
     "incomplete_response": "получен незавершённый ответ",
     "model_refusal": "модель отказалась выполнять запрос",
     "invalid_tool_batch": "некорректный пакет вызовов инструментов",
-    "project_tool_error": "ошибка чтения материалов проекта",
+    "project_tool_error": "ошибка инструментов работы с проектом",
+    "execution_preflight_failed": "изоляция рабочей копии не прошла предварительную проверку",
+    "execution_result_unavailable": "не удалось получить полный состав изменений",
     "empty_worker_result": "исполнитель не вернул результат",
     "empty_result": "ведущий не вернул результат",
     "interrupted_no_automatic_retry": "прерванный запуск; автоматического повтора нет",
@@ -885,6 +931,18 @@ def _build_request(state, history, cap, resources, *, part_id=None, request_vers
         request["tools"] = list(project.TOOLS if request_version == 2 else project.LEGACY_TOOLS) + ([DELEGATE_TOOL] if part_id is None and spec["worker_profile"] else [])
         if request_version == 2:
             request["instructions"] += "\nUse search_project_files for discovery before reading many files. Follow returned cursors; read offsets are Unicode characters, not file bytes."
+    if "execution" in spec:
+        instructions = ("Lead this task and organize the work yourself. Delegate coherent useful parts only when worthwhile. "
+                        "Use a stable part_id and at most one targeted correction for that same part. Review worker results."
+                        if part_id is None else "Carry out the coherent part assigned by the lead and report evidence and limitations.")
+        instructions += "\n" + workspace.INSTRUCTIONS
+        instructions += "\nAvailable Python: " + spec["execution"]["python"]
+        instructions += "\nLimits: " + json.dumps(limits)
+        if part_id is None:
+            instructions += "\nProject context:\n" + spec["context"]
+        instructions += "\nUse the task's language. Search before reading many files; follow returned cursors."
+        request["instructions"] = instructions
+        request["tools"] = list(workspace.TOOLS) + ([DELEGATE_TOOL] if part_id is None and spec["worker_profile"] else [])
     # Append transient counters after the stable context; never accumulate them in history.
     request["instructions"] += "\n" + RESOURCE_INSTRUCTIONS
     profile = spec["worker_profile"] if part_id is not None else spec["lead_profile"]
@@ -1005,11 +1063,23 @@ def _batch(path, state, calls, seen) -> bool:
     return True
 
 
-def _project_answer(state, call, *, deferred=False):
+def _tool_names(state):
+    return workspace.TOOL_NAMES if "execution" in state["spec"] else project.TOOL_NAMES
+
+
+def _project_answer(state, call, *, deferred=False, before_command=None):
     if deferred:
         return {"error": "project_batch_deferred", "message": "Retry this tool call in the next response; this batch reached its local execution allowance."}, False
     try:
+        if "execution" in state["spec"]:
+            return workspace.call(state["spec"], state["execution_state"], call["name"],
+                                  _decode(call["arguments"]), before_command=before_command), False
         return project.call(state["project_snapshot"], call["name"], _decode(call["arguments"])), False
+    except (workspace.WorkspaceError, sandbox.SandboxError) as exc:
+        recoverable = {"invalid_workspace_query", "workspace_edit_conflict", "workspace_path_denied",
+                       "workspace_file_not_text", "workspace_file_too_large", "workspace_file_unavailable",
+                       "sandbox_command_invalid", "sandbox_command_too_large", "sandbox_timeout_invalid"}
+        return {"error": str(exc)}, str(exc) not in recoverable
     except (project.ProjectError, SessionError) as exc:
         fatal = str(exc) in {"project_git_failed", "project_git_timeout", "project_git_unavailable",
                              "project_output_limit", "project_content_changed", "invalid_project_state"}
@@ -1026,7 +1096,8 @@ def _project_call(path, state, call, history, *, part_id=None, deferred=False, p
               "status": "in_flight", "started_at": _now()}
     state["file_calls"].append(record)
     _save(path, state)
-    output, fatal = prepared if prepared is not None else _project_answer(state, call, deferred=deferred)
+    output, fatal = prepared if prepared is not None else _project_answer(
+        state, call, deferred=deferred, before_command=lambda: _save(path, state))
     record.update(status="error" if "error" in output else "completed", finished_at=_now(),
                   reply_bytes=len(_encode(output)))
     if "error" in output:
@@ -1073,7 +1144,7 @@ def _dispatch(path, state, calls, *, environ, transport, resumed_part=None):
     """Finish a lead batch; a recovered worker keeps its existing attempt/history."""
     spec = state["spec"]
     for index, call in enumerate(calls):
-        if "project" in spec and call["name"] in project.TOOL_NAMES:
+        if "project" in spec and call["name"] in _tool_names(state):
             if not _project_call(path, state, call, state["lead_history"], deferred=index >= PROJECT_CALLS_PER_RESPONSE):
                 return
             continue
@@ -1132,6 +1203,13 @@ def _lead_loop(path, state, *, environ, transport):
             if not response["output_text"].strip():
                 _stop(path, state, "empty_result")
             else:
+                if "execution" in spec:
+                    try:
+                        delta = workspace.changes(spec, state["execution_state"], 0)
+                        state["execution_result"] = {"revision": delta["revision"], "changes_total": delta["total"]}
+                    except workspace.WorkspaceError:
+                        _stop(path, state, "execution_result_unavailable")
+                        break
                 state.update(status="dialogue_complete", result=response["output_text"], finished_at=_now())
                 _save(path, state)
             break
@@ -1149,6 +1227,15 @@ def run(path, *, environ=None, transport=None, require_budget=False) -> dict:
             return summary(state)
         if state["profiles"] != _profiles(state["spec"]):
             raise SessionError("profile_changed_since_init")
+        if "execution" in state["spec"]:
+            try:
+                workspace.validate_state(state["execution_state"], state["spec"], state["project_snapshot"], path)
+                state["execution_preflight"] = workspace.preflight(state["spec"], state["execution_state"])
+                _save(path, state)
+            except (workspace.WorkspaceError, sandbox.SandboxError) as exc:
+                state["execution_preflight"] = {"error": str(exc)}
+                _stop(path, state, "execution_preflight_failed")
+                return summary(state)
         env = dict(os.environ if environ is None else environ)
         _credentials(state["spec"], env)
         if require_budget and "budget" not in state["spec"]:
@@ -1166,7 +1253,7 @@ def run(path, *, environ=None, transport=None, require_budget=False) -> dict:
 def cli(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ["init", "show", "run", "resume-plan", "resume", "report"]:
+    for name in ["init", "show", "run", "resume-plan", "resume", "report", "review"]:
         command = commands.add_parser(name)
         command.add_argument("--state", required=True)
         if name == "init":
@@ -1174,6 +1261,8 @@ def cli(argv=None) -> int:
         elif name == "report":
             command.add_argument("--format", choices=["json", "text"], default="json",
                                  help="Output format; json keeps the existing machine view")
+        elif name == "review":
+            command.add_argument("--offset", type=int, default=0, help="Changed-file cursor for local review")
         elif name in {"run", "resume"}:
             command.add_argument("--require-budget", action="store_true",
                                  help="Reject a session without a configured shared input and USD budget")
@@ -1196,6 +1285,8 @@ def cli(argv=None) -> int:
             result = show(args.state)
         elif args.command == "report":
             result = report(args.state)
+        elif args.command == "review":
+            result = review(args.state, offset=args.offset)
         elif args.command in {"resume-plan", "resume"}:
             import api_resume
             result = (api_resume.plan(args.state) if args.command == "resume-plan" else
@@ -1209,7 +1300,7 @@ def cli(argv=None) -> int:
         else:
             print(json.dumps(result, ensure_ascii=False, allow_nan=False))
         # A spend report is a local historical view: the exit code reflects the read, not the dialogue.
-        return 0 if args.command == "report" else 3 if result["status"] in ("stopped", "running") else 0
+        return 0 if args.command in {"report", "review"} else 3 if result["status"] in ("stopped", "running") else 0
     except (SessionError, OSError) as exc:
         code = str(exc) if isinstance(exc, SessionError) else "local_io_error"
         print(json.dumps({"version": 1, "error": code}))
