@@ -166,7 +166,7 @@
   "launch_confirmed": true,
   "code_implemented": true,
   "preparation_commit": "16b3bc3d4658e65a808e85498f6c2fa1f6d6d1da",
-  "pr": null,
+  "pr": 105,
   "archive": "/Users/helloworld10011/symphony-projects/.backups/s4-61-preparation-20261104-200700",
   "price_or_economy_result": "S4-61-STATISTICS.json",
   "launch_approval": {
@@ -206,5 +206,6 @@
   "final_state_sha256": "fcbf93367b9f835de7337b5f3c6ec9f171c75d7c1490bbabbecc606b5b6d32a1",
   "paid_result_received": true,
   "new_api_calls_after_result": 0,
-  "implementation_commit": "73687d14d1beefa89b249acdfa87cb3d646aba47"
+  "implementation_commit": "73687d14d1beefa89b249acdfa87cb3d646aba47",
+  "pr_url": "https://github.com/Serg10011/oh-my-symphony/pull/105"
 }

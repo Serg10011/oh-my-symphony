@@ -67,7 +67,7 @@
   "runtime_services_changed": false,
   "real_api_calls_after_model_result": 0,
   "implementation_commit": "73687d14d1beefa89b249acdfa87cb3d646aba47",
-  "pr": null,
+  "pr": 105,
   "accepted": false,
   "merged": false,
   "applied": false,
@@ -78,5 +78,6 @@
     "ours/README.md": "6d96d3b21a23ff6a534786dc9e0c525d3bdc335760509cb9019121f4093266de",
     "ours/tests/test_api_session_report_text.py": "05b286fc22d357f3f99cc468d4eeff95eac0cd96fea5260c945bf780d3448de9",
     "ours/tests/test_api_session_report_text_edges.py": "2bd525d673c4963b58a5ebcaf21f7d543405e1a2a32414e208177197d2a2f05f"
-  }
+  },
+  "pr_url": "https://github.com/Serg10011/oh-my-symphony/pull/105"
 }
