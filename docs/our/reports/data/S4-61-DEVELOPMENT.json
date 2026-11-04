@@ -1,0 +1,82 @@
+{
+  "task": "S4-61",
+  "recorded_at": "2026-11-04T17:35:37.386923+00:00",
+  "preparation_commit": "16b3bc3d4658e65a808e85498f6c2fa1f6d6d1da",
+  "source_runtime_commit": "a5d811d6125b71f00bf0d6cfdafe61e49c6fbc77",
+  "raw_patch_sha256": "aee6f46a96169ddab0afa0354df7cd3138f6d0b39ded395c751db9e64552b47c",
+  "normalized_patch_sha256": "5201b8d75fb07a613de797c41a2ac8519970a49a8012ac30ed5b55a18f44999a",
+  "raw_git_apply_check": "corrupt patch at line 216",
+  "recount_git_apply_check": "hunk at api_session.py:980 did not apply",
+  "normalization": "Все старые фрагменты совпали ровно один раз. Стандартный diff пересоздан без изменения содержания кода.",
+  "normalized_git_apply_check": "PASS",
+  "model_code_checks": {
+    "model_tests": 6,
+    "existing_report_tests": 14,
+    "passed": 20,
+    "failed": 0,
+    "seconds": 7.72,
+    "ruff": "PASS"
+  },
+  "operator_changes": [
+    "Русские статусы, причины остановки и рассуждения; неизвестные коды сохранены.",
+    "Убрано неверное «ниже только факт»; завершение диалога отделено от приёмки.",
+    "Номера запросов без оценки; раскрыта надбавка длинного контекста; уточнена сумма исходных резервов."
+  ],
+  "operator_tests": {
+    "new_cases": 5,
+    "initial_fixture_error": "lead/worker вместо lead_profile/worker_profile; исправлено в новом тесте, код исполнения не менялся"
+  },
+  "targeted_checks": {
+    "passed": 25,
+    "failed": 0,
+    "seconds": 0.5
+  },
+  "full_ours_checks": {
+    "passed": 2102,
+    "failed": 0,
+    "errors": 0,
+    "skipped": 0,
+    "seconds": 506.83,
+    "new_run": true
+  },
+  "readback": {
+    "S4-61": {
+      "source_sha256": "fcbf93367b9f835de7337b5f3c6ec9f171c75d7c1490bbabbecc606b5b6d32a1",
+      "exit_codes": [
+        0,
+        0,
+        0
+      ],
+      "default_json_identical_to_explicit": true,
+      "source_unchanged": true
+    },
+    "S4-54": {
+      "source_sha256": "d487956a1c8cc4977cee8850905691f92f6314689aca0906a942e968ad9e333a",
+      "exit_codes": [
+        0,
+        0,
+        0
+      ],
+      "default_json_identical_to_explicit": true,
+      "source_unchanged": true
+    }
+  },
+  "existing_tests_modified": false,
+  "pricing_changed": false,
+  "execution_parameters_changed": false,
+  "runtime_services_changed": false,
+  "real_api_calls_after_model_result": 0,
+  "implementation_commit": "73687d14d1beefa89b249acdfa87cb3d646aba47",
+  "pr": null,
+  "accepted": false,
+  "merged": false,
+  "applied": false,
+  "ruff": "PASS",
+  "diff_check": "PASS",
+  "tested_file_sha256": {
+    "ours/hooks/api_session.py": "e3d6f7cf554ed448a6e48404a1739a95d8283b10741db79b717fc994d7c6a15c",
+    "ours/README.md": "6d96d3b21a23ff6a534786dc9e0c525d3bdc335760509cb9019121f4093266de",
+    "ours/tests/test_api_session_report_text.py": "05b286fc22d357f3f99cc468d4eeff95eac0cd96fea5260c945bf780d3448de9",
+    "ours/tests/test_api_session_report_text_edges.py": "2bd525d673c4963b58a5ebcaf21f7d543405e1a2a32414e208177197d2a2f05f"
+  }
+}

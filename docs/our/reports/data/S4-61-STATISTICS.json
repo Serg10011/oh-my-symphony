@@ -1,0 +1,747 @@
+{
+  "task": "S4-61",
+  "recorded_at": "2026-11-04T17:27:44.474055+00:00",
+  "source_state": "/Users/helloworld10011/symphony-api-runs/s4-61-readable-spending-20261104-200700/session.json",
+  "source_sha256": "fcbf93367b9f835de7337b5f3c6ec9f171c75d7c1490bbabbecc606b5b6d32a1",
+  "runtime_base": "a5d811d6125b71f00bf0d6cfdafe61e49c6fbc77",
+  "session_status": "dialogue_complete",
+  "stop_reason": null,
+  "generation_attempts": 26,
+  "received_responses": 26,
+  "known_estimated_usd": "0.071412268",
+  "unknown_call_indices": [],
+  "providers": {
+    "deepseek-lead": {
+      "attempts": 16,
+      "received": 16,
+      "known_estimated_usd": "0.050481438",
+      "known_usage": {
+        "input_tokens": 550493,
+        "cached_input_tokens": 458496,
+        "output_tokens": 58844,
+        "reasoning_tokens": 45138
+      },
+      "unknown_charge_indices": [],
+      "cached_share_of_known_input": 0.8328825253000492,
+      "file_calls": 27
+    },
+    "luna-worker": {
+      "attempts": 10,
+      "received": 10,
+      "known_estimated_usd": "0.020930830",
+      "known_usage": {
+        "input_tokens": 275936,
+        "cached_input_tokens": 224408,
+        "output_tokens": 24532,
+        "reasoning_tokens": 22488
+      },
+      "unknown_charge_indices": [],
+      "cached_share_of_known_input": 0.8132610460396613,
+      "file_calls": 29
+    }
+  },
+  "calls": [
+    {
+      "index": 1,
+      "profile": "deepseek-lead",
+      "status": "received",
+      "started_at": "2026-11-04T17:18:18.483016+00:00",
+      "estimated_usd": "0.00193845",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "price_period": "off_peak",
+      "usage": {
+        "input_tokens": 12203,
+        "output_tokens": 180,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": null,
+        "reasoning_tokens": 0,
+        "total_tokens": 12383,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "deepseek-flash",
+      "effort": "high"
+    },
+    {
+      "index": 2,
+      "profile": "deepseek-lead",
+      "status": "received",
+      "started_at": "2026-11-04T17:18:20.673458+00:00",
+      "estimated_usd": "0.000591012",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "price_period": "off_peak",
+      "usage": {
+        "input_tokens": 14462,
+        "output_tokens": 286,
+        "cached_input_tokens": 11904,
+        "cache_write_input_tokens": null,
+        "reasoning_tokens": 81,
+        "total_tokens": 14748,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "deepseek-flash",
+      "effort": "high"
+    },
+    {
+      "index": 3,
+      "profile": "deepseek-lead",
+      "status": "received",
+      "started_at": "2026-11-04T17:18:22.947264+00:00",
+      "estimated_usd": "0.000759258",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "price_period": "off_peak",
+      "usage": {
+        "input_tokens": 16855,
+        "output_tokens": 564,
+        "cached_input_tokens": 14336,
+        "cache_write_input_tokens": null,
+        "reasoning_tokens": 414,
+        "total_tokens": 17419,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "deepseek-flash",
+      "effort": "high"
+    },
+    {
+      "index": 4,
+      "profile": "deepseek-lead",
+      "status": "received",
+      "started_at": "2026-11-04T17:18:27.544848+00:00",
+      "estimated_usd": "0.000681486",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "price_period": "off_peak",
+      "usage": {
+        "input_tokens": 20021,
+        "output_tokens": 176,
+        "cached_input_tokens": 16512,
+        "cache_write_input_tokens": null,
+        "reasoning_tokens": 26,
+        "total_tokens": 20197,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "deepseek-flash",
+      "effort": "high"
+    },
+    {
+      "index": 5,
+      "profile": "deepseek-lead",
+      "status": "received",
+      "started_at": "2026-11-04T17:18:29.320303+00:00",
+      "estimated_usd": "0.000697536",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "price_period": "off_peak",
+      "usage": {
+        "input_tokens": 22604,
+        "output_tokens": 341,
+        "cached_input_tokens": 19712,
+        "cache_write_input_tokens": null,
+        "reasoning_tokens": 191,
+        "total_tokens": 22945,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "deepseek-flash",
+      "effort": "high"
+    },
+    {
+      "index": 6,
+      "profile": "deepseek-lead",
+      "status": "received",
+      "started_at": "2026-11-04T17:18:32.140832+00:00",
+      "estimated_usd": "0.000636366",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "price_period": "off_peak",
+      "usage": {
+        "input_tokens": 25421,
+        "output_tokens": 162,
+        "cached_input_tokens": 22272,
+        "cache_write_input_tokens": null,
+        "reasoning_tokens": 13,
+        "total_tokens": 25583,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "deepseek-flash",
+      "effort": "high"
+    },
+    {
+      "index": 7,
+      "profile": "deepseek-lead",
+      "status": "received",
+      "started_at": "2026-11-04T17:18:34.374333+00:00",
+      "estimated_usd": "0.001050714",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "price_period": "off_peak",
+      "usage": {
+        "input_tokens": 27343,
+        "output_tokens": 1062,
+        "cached_input_tokens": 25088,
+        "cache_write_input_tokens": null,
+        "reasoning_tokens": 853,
+        "total_tokens": 28405,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "deepseek-flash",
+      "effort": "high"
+    },
+    {
+      "index": 8,
+      "profile": "deepseek-lead",
+      "status": "received",
+      "started_at": "2026-11-04T17:18:41.663079+00:00",
+      "estimated_usd": "0.000705774",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "price_period": "off_peak",
+      "usage": {
+        "input_tokens": 30089,
+        "output_tokens": 271,
+        "cached_input_tokens": 27008,
+        "cache_write_input_tokens": null,
+        "reasoning_tokens": 75,
+        "total_tokens": 30360,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "deepseek-flash",
+      "effort": "high"
+    },
+    {
+      "index": 9,
+      "profile": "deepseek-lead",
+      "status": "received",
+      "started_at": "2026-11-04T17:18:44.064459+00:00",
+      "estimated_usd": "0.000549222",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "price_period": "off_peak",
+      "usage": {
+        "input_tokens": 31653,
+        "output_tokens": 309,
+        "cached_input_tokens": 29824,
+        "cache_write_input_tokens": null,
+        "reasoning_tokens": 69,
+        "total_tokens": 31962,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "deepseek-flash",
+      "effort": "high"
+    },
+    {
+      "index": 10,
+      "profile": "deepseek-lead",
+      "status": "received",
+      "started_at": "2026-11-04T17:18:46.973694+00:00",
+      "estimated_usd": "0.00053133",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "price_period": "off_peak",
+      "usage": {
+        "input_tokens": 32847,
+        "output_tokens": 357,
+        "cached_input_tokens": 31360,
+        "cache_write_input_tokens": null,
+        "reasoning_tokens": 147,
+        "total_tokens": 33204,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "deepseek-flash",
+      "effort": "high"
+    },
+    {
+      "index": 11,
+      "profile": "deepseek-lead",
+      "status": "received",
+      "started_at": "2026-11-04T17:18:50.102154+00:00",
+      "estimated_usd": "0.000540336",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "price_period": "off_peak",
+      "usage": {
+        "input_tokens": 34216,
+        "output_tokens": 312,
+        "cached_input_tokens": 32512,
+        "cache_write_input_tokens": null,
+        "reasoning_tokens": 125,
+        "total_tokens": 34528,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "deepseek-flash",
+      "effort": "high"
+    },
+    {
+      "index": 12,
+      "profile": "deepseek-lead",
+      "status": "received",
+      "started_at": "2026-11-04T17:18:52.792075+00:00",
+      "estimated_usd": "0.00539271",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "price_period": "off_peak",
+      "usage": {
+        "input_tokens": 35869,
+        "output_tokens": 8331,
+        "cached_input_tokens": 33920,
+        "cache_write_input_tokens": null,
+        "reasoning_tokens": 8185,
+        "total_tokens": 44200,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "deepseek-flash",
+      "effort": "high"
+    },
+    {
+      "index": 13,
+      "profile": "deepseek-lead",
+      "status": "received",
+      "started_at": "2026-11-04T17:19:34.760666+00:00",
+      "estimated_usd": "0.002002902",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "price_period": "off_peak",
+      "usage": {
+        "input_tokens": 46965,
+        "output_tokens": 315,
+        "cached_input_tokens": 35584,
+        "cache_write_input_tokens": null,
+        "reasoning_tokens": 170,
+        "total_tokens": 47280,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "deepseek-flash",
+      "effort": "high"
+    },
+    {
+      "index": 14,
+      "profile": "deepseek-lead",
+      "status": "received",
+      "started_at": "2026-11-04T17:19:39.292158+00:00",
+      "estimated_usd": "0.008452944",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "price_period": "off_peak",
+      "usage": {
+        "input_tokens": 48812,
+        "output_tokens": 13363,
+        "cached_input_tokens": 46848,
+        "cache_write_input_tokens": null,
+        "reasoning_tokens": 13234,
+        "total_tokens": 62175,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "deepseek-flash",
+      "effort": "high"
+    },
+    {
+      "index": 15,
+      "profile": "deepseek-lead",
+      "status": "received",
+      "started_at": "2026-11-04T17:20:31.746739+00:00",
+      "estimated_usd": "0.016463436",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "price_period": "off_peak",
+      "usage": {
+        "input_tokens": 63398,
+        "output_tokens": 23475,
+        "cached_input_tokens": 48512,
+        "cache_write_input_tokens": null,
+        "reasoning_tokens": 18707,
+        "total_tokens": 86873,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "deepseek-flash",
+      "effort": "high"
+    },
+    {
+      "index": 16,
+      "profile": "luna-worker",
+      "status": "received",
+      "started_at": "2026-11-04T17:21:54.413391+00:00",
+      "estimated_usd": "0.0007621",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "long_context_input_factor": 1,
+      "usage": {
+        "input_tokens": 4925,
+        "output_tokens": 297,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 4844,
+        "reasoning_tokens": 130,
+        "total_tokens": 5222,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "reasoning_context": "all_turns"
+    },
+    {
+      "index": 17,
+      "profile": "luna-worker",
+      "status": "received",
+      "started_at": "2026-11-04T17:22:02.481755+00:00",
+      "estimated_usd": "0.000444665",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "long_context_input_factor": 1,
+      "usage": {
+        "input_tokens": 6502,
+        "output_tokens": 382,
+        "cached_input_tokens": 4844,
+        "cache_write_input_tokens": 1577,
+        "reasoning_tokens": 147,
+        "total_tokens": 6884,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "prompt_cache_diagnostics": {
+        "type": "cache_hit"
+      },
+      "reasoning_context": "all_turns"
+    },
+    {
+      "index": 18,
+      "profile": "luna-worker",
+      "status": "received",
+      "started_at": "2026-11-04T17:22:08.604363+00:00",
+      "estimated_usd": "0.002353685",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "long_context_input_factor": 1,
+      "usage": {
+        "input_tokens": 15249,
+        "output_tokens": 2376,
+        "cached_input_tokens": 6421,
+        "cache_write_input_tokens": 8747,
+        "reasoning_tokens": 1989,
+        "total_tokens": 17625,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "prompt_cache_diagnostics": {
+        "type": "cache_hit"
+      },
+      "reasoning_context": "all_turns"
+    },
+    {
+      "index": 19,
+      "profile": "luna-worker",
+      "status": "received",
+      "started_at": "2026-11-04T17:22:36.656653+00:00",
+      "estimated_usd": "0.00099978",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "long_context_input_factor": 1,
+      "usage": {
+        "input_tokens": 19497,
+        "output_tokens": 618,
+        "cached_input_tokens": 15168,
+        "cache_write_input_tokens": 4248,
+        "reasoning_tokens": 414,
+        "total_tokens": 20115,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "prompt_cache_diagnostics": {
+        "type": "cache_hit"
+      },
+      "reasoning_context": "all_turns"
+    },
+    {
+      "index": 20,
+      "profile": "luna-worker",
+      "status": "received",
+      "started_at": "2026-11-04T17:22:44.666716+00:00",
+      "estimated_usd": "0.001240135",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "long_context_input_factor": 1,
+      "usage": {
+        "input_tokens": 26420,
+        "output_tokens": 345,
+        "cached_input_tokens": 19416,
+        "cache_write_input_tokens": 6923,
+        "reasoning_tokens": 172,
+        "total_tokens": 26765,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "prompt_cache_diagnostics": {
+        "type": "cache_hit"
+      },
+      "reasoning_context": "all_turns"
+    },
+    {
+      "index": 21,
+      "profile": "luna-worker",
+      "status": "received",
+      "started_at": "2026-11-04T17:22:50.166294+00:00",
+      "estimated_usd": "0.001165865",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "long_context_input_factor": 1,
+      "usage": {
+        "input_tokens": 32439,
+        "output_tokens": 284,
+        "cached_input_tokens": 26339,
+        "cache_write_input_tokens": 6019,
+        "reasoning_tokens": 248,
+        "total_tokens": 32723,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "prompt_cache_diagnostics": {
+        "type": "cache_hit"
+      },
+      "reasoning_context": "all_turns"
+    },
+    {
+      "index": 22,
+      "profile": "luna-worker",
+      "status": "received",
+      "started_at": "2026-11-04T17:22:57.156533+00:00",
+      "estimated_usd": "0.00501518",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "long_context_input_factor": 1,
+      "usage": {
+        "input_tokens": 33351,
+        "output_tokens": 9139,
+        "cached_input_tokens": 32358,
+        "cache_write_input_tokens": 912,
+        "reasoning_tokens": 9087,
+        "total_tokens": 42490,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "prompt_cache_diagnostics": {
+        "type": "cache_hit"
+      },
+      "reasoning_context": "all_turns"
+    },
+    {
+      "index": 23,
+      "profile": "luna-worker",
+      "status": "received",
+      "started_at": "2026-11-04T17:24:38.658847+00:00",
+      "estimated_usd": "0.001541425",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "long_context_input_factor": 1,
+      "usage": {
+        "input_tokens": 42688,
+        "output_tokens": 67,
+        "cached_input_tokens": 33270,
+        "cache_write_input_tokens": 9337,
+        "reasoning_tokens": 32,
+        "total_tokens": 42755,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "prompt_cache_diagnostics": {
+        "type": "cache_hit"
+      },
+      "reasoning_context": "all_turns"
+    },
+    {
+      "index": 24,
+      "profile": "luna-worker",
+      "status": "received",
+      "started_at": "2026-11-04T17:24:42.939071+00:00",
+      "estimated_usd": "0.00394342",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "long_context_input_factor": 1,
+      "usage": {
+        "input_tokens": 44066,
+        "output_tokens": 6674,
+        "cached_input_tokens": 42607,
+        "cache_write_input_tokens": 1378,
+        "reasoning_tokens": 6645,
+        "total_tokens": 50740,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "prompt_cache_diagnostics": {
+        "type": "cache_hit"
+      },
+      "reasoning_context": "all_turns"
+    },
+    {
+      "index": 25,
+      "profile": "luna-worker",
+      "status": "received",
+      "started_at": "2026-11-04T17:25:57.673015+00:00",
+      "estimated_usd": "0.003464575",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "long_context_input_factor": 1,
+      "usage": {
+        "input_tokens": 50799,
+        "output_tokens": 4350,
+        "cached_input_tokens": 43985,
+        "cache_write_input_tokens": 6733,
+        "reasoning_tokens": 3624,
+        "total_tokens": 55149,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "prompt_cache_diagnostics": {
+        "type": "cache_hit"
+      },
+      "reasoning_context": "all_turns"
+    },
+    {
+      "index": 26,
+      "profile": "deepseek-lead",
+      "status": "received",
+      "started_at": "2026-11-04T17:26:47.198933+00:00",
+      "estimated_usd": "0.009487962",
+      "provider_billed_usd": null,
+      "charge_unknown": false,
+      "price_period": "off_peak",
+      "usage": {
+        "input_tokens": 87735,
+        "output_tokens": 9340,
+        "cached_input_tokens": 63104,
+        "cache_write_input_tokens": null,
+        "reasoning_tokens": 2848,
+        "total_tokens": 97075,
+        "usage_known": true,
+        "cost_usd": null
+      },
+      "model": "deepseek-flash",
+      "effort": "high"
+    }
+  ],
+  "pricing": {
+    "checked_date": "2026-11-04",
+    "scope": "Post-run estimates only; no balance or provider invoice requested",
+    "sources": [
+      "https://api-docs.deepseek.com/quick_start/pricing/",
+      "https://developers.openai.com/api/docs/models/gpt-6-luna",
+      "https://developers.openai.com/api/docs/guides/prompt-caching"
+    ],
+    "deepseek_flash_per_million": {
+      "off_peak": {
+        "input": ".15",
+        "cached": ".003",
+        "output": ".6"
+      },
+      "peak": {
+        "input": ".3",
+        "cached": ".006",
+        "output": "1.2"
+      },
+      "peak_utc_intervals": [
+        [
+          "01:00",
+          "04:00"
+        ],
+        [
+          "06:00",
+          "10:00"
+        ]
+      ],
+      "peak_weekdays": "Monday-Friday, except Chinese public holidays; all other times off-peak"
+    },
+    "luna_standard_global_per_million": {
+      "input": ".1",
+      "cached": ".01",
+      "write_30m": ".125",
+      "write_12h": ".25",
+      "output": ".5"
+    },
+    "luna_long_context": {
+      "threshold_input_tokens": 272000,
+      "input_cache_multiplier": 2,
+      "output_multiplier": "1.5"
+    },
+    "cache_ttl_requested": null,
+    "documented_default_cache_ttl": "30m",
+    "regional_settings_verified": false,
+    "provider_invoice_verified": false,
+    "costs_are_estimates": true,
+    "cache_and_reasoning_are_subsets": true
+  },
+  "file_calls": 56,
+  "file_tools": {
+    "search_project_files": 17,
+    "list_project_files": 2,
+    "read_project_file": 37
+  },
+  "parts": {
+    "report-text-mode": {
+      "attempts": 1
+    }
+  },
+  "provider_invoice_verified": false,
+  "unknown_is_not_zero": true,
+  "previous_task_charges_included": false,
+  "previous_task_unknown_47_stays_in_S4_54": true,
+  "context_transferred_bytes": 38877,
+  "context_transfer_economy_causally_measured": false,
+  "operator_work_priced": false,
+  "run_archive": "/Users/helloworld10011/symphony-projects/.backups/s4-61-run-20261104-201758",
+  "task_accepted": false,
+  "roles": {
+    "deepseek-lead": "Изучил проект, написал код и шесть тестов, назначил проверку и вернул итоговый патч.",
+    "luna-worker": "Независимая статическая проверка черновика ведущего; одна часть и одна попытка; замечаний не нашла.",
+    "operator": "Исправил оформление патча, уточнил русские подписи и пояснения оценки, добавил пять проверок и выполнил локальные тесты."
+  },
+  "native_conservative_known_usd": "0.130972",
+  "native_conservative_total_usd": "0.130972",
+  "native_estimate_differs_because": "Каталог использует пиковую цену Flash, запись кеша OpenAI 12h и региональный коэффициент 1.1; послезапусковая оценка — off-peak, default 30m, global.",
+  "first_request_cache": {
+    "deepseek-lead": {
+      "input_tokens": 12203,
+      "cached_input_tokens": 0
+    },
+    "luna-worker": {
+      "input_tokens": 4925,
+      "cached_input_tokens": 0
+    }
+  },
+  "api_started_at": "2026-11-04T17:18:18.481430+00:00",
+  "api_finished_at": "2026-11-04T17:27:19.803960+00:00",
+  "uninterrupted_run": true,
+  "paid_retries": 0,
+  "keychain_reads": 2
+}
