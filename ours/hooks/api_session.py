@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import fcntl
 import hashlib
 import json
@@ -20,6 +20,7 @@ import api_budget as budget
 import api_project as project
 
 MAX_STATE_BYTES = 16 * 1024 * 1024
+MIN_RESPONSE_TOKENS = 16
 DEFAULT_LIMITS = {"max_calls": 8, "output_tokens_per_call": 2048,
                   "output_tokens_total": 16384, "request_bytes": 262144}
 LEAD_INSTRUCTIONS = """You lead the assigned task. Understand it, choose the solution and
@@ -66,6 +67,20 @@ models, budgets or permissions. Follow project conventions within these limits.
 Report the result, evidence and limitations in the task's language. Do not claim
 to have edited files or run tests. File-tool rounds are part of this attempt.
 """
+RESOURCE_INSTRUCTIONS = """The final user message supplies current runtime resources,
+not a new task.
+Remaining resources include this request and are shared across all participants.
+The worker must leave the stated reserve for the lead. On your last available
+call, return your final or clearly partial result instead of requesting more
+tools. These counters do not expand permissions or the assigned limits.
+"""
+RESOURCE_PREFIX = "Runtime resources: "
+
+
+@dataclass(frozen=True)
+class _WorkerOutcome:
+    text: str
+    error: str | None = None
 
 
 class SessionError(Exception):
@@ -328,6 +343,29 @@ def _spent(state: dict) -> int:
     return total
 
 
+def _worker_has_room(state: dict) -> bool:
+    limits = state["spec"]["limits"]
+    return (limits["max_calls"] - len(state["calls"]) >= 2
+            and limits["output_tokens_total"] - _spent(state) >= 2 * MIN_RESPONSE_TOKENS)
+
+
+def _resources(state: dict, cap: int, *, worker: bool) -> dict:
+    limits = state["spec"]["limits"]
+    calls = max(0, limits["max_calls"] - len(state["calls"]))
+    tokens = max(0, limits["output_tokens_total"] - _spent(state))
+    reserved_calls, reserved_tokens = (1, MIN_RESPONSE_TOKENS) if worker else (0, 0)
+    result = {"calls_remaining": calls, "output_tokens_remaining": tokens,
+              "response_output_cap": cap, "lead_calls_reserved": reserved_calls,
+              "lead_output_tokens_reserved": reserved_tokens,
+              "calls_available_to_you": max(0, calls - reserved_calls),
+              "output_tokens_available_to_you": max(0, tokens - reserved_tokens),
+              "last_available_call": calls - reserved_calls <= 1}
+    if "budget" in state["spec"]:
+        used = budget.totals(state)["input_tokens_committed"]
+        result["input_tokens_remaining"] = max(0, state["spec"]["budget"]["input_tokens_total"] - used)
+    return result
+
+
 def summary(state: dict) -> dict:
     usage = {}
     for profile in dict.fromkeys([state["spec"]["lead_profile"], state["spec"]["worker_profile"]]):
@@ -389,8 +427,8 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport)
         _stop(path, state, "call_limit")
         return None
     remaining = limits["output_tokens_total"] - _spent(state)
-    cap = min(limits["output_tokens_per_call"], remaining - (16 if part_id else 0))
-    if cap < 16:
+    cap = min(limits["output_tokens_per_call"], remaining - (MIN_RESPONSE_TOKENS if part_id else 0))
+    if cap < MIN_RESPONSE_TOKENS:
         _stop(path, state, "output_limit")
         return None
     if part_id is None:
@@ -407,6 +445,10 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport)
             instructions += "\nProject context:\n" + spec["context"]
         request["instructions"] = instructions
         request["tools"] = list(project.TOOLS) + ([DELEGATE_TOOL] if part_id is None and spec["worker_profile"] else [])
+    resources = _resources(state, cap, worker=part_id is not None)
+    # Append transient counters after the stable context; never accumulate them in history.
+    request["instructions"] += "\n" + RESOURCE_INSTRUCTIONS
+    request["input"] = history + [{"role": "user", "content": RESOURCE_PREFIX + json.dumps(resources)}]
     try:
         _, body = api.prepare(profile, request)
         encoded = _encode(body)
@@ -435,7 +477,8 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport)
             return None
     call = {"index": len(state["calls"]) + 1, "profile": profile, "part_id": part_id,
             "output_cap": cap, "request_sha256": hashlib.sha256(encoded).hexdigest(),
-            "history_items": len(history), "status": "in_flight", "started_at": _now()}
+            "history_items": len(request["input"]), "resources": resources,
+            "status": "in_flight", "started_at": _now()}
     if reservation is not None:
         call["budget_reservation"] = reservation
     state["calls"].append(call)
@@ -524,15 +567,17 @@ def _project_call(path, state, call, history, *, part_id=None) -> bool:
 
 def _worker(path, state, part_id, part, *, environ, transport):
     seen = {item["call_id"] for item in part["history"] if item.get("type") == "function_call"}
+    partial = []
     while state["status"] == "running":
-        if "project" in state["spec"] and state["spec"]["limits"]["max_calls"] - len(state["calls"]) < 2:
-            _stop(path, state, "budget_reserves_lead_return")
-            return None
+        if not _worker_has_room(state):
+            return _WorkerOutcome("\n\n".join(partial), "budget_reserves_lead_return")
         response = _request(path, state, state["spec"]["worker_profile"], part["history"],
                             part_id=part_id, environ=environ, transport=transport)
         if response is None:
             return None
         part["history"].extend(response["output"])
+        if response["output_text"].strip():
+            partial.append(response["output_text"])
         calls = response["function_calls"]
         if calls and "project" in state["spec"]:
             if not _batch(path, state, calls, seen):
@@ -544,7 +589,7 @@ def _worker(path, state, part_id, part, *, environ, transport):
         if not response["output_text"].strip():
             _stop(path, state, "empty_worker_result")
             return None
-        return response
+        return _WorkerOutcome(response["output_text"])
     return None
 
 
@@ -592,8 +637,7 @@ def run(path, *, environ=None, transport=None, require_budget=False) -> dict:
                         break
                     continue
                 args, error = _arguments(call, state["parts"])
-                if not error and (spec["limits"]["max_calls"] - len(state["calls"]) < 2
-                                  or spec["limits"]["output_tokens_total"] - _spent(state) < 32):
+                if not error and not _worker_has_room(state):
                     error = "budget_reserves_lead_return"
                 if error:
                     output = {"error": error}
@@ -606,7 +650,10 @@ def run(path, *, environ=None, transport=None, require_budget=False) -> dict:
                     worker = _worker(path, state, part_id, part, environ=env, transport=transport)
                     if worker is None:
                         break
-                    output = {"part_id": part_id, "attempt": part["attempts"], "text": worker["output_text"]}
+                    output = {"part_id": part_id, "attempt": part["attempts"], "text": worker.text}
+                    if worker.error:
+                        output.update(error=worker.error, partial=True)
+                        state["tool_errors"].append({"call_id": call["call_id"], "error": worker.error})
                 state["lead_history"].append({"type": "function_call_output", "call_id": call["call_id"],
                                               "output": json.dumps(output, ensure_ascii=False)})
                 _save(path, state)

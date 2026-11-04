@@ -109,7 +109,7 @@ def test_multiple_parts_in_one_response_are_processed_sequentially(tmp_path):
     result = session.run(path, environ=KEYS, transport=transport)
     assert result["calls"] == 4 and result["status"] == "dialogue_complete"
     assert set(result["parts"]) == {"part_1", "part_2"}
-    assert all(len(sent[i]["body"]["input"]) == 1 for i in [1, 2])
+    assert all(len(sent[i]["body"]["input"]) == 2 for i in [1, 2])
     outputs = [i["call_id"] for i in sent[3]["body"]["input"] if i.get("type") == "function_call_output"]
     assert outputs == ["call_1", "call_2"]
 
@@ -134,7 +134,7 @@ def test_third_attempt_is_returned_to_lead_without_another_worker_call(tmp_path)
     assert result["calls"] == 6 and result["parts"]["part_1"]["attempts"] == 2
     assert result["tool_errors"] == [{"call_id": "call_3", "error": "correction_limit"}]
     assert sum(r["body"]["model"] == "gpt-6-luna" for r in sent) == 2
-    assert json.loads(sent[-1]["body"]["input"][-1]["output"])["error"] == "correction_limit"
+    assert json.loads([i for i in sent[-1]["body"]["input"] if i.get("type") == "function_call_output"][-1]["output"])["error"] == "correction_limit"
 
 
 @pytest.mark.parametrize("arguments", ['not json', '[]', 'NaN', '{"part_id":"x","part_id":"y"}',
