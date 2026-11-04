@@ -4,7 +4,7 @@
   "scope": "Второй блок: управление API-командой в существующей карточке; обязательные проверки, доставка и постоянные настройки ещё не подключены.",
   "branch": "codex/browser-api-pipeline",
   "parent_commit": "81d704c09ed960c7d1e77a3865d59e0adbda9476",
-  "implementation_commit": null,
+  "implementation_commit": "d7e73422796bff317a5bc9d5f5db9fd54cd11621",
   "installed_base_commit": "e2b1b5921f0032202c3c3af13da3425e69ea6cda",
   "pr": "https://github.com/Serg10011/oh-my-symphony/pull/106",
   "status": "prepared_draft_not_merged_not_installed",
@@ -93,7 +93,10 @@
       "console_summary": "1 passed in 0.83s",
       "junit_sha256": "bf990a843468888aed8bc996d19b01be8a93d8ea22dc2c0249dec042167b7ee8",
       "artifact": "proof"
-    }
+    },
+    "ruff": "PASS",
+    "diff_check": "PASS",
+    "relative_links_checked": 300
   },
   "check_order": "Полный ours завершён на версии до последней защиты от архивирования/изменения карточки. После неё выполнен весь API-набор и проверки мостика (495 PASS/3 SKIP). Затем исправлены типы потоков ядра, ожидаемый список форматов и отображение статуса карточки; полный core, браузер и адресные проверки выполнены повторно. Документы и метаданные дополнялись после проверок.",
   "earlier_full_core": {
