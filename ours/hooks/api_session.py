@@ -1,9 +1,10 @@
-"""Bounded lead/Luna dialogue with optional read-only Git project tools."""
+"""Bounded lead/Luna dialogue with optional read-only Git project tools and a local spend report."""
 
 from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+from copy import deepcopy
 from dataclasses import asdict, dataclass
 import fcntl
 import hashlib
@@ -82,6 +83,9 @@ call, return your final or clearly partial result instead of requesting more
 tools. These counters do not expand permissions or the assigned limits.
 """
 RESOURCE_PREFIX = "Runtime resources: "
+REPORT_KIND = "api_session_spend"
+USAGE_KEYS = ("input_tokens", "output_tokens", "cached_input_tokens",
+              "cache_write_input_tokens", "reasoning_tokens")
 
 
 @dataclass(frozen=True)
@@ -440,6 +444,188 @@ def show(path) -> dict:
     return summary(_load(_path(path)))
 
 
+def _tariff(state: dict) -> tuple[dict, str]:
+    """Use the session's pinned catalog; a session without budget is priced locally."""
+    pinned = state.get("budget_catalog")
+    if (isinstance(pinned, dict) and isinstance(pinned.get("version"), str)
+            and isinstance(pinned.get("models"), dict)):
+        return pinned, "session_snapshot"
+    # Freshness is not asserted here: an old session stays readable after tariff expiry.
+    return deepcopy(budget.CATALOG), "builtin_catalog"
+
+
+def _request_usage(call: dict) -> dict:
+    """Recorded counters only; unknown stays null and cache/reasoning remain subsets."""
+    if call["status"] == "received":
+        raw = call["response"].get("usage")
+        raw = raw if isinstance(raw, dict) else {}
+        values = {key: raw.get(key) for key in USAGE_KEYS}
+    elif call["status"] == "error" and not call.get("error", {}).get("charge_possible", True):
+        values = dict.fromkeys(USAGE_KEYS, 0)
+    else:
+        values = dict.fromkeys(USAGE_KEYS)
+    counts = {key: value if type(value) is int and value >= 0 else None for key, value in values.items()}
+    known = counts["input_tokens"] is not None and counts["output_tokens"] is not None
+    return {**counts,
+            "total_tokens": counts["input_tokens"] + counts["output_tokens"] if known else None,
+            "usage_known": known, "input_includes_cached": True, "output_includes_reasoning": True}
+
+
+def _estimate_request(catalog: dict, model, usage: dict) -> tuple[str | None, str]:
+    """Price one completed request; a missing or unpriced input yields null, never zero."""
+    if not usage["usage_known"]:
+        return None, "unknown_usage"
+    if usage["cached_input_tokens"] is None:
+        return None, "unknown_cached_input"
+    if not isinstance(model, str) or model not in catalog["models"]:
+        return None, "unpriced_model"
+    row = catalog["models"][model]
+    try:
+        if not isinstance(row, dict) or type(row.get("long_context")) is not bool:
+            return None, "invalid_tariff"
+        for key in ("input", "cached", "write", "output", "regional_factor"):
+            budget.money(row[key])
+    except (budget.BudgetError, KeyError, TypeError):
+        return None, "invalid_tariff"
+    try:
+        amount = budget.cost(catalog, model, usage["input_tokens"], usage["output_tokens"],
+                             cached=usage["cached_input_tokens"],
+                             written=usage["cache_write_input_tokens"])
+    except budget.BudgetError:
+        return None, "inconsistent_usage"
+    return amount, "estimated"
+
+
+def _cost_sum(values) -> str | None:
+    if any(not isinstance(value, str) for value in values):
+        return None
+    try:
+        return budget.display(sum((budget.money(value) for value in values), budget.money("0")))
+    except budget.BudgetError:
+        return None
+
+
+def _request_record(call: dict, profiles: dict, catalog: dict) -> dict:
+    profile = call["profile"]
+    known = next((value for value in profiles.values()
+                  if isinstance(value, dict) and value.get("name") == profile), None)
+    requested_model = known.get("model") if isinstance(known, dict) else None
+    model = call.get("response", {}).get("model", requested_model)
+    usage = _request_usage(call)
+    amount, status = _estimate_request(catalog, model, usage)
+    record = {"index": call["index"], "profile": profile,
+              "model": model if isinstance(model, str) else "unknown",
+              "requested_model": requested_model,
+              "part_id": call.get("part_id"), "status": call["status"],
+              "output_cap": call["output_cap"], "started_at": call.get("started_at"),
+              "finished_at": call.get("finished_at"), "usage": usage,
+              "estimated_usd": amount, "estimate_status": status,
+              "provider_billed_usd": None}
+    reservation = call.get("budget_reservation")
+    if isinstance(reservation, dict):
+        record["budget_reservation"] = {key: value for key, value in reservation.items()
+                                        if key in ("input_tokens", "cost_usd", "basis",
+                                                   "settled_input_tokens", "settled_cost_usd")}
+    return record
+
+
+def _token_counts(records: list[dict]) -> dict:
+    """Sum only complete counters; one unknown request keeps the aggregate null."""
+    totals = {}
+    for key in USAGE_KEYS:
+        values = [record["usage"][key] for record in records]
+        totals[key] = sum(values) if all(type(value) is int for value in values) else None
+    totals["total_tokens"] = (totals["input_tokens"] + totals["output_tokens"]
+                              if totals["input_tokens"] is not None and totals["output_tokens"] is not None else None)
+    totals["calls"] = len(records)
+    totals["unknown_usage_calls"] = sum(1 for record in records if not record["usage"]["usage_known"])
+    totals["input_includes_cached"] = True
+    totals["output_includes_reasoning"] = True
+    return totals
+
+
+def _model_records(records: list[dict], catalog: dict) -> dict:
+    grouped = {}
+    for record in records:
+        grouped.setdefault(record["model"], []).append(record)
+    result = {}
+    for model, calls in grouped.items():
+        amounts = [call["estimated_usd"] for call in calls]
+        amount = _cost_sum(amounts) if all(value is not None for value in amounts) else None
+        row = catalog["models"].get(model)
+        result[model] = {**_token_counts(calls), "model": model, "estimated_usd": amount,
+                         "estimated_known_usd": _cost_sum([value for value in amounts if value is not None]),
+                         "estimated_requests": sum(value is not None for value in amounts),
+                         "estimate_complete": amount is not None, "priced": isinstance(row, dict)}
+        if isinstance(row, dict):
+            result[model]["rates_per_million_tokens"] = {key: row.get(key)
+                                                        for key in ("input", "cached", "write", "output")}
+            result[model]["long_context_surcharge"] = bool(row.get("long_context"))
+            result[model]["regional_factor"] = row.get("regional_factor")
+    return result
+
+
+def _cost_report(records: list[dict], catalog: dict, source: str) -> dict:
+    amounts = [record["estimated_usd"] for record in records]
+    missing = sum(1 for amount in amounts if amount is None)
+    total = _cost_sum(amounts) if not missing else None
+    unknown_writes = sum(1 for record in records if record["estimate_status"] == "estimated"
+                         and record["usage"]["cache_write_input_tokens"] is None)
+    assumptions = ["tariff_pinned_at_session_init" if source == "session_snapshot"
+                   else "local_catalog_used_for_session_without_budget",
+                   "cache_tokens_are_included_in_input_tokens",
+                   "reasoning_tokens_are_included_in_output_tokens",
+                   "catalog_peak_prices_cache_write_rate_and_regional_factor_are_conservative",
+                   "unknown_usage_is_not_estimated",
+                   "provider_invoice_not_verified"]
+    if unknown_writes:
+        assumptions.append("unknown_cache_writes_priced_at_catalog_write_rate")
+    return {"estimated_total_usd": total, "estimate_complete": total is not None,
+            "estimated_known_usd": _cost_sum([amount for amount in amounts if amount is not None]),
+            "estimated_requests": len(records) - missing,
+            "estimate_kind": "conservative_catalog_estimate",
+            "requests_without_estimate": missing, "cache_write_unknown_calls": unknown_writes,
+            "provider_billed_total_usd": None, "provider_invoice_verified": False,
+            "cost_scope": "generation_requests_of_this_session_only; provider_invoice_not_verified",
+            "tariff": {"version": catalog.get("version"), "verified_on": catalog.get("verified_on"),
+                       "valid_until": catalog.get("valid_until"), "source": source},
+            "unpriced_models": sorted({record["model"] for record in records
+                                       if record["estimate_status"] == "unpriced_model"}),
+            "assumptions": assumptions}
+
+
+def _budget_report(state: dict, catalog: dict) -> dict:
+    reservations = [call["budget_reservation"] for call in state["calls"]
+                    if isinstance(call.get("budget_reservation"), dict)]
+    return {**state["spec"]["budget"], **budget.totals(state), "enforced": True,
+            "preflight_requests": len(state["preflights"]),
+            "tariff_version": catalog.get("version"),
+            "reserved_cost_usd": _cost_sum([record.get("cost_usd") for record in reservations]),
+            "settled_requests": sum(1 for record in reservations if "settled_cost_usd" in record),
+            "scope": "generation_under_pinned_tariff; provider_invoice_not_verified"}
+
+
+def spend_report(state: dict) -> dict:
+    """Local per-request and per-model spend view: no credentials, network or state writes."""
+    catalog, source = _tariff(state)
+    records = [_request_record(call, state["profiles"], catalog) for call in state["calls"]]
+    result = {"version": 1, "kind": REPORT_KIND, "status": state["status"],
+              "task_acceptance": "not_evaluated",
+              "created_at": state.get("created_at"), "started_at": state.get("started_at"),
+              "finished_at": state.get("finished_at"), "stop_reason": state.get("stop_reason"),
+              "profiles": state["profiles"], "budget_enforced": "budget" in state["spec"],
+              "calls": len(records), "requests": records,
+              "by_model": _model_records(records, catalog), "totals": _token_counts(records),
+              "cost": _cost_report(records, catalog, source)}
+    if "budget" in state["spec"]:
+        result["budget"] = _budget_report(state, catalog)
+    return result
+
+
+def report(path) -> dict:
+    return spend_report(_load(_path(path)))
+
+
 def _stop(path: Path, state: dict, reason: str) -> None:
     state.update(status="stopped", stop_reason=reason, finished_at=_now())
     _save(path, state)
@@ -756,7 +942,7 @@ def run(path, *, environ=None, transport=None, require_budget=False) -> dict:
 def cli(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ["init", "show", "run", "resume-plan", "resume"]:
+    for name in ["init", "show", "run", "resume-plan", "resume", "report"]:
         command = commands.add_parser(name)
         command.add_argument("--state", required=True)
         if name == "init":
@@ -781,6 +967,8 @@ def cli(argv=None) -> int:
             result = create(args.state, _decode(raw))
         elif args.command == "show":
             result = show(args.state)
+        elif args.command == "report":
+            result = report(args.state)
         elif args.command in {"resume-plan", "resume"}:
             import api_resume
             result = (api_resume.plan(args.state) if args.command == "resume-plan" else
@@ -790,7 +978,8 @@ def cli(argv=None) -> int:
         else:
             result = run(args.state, require_budget=args.require_budget)
         print(json.dumps(result, ensure_ascii=False, allow_nan=False))
-        return 3 if result["status"] in ("stopped", "running") else 0
+        # A spend report is a local historical view: the exit code reflects the read, not the dialogue.
+        return 0 if args.command == "report" else 3 if result["status"] in ("stopped", "running") else 0
     except (SessionError, OSError) as exc:
         code = str(exc) if isinstance(exc, SessionError) else "local_io_error"
         print(json.dumps({"version": 1, "error": code}))

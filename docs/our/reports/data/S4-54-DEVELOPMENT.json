@@ -1,0 +1,144 @@
+{
+  "task": "S4-54",
+  "recorded_at": "2026-11-04T15:13:41.692699+00:00",
+  "branch": "codex/api-spending-result",
+  "base": "3c0ba165b8cdfefb96824bd3a490d7241902a0e5",
+  "model_task_snapshot": "43058a9",
+  "models": {
+    "lead": {
+      "model": "deepseek-flash",
+      "effort": "high"
+    },
+    "worker": {
+      "model": "gpt-6-luna",
+      "effort": "max"
+    }
+  },
+  "architect_effort": "max",
+  "architect_model_at_final_review": "not_exposed_by_runtime",
+  "raw_provider_result_sha256": "871b7052cc9c24549e747df4a5dabdddf7b240d02339b057efcf8a7889c683e8",
+  "raw_provider_patch_sha256": "d3efa7334e61f3763231d053d361f8398512aa31cf3bef91905eb7637fc27883",
+  "provider_patch_applies_cleanly": false,
+  "provider_patch_issue": "Invalid hunk counts and context based on older pinned commit; operator integrated while preserving new resume commands.",
+  "provider_tests": 8,
+  "operator_additional_tests": 6,
+  "operator_changes": [
+    "Profile lookup by stored name rather than lead/worker dictionary key",
+    "Known-cost subtotal preserved alongside unknown charge",
+    "Returned and requested model distinguished for pricing",
+    "Malformed tariff yields unknown estimate",
+    "Conservative catalog estimate explicitly labeled"
+  ],
+  "checks": {
+    "s4-54-provider-first": {
+      "tests": 8,
+      "failures": 5,
+      "errors": 0,
+      "skipped": 0,
+      "api_cases": 8,
+      "junit_sha256": "96a85f26133829ad13167c7770e895aaf96c6814a5fa9c87b1af07521953046c"
+    },
+    "s4-54-provider-corrected": {
+      "tests": 8,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "api_cases": 8,
+      "junit_sha256": "42b72e927449de59d021d14ce78c7d751fe747e0bfa91cec896a18b5b633eadb"
+    },
+    "s4-54-report-target": {
+      "tests": 14,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "api_cases": 14,
+      "junit_sha256": "560f82d8c06f75b282fa69a6c5e83b0dfd234c27956b2b1b2fb6226663831ecb"
+    },
+    "s4-54-ours-final": {
+      "tests": 2091,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "api_cases": 388,
+      "junit_sha256": "5a3776159a038aab3055972275d8447212c99c6be0469aff44e31b1c28d317bd"
+    }
+  },
+  "ruff_ours": "PASS",
+  "real_offline_reports": {
+    "offline": true,
+    "real_api_calls": 0,
+    "keychain_reads": 0,
+    "network_forbidden": true,
+    "reports": [
+      {
+        "source": "/Users/helloworld10011/symphony-api-runs/s4-54-retry-spending-20261104-132052/session.json",
+        "source_sha256": "d487956a1c8cc4977cee8850905691f92f6314689aca0906a942e968ad9e333a",
+        "calls": 68,
+        "status": "dialogue_complete",
+        "unknown_requests": 1,
+        "estimated_known_usd": "2.345187",
+        "estimated_total_usd": null,
+        "estimate_kind": "conservative_catalog_estimate",
+        "unchanged": true
+      },
+      {
+        "source": "/Users/helloworld10011/symphony-projects/.backups/s4-54-cache-resume-20261104-172822/session-before.json",
+        "source_sha256": "31fdd4529a3b76c473611341718611e1d8fe7e8b358fbfbdb0a350740557beb4",
+        "calls": 55,
+        "status": "stopped",
+        "unknown_requests": 1,
+        "estimated_known_usd": "1.817986",
+        "estimated_total_usd": null,
+        "estimate_kind": "conservative_catalog_estimate",
+        "unchanged": true
+      },
+      {
+        "source": "/Users/helloworld10011/symphony-projects/.backups/s4-54-resume-20261104-162607/session-before.json",
+        "source_sha256": "1a53890db91c7810dc8336719481894ec27d93bb23c3e3a6d977715e150dba83",
+        "calls": 47,
+        "status": "stopped",
+        "unknown_requests": 1,
+        "estimated_known_usd": "0.629810",
+        "estimated_total_usd": null,
+        "estimate_kind": "conservative_catalog_estimate",
+        "unchanged": true
+      },
+      {
+        "source": "/Users/helloworld10011/symphony-api-runs/s4-54-flash-spending-20261104-090827/session-with-reserved-lead-return.json",
+        "source_sha256": "6b9e0e5970ddc2a236eb8c39a4379a77978a599062eda6c2dc6e26220c2640c0",
+        "calls": 24,
+        "status": "stopped",
+        "unknown_requests": 0,
+        "estimated_known_usd": "0.061494",
+        "estimated_total_usd": "0.061494",
+        "estimate_kind": "conservative_catalog_estimate",
+        "unchanged": true
+      },
+      {
+        "source": "/Users/helloworld10011/symphony-api-runs/s4-54-api-spending-20261103-224450/session.json",
+        "source_sha256": "055c95d177c14bf042cbc97215915508b064d02c3136ed95b3e6bed2ce70d5ce",
+        "calls": 0,
+        "status": "prepared",
+        "unknown_requests": 0,
+        "estimated_known_usd": "0.000000",
+        "estimated_total_usd": "0.000000",
+        "estimate_kind": "conservative_catalog_estimate",
+        "unchanged": true
+      }
+    ]
+  },
+  "core_changed": false,
+  "dependencies_added": false,
+  "existing_tests_modified": false,
+  "code_source_sha256": {
+    "ours/hooks/api_session.py": "21255f08165eb20c9a56efe0225f6e82de6b70495f770d989b68f0834e60705f",
+    "ours/tests/test_api_session_report.py": "b3ce910206cb4f44feeb261d4d25509576a2ec84ec0dd54821da307e139bf7b5",
+    "ours/tests/test_api_session_report_edges.py": "361f0b14536eb9be8e5046df8a23a88e24b881c13ae4d032bc5257321d7e29b2"
+  },
+  "development_archive": "/Users/helloworld10011/symphony-projects/.backups/s4-54-report-development-20261104-181341",
+  "implementation_commit": "443fc094039f5a91e496209c40adca96b397f22a",
+  "pr": "https://github.com/Serg10011/oh-my-symphony/pull/104",
+  "human_accepted": false,
+  "merged": false,
+  "live_applied": false
+}
