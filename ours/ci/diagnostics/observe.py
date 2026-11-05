@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import shlex
 import signal
 import subprocess
 import sys
@@ -37,6 +38,37 @@ def ps_control():
         proc.wait(timeout=5)
 
 
+def observe_actual_process(args):
+    import pytest
+
+    def observe(frame, event, _arg):
+        if event != "return" or frame.f_code.co_name != "ensure_stopped" or not frame.f_code.co_filename.endswith("/project_update.py"):
+            return
+        values = frame.f_locals
+        proc = frame.f_back.f_locals.get("proc")
+        if proc is None or "result" not in values:
+            return
+        pid = str(proc.pid)
+        script = str(values["board"] / "test.sh")
+        def entry(output):
+            return next((cols[1] for row in output.splitlines() if len(cols := row.split(None, 1)) == 2 and cols[0] == pid), None)
+        first = entry(values["result"].stdout)
+        again = entry(subprocess.check_output(["ps", "-axo", "pid=,args="], text=True))
+        wide = entry(subprocess.check_output(["ps", "-eww", "-o", "pid=,args="], text=True))
+        actual = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+        # All reported arguments are from this fixture's child, not other processes.
+        summary = {"source_entry": first, "repeat_entry": again, "wide_entry": wide,
+                   "expected_script": script, "target_in_proc": os.fsencode(script) in actual,
+                   "target_in_source_args": script in shlex.split(first or ""),
+                   "input_columns": os.environ.get("COLUMNS")}
+        Path("/tmp/s462-process-result").write_text(json.dumps(summary))
+    sys.setprofile(observe)
+    try:
+        return pytest.main(args)
+    finally:
+        sys.setprofile(None)
+
+
 def board_control():
     # Observe only the original test's provider fixture subprocess, including
     # exceptions normally converted to safe public error codes by the controller.
@@ -59,8 +91,11 @@ if Path(sys.argv[0]).name == 'offline provider fixture.py' and 'run' in sys.argv
     proc_id = "ours/tests/test_project_update.py::test_running_manual_script_is_detected"
     board_id = "ours/tests/test_api_board.py::test_core_bridge_and_real_controller_exchange_without_provider_access"
     for name, target in (("manual_script", proc_id), ("offline_controller", board_id)):
-        done = subprocess.run([*pytest, target], check=False)
+        command = pytest if name != "manual_script" else [sys.executable, __file__, "observe-process", *pytest[3:]]
+        done = subprocess.run([*command, target], check=False)
         emit("TARGET", {"test": name, "exit": done.returncode})
+    if (process_result := Path("/tmp/s462-process-result")).is_file():
+        emit("ACTUAL", json.loads(process_result.read_text()))
     flag = Path("/tmp/s462-exact-reason")
     matched = flag.exists() and set(flag.read_text().splitlines()) == {"sandbox_platform_unsupported"}
     emit("BOARD", {"observed_child_error": "sandbox_platform_unsupported" if matched else None})
@@ -68,5 +103,7 @@ if Path(sys.argv[0]).name == 'offline provider fixture.py' and 'run' in sys.argv
 
 
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["observe-process"]:
+        sys.exit(observe_actual_process(sys.argv[2:]))
     ps_control()
     board_control()
