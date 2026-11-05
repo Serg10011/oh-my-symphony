@@ -8,6 +8,7 @@ in the fork's ours/ tools rather than becoming a second orchestrator.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import datetime, timezone
 import json
 import os
@@ -68,7 +69,7 @@ def board_context(cfg: ServiceConfig, kind: str, identifier: str) -> dict[str, A
 
 async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
                  payload: dict | None = None, run_id: str | None = None, heartbeat=None,
-                 on_checkpoint=None) -> dict:
+                 on_checkpoint: Callable[[], None] | None = None) -> dict:
     if action not in {"prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run"}:
         raise SymphonyError("Неизвестное действие API-команды")
     profile = api_profile(cfg, kind)
@@ -83,8 +84,8 @@ async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
     # the subprocess. The trusted runner obtains keys only for an approved run.
     env = {"PATH": os.defpath, "HOME": str(Path.home()), "LANG": "en_US.UTF-8",
            "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1"}
-    track_checkpoints = action == "run" and on_checkpoint is not None
-    if track_checkpoints:
+    checkpoint = on_checkpoint if action == "run" else None
+    if checkpoint is not None:
         env[CHECKPOINT_ENV] = "1"
     proc = await asyncio.create_subprocess_exec(*argv, "--action", action,
         cwd=cfg.workflow_path.parent, env=env, stdin=asyncio.subprocess.PIPE,
@@ -103,8 +104,8 @@ async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
             received += len(block)
             if received > MAX_REPLY_BYTES:
                 raise SymphonyError("Ответ API-команды превышает допустимый размер")
-            if track_checkpoints and not chunks and block.startswith(CHECKPOINT):
-                on_checkpoint()
+            if checkpoint is not None and not chunks and block.startswith(CHECKPOINT):
+                checkpoint()
                 block = block.lstrip(CHECKPOINT)
             chunks.extend(block)
         await proc.wait()
