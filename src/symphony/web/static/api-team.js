@@ -12,6 +12,7 @@
     board_execution_failed: 'Процесс команды прерван. Автоматического платного повтора нет.',
     api_assignment_changed: 'Задача или настройки изменились после подтверждения; платный запуск отменён.',
     execution_preflight_failed: 'Проверка изоляции не прошла; модели не запускались.',
+    workspace_command_outside_scope: 'Команда записала файл вне разрешённых путей. Её изменения отклонены.',
   };
   const number = value => Number.isFinite(value) ? value.toLocaleString('ru-RU') : 'не указан';
   const model = value => value ? `${value.model} · усилие ${value.effort}` : 'не назначен';
@@ -76,6 +77,8 @@
         status.textContent = 'Нужна помощь: команда завершила работу без изменений файлов.';
       if (data.stop_requested && data.status === 'running') status.textContent += '. Остановка запрошена; текущий ответ ещё может оплачиваться.';
       if (data.reason) status.textContent += ' ' + (reasons[data.reason] || 'Причина остановки указана в отчёте.');
+      if (data.session?.execution?.review_source === 'before_command')
+        status.textContent += ' Можно посмотреть правки, сохранённые до этой команды.';
       if (data.status !== 'prepared') token = null;
       prepare.hidden = !['unassigned', 'prepared'].includes(data.status);
       confirm.hidden = data.status !== 'prepared' || !token;
@@ -189,7 +192,11 @@
         if (!active()) return;
         const previous = files.querySelector('button');
         if (previous) previous.remove();
-        if (offset === 0) files.replaceChildren(el('p', {}, `Изменённых файлов: ${number(data.total)}`));
+        if (offset === 0) {
+          files.replaceChildren(el('p', {}, `Изменённых файлов: ${number(data.total)}`));
+          if (data.source === 'before_command') files.prepend(el('p', {},
+            'Черновик до остановившей работу команды. Её изменения здесь не показаны; задача не сдана.'));
+        }
         for (const file of data.files || []) {
           const change = { added: 'добавлен', modified: 'изменён', deleted: 'удалён' }[file.change] || file.change;
           files.appendChild(el('details', {}, [el('summary', {}, `${file.path} — ${change}`),

@@ -303,7 +303,8 @@ def _load(path: Path, *, raw: bytes | None = None) -> dict:
                 or type(call.get("output_cap")) is not int or not 16 <= call["output_cap"] <= spec["limits"]["output_tokens_per_call"]
                 or call["output_cap"] > _output_limits(state).get(call["profile"], 0)
                 or call.get("status") not in ("in_flight", "received", "error")
-                or type(call.get("request_version", 1)) is not int or call.get("request_version", 1) not in (1, 2)):
+                or type(call.get("request_version", 1)) is not int
+                or call.get("request_version", 1) not in ((1, 2, 3) if "execution" in spec else (1, 2))):
             raise SessionError("invalid_state")
         if call["status"] == "received" and (not isinstance(call.get("response"), dict)
                                               or not isinstance(call["response"].get("usage"), dict)):
@@ -470,6 +471,8 @@ def summary(state: dict) -> dict:
                                "workspace": state["execution_state"]["root"],
                                "preflight": state.get("execution_preflight"),
                                "result": state.get("execution_result")}
+        if state["status"] == "stopped" and state["execution_state"].get("before_command"):
+            result["execution"]["review_source"] = "before_command"
     if "resumptions" in state:
         result["resumptions"] = state["resumptions"]
     return result
@@ -715,6 +718,7 @@ REPORT_STOP_REASONS = {
     "model_refusal": "модель отказалась выполнять запрос",
     "invalid_tool_batch": "некорректный пакет вызовов инструментов",
     "project_tool_error": "ошибка инструментов работы с проектом",
+    "workspace_command_outside_scope": "команда записала файл вне разрешённых путей; её изменения отклонены",
     "execution_preflight_failed": "изоляция рабочей копии не прошла предварительную проверку",
     "execution_result_unavailable": "не удалось получить полный состав изменений",
     "empty_worker_result": "исполнитель не вернул результат",
@@ -942,9 +946,15 @@ def _credentials(spec: dict, environ) -> None:
             raise SessionError("invalid_api_key")
 
 
-def _build_request(state, history, cap, resources, *, part_id=None, request_version=2):
+def _request_format(spec):
+    return 3 if "execution" in spec else 2
+
+
+def _build_request(state, history, cap, resources, *, part_id=None, request_version=None):
     """Pure request construction, also used to verify a saved recovery boundary."""
     spec, limits = state["spec"], state["spec"]["limits"]
+    if request_version is None:
+        request_version = _request_format(spec)
     if part_id is None:
         instructions = LEAD_INSTRUCTIONS + "\nLimits: " + json.dumps(limits) + "\nProject context:\n" + spec["context"]
         request = {"input": history, "instructions": instructions, "effort": spec["lead_effort"],
@@ -958,8 +968,8 @@ def _build_request(state, history, cap, resources, *, part_id=None, request_vers
         if part_id is None:
             instructions += "\nProject context:\n" + spec["context"]
         request["instructions"] = instructions
-        request["tools"] = list(project.TOOLS if request_version == 2 else project.LEGACY_TOOLS) + ([DELEGATE_TOOL] if part_id is None and spec["worker_profile"] else [])
-        if request_version == 2:
+        request["tools"] = list(project.TOOLS if request_version >= 2 else project.LEGACY_TOOLS) + ([DELEGATE_TOOL] if part_id is None and spec["worker_profile"] else [])
+        if request_version >= 2:
             request["instructions"] += "\nUse search_project_files for discovery before reading many files. Follow returned cursors; read offsets are Unicode characters, not file bytes."
     if "execution" in spec:
         instructions = ("Lead this task and organize the work yourself. Delegate coherent useful parts only when worthwhile. "
@@ -975,8 +985,10 @@ def _build_request(state, history, cap, resources, *, part_id=None, request_vers
         request["tools"] = list(workspace.TOOLS) + ([DELEGATE_TOOL] if part_id is None and spec["worker_profile"] else [])
     # Append transient counters after the stable context; never accumulate them in history.
     request["instructions"] += "\n" + RESOURCE_INSTRUCTIONS
+    if "execution" in spec and request_version >= 3:
+        request["instructions"] += "\n" + workspace.scope_instructions(spec)
     profile = spec["worker_profile"] if part_id is not None else spec["lead_profile"]
-    if request_version == 2 and api.profile_for(profile).provider == "openai":
+    if request_version >= 2 and api.profile_for(profile).provider == "openai":
         history = api_cache.input_with_breakpoints(history, state["calls"], part_id)
         request["prompt_cache_options"] = {"mode": "explicit"}
         request["reasoning_context"] = "all_turns"
@@ -1031,7 +1043,7 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport)
             _stop(path, state, reason)
             return None
     call = {"index": len(state["calls"]) + 1, "profile": profile, "part_id": part_id,
-            "request_version": 2,
+            "request_version": _request_format(spec),
             "output_cap": cap, "request_sha256": hashlib.sha256(encoded).hexdigest(),
             "history_items": len(request["input"]), "resources": resources,
             "status": "in_flight", "started_at": _now()}
@@ -1102,14 +1114,18 @@ def _tool_names(state):
 def _project_answer(state, call, *, deferred=False, before_command=None):
     if deferred:
         return {"error": "project_batch_deferred", "message": "Retry this tool call in the next response; this batch reached its local execution allowance."}, False
+    args = {}
     try:
+        args = _decode(call["arguments"])
         if "execution" in state["spec"]:
             return workspace.call(state["spec"], state["execution_state"], call["name"],
-                                  _decode(call["arguments"]), before_command=before_command,
+                                  args, before_command=before_command,
                                   cancelled=_CANCELLATION.get()), False
-        return project.call(state["project_snapshot"], call["name"], _decode(call["arguments"])), False
+        return project.call(state["project_snapshot"], call["name"], args), False
     except (workspace.WorkspaceError, sandbox.SandboxError) as exc:
-        recoverable = {"invalid_workspace_query", "workspace_edit_conflict", "workspace_path_denied",
+        if str(exc) == "workspace_path_denied":
+            return workspace.path_denial(state["spec"], args), False
+        recoverable = {"invalid_workspace_query", "workspace_edit_conflict",
                        "workspace_file_not_text", "workspace_file_too_large", "workspace_file_unavailable",
                        "sandbox_command_invalid", "sandbox_command_too_large", "sandbox_timeout_invalid"}
         return {"error": str(exc)}, str(exc) not in recoverable
@@ -1142,7 +1158,8 @@ def _project_call(path, state, call, history, *, part_id=None, deferred=False, p
                     "output": json.dumps(output, ensure_ascii=False)})
     _save(path, state)
     if fatal:
-        _stop(path, state, "project_tool_error")
+        _stop(path, state, "workspace_command_outside_scope" if output.get("error") == "workspace_command_outside_scope"
+              else "project_tool_error")
     return not fatal
 
 

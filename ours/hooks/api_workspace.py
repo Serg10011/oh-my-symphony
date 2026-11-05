@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import uuid
 
@@ -68,6 +69,31 @@ remaining limitations; it does not constitute human acceptance or deployment.
 
 class WorkspaceError(Exception):
     """Fixed public errors, without raw filesystem/command exception text."""
+
+
+def granted_paths(spec):
+    # The controller already validated and sorted these relative scopes. A grant
+    # bounds the task copy; it never supersedes the board's protected paths.
+    return [p for p in spec["project"]["paths"] if p != ".tmp" and not p.startswith(".tmp/")]
+
+
+def scope_instructions(spec):
+    return ("Task-copy scope (relative paths or directories, including names not yet created): "
+            + json.dumps(granted_paths(spec), ensure_ascii=False)
+            + ". list_project_files shows existing files only. For new files use an exact granted name "
+              "or a file below a granted directory. Board protections still apply, including to existing tests. "
+              "Shell commands have the same scope; do not use a shell to bypass a refusal.")
+
+
+def path_denial(spec, args):
+    scopes = granted_paths(spec)
+    # Related paths first; avoid putting a large grant into history on every refusal.
+    name = args.get("path", "") if isinstance(args, dict) else ""
+    if isinstance(name, str):
+        scopes.sort(key=lambda p: -len(os.path.commonprefix((p, name))))
+    return {"error": "workspace_path_denied", "scope_examples": scopes[:6],
+            "message": "This path is outside the permitted task copy or is protected. "
+                       "Use the relative scopes in your instructions; shell edits cannot extend them."}
 
 
 def validate(raw: dict) -> dict:
@@ -129,13 +155,22 @@ def create(path: Path, spec: dict, snapshot: dict) -> dict:
 
 
 def validate_state(value: dict, spec: dict, snapshot: dict, path: Path | None = None) -> None:
-    if (not isinstance(value, dict) or set(value) != {"version", "root", "control", "initial", "initial_revision", "sealed", "retired_roots"}
+    if (not isinstance(value, dict) or set(value) - {"before_command"} != {"version", "root", "control", "initial", "initial_revision", "sealed", "retired_roots"}
             or type(value["version"]) is not int or value["version"] != 1
             or type(value["sealed"]) is not bool or not isinstance(value["retired_roots"], list)
             or any(not isinstance(p, str) or not Path(p).is_absolute() for p in value["retired_roots"])
             or any(not isinstance(value[k], str) or len(value[k]) > 4096 or "\x00" in value[k]
                    or not Path(value[k]).is_absolute() or ".." in Path(value[k]).parts for k in ("root", "control"))
             or not isinstance(value["initial"], dict) or set(value["initial"]) != set(snapshot["files"])):
+        raise WorkspaceError("invalid_execution_state")
+    previous = value.get("before_command")
+    if "before_command" in value and (
+        not isinstance(previous, dict) or set(previous) != {"root", "revision"} or value["sealed"]
+        or not isinstance(previous["revision"], str) or not SHA.fullmatch(previous["revision"])
+        or not isinstance(previous["root"], str)
+        or not re.fullmatch(re.escape(value["control"].removesuffix(".control") + ".before-") + r"[0-9a-f]{32}", previous["root"])
+        or previous["root"] in [value["root"], *value["retired_roots"]]
+    ):
         raise WorkspaceError("invalid_execution_state")
     if path is not None:
         allowed = re.compile(re.escape(str(path.parent / (path.name + ".workspace"))) + r"(?:-[0-9a-f]{32})?\Z")
@@ -263,7 +298,18 @@ def changes(spec: dict, value: dict, offset: int) -> dict:
 def review(spec: dict, value: dict, snapshot: dict, offset: int = 0) -> dict:
     """Bounded human review of actual files, not a model-produced patch."""
     if not value["sealed"]:
-        raise WorkspaceError("workspace_result_not_sealed")
+        previous = value.get("before_command")
+        if not previous:
+            raise WorkspaceError("workspace_result_not_sealed")
+        # Only the independent host copy may be read. Never filter the failed
+        # command's directory and imply the remaining files are its valid result.
+        root = Path(previous["root"])
+        if not root.is_dir() or root.resolve() != root:
+            raise WorkspaceError("workspace_review_changed")
+        saved = review(spec, {**value, "sealed": True, "root": previous["root"]}, snapshot, offset)
+        if saved["revision"] != previous["revision"]:
+            raise WorkspaceError("workspace_review_changed")
+        return {**saved, "source": "before_command"}
     delta = changes(spec, value, offset)
     rows, used = [], 0
     for entry in delta["changes"][:20]:
@@ -306,6 +352,26 @@ def review(spec: dict, value: dict, snapshot: dict, offset: int = 0) -> dict:
             "diff_purpose": "human_review_not_application_patch"}
 
 
+def _copy_files(spec, value, files, suffix):
+    source = Path(value["root"])
+    prefix = Path(value["control"]).name.removesuffix(".control") + suffix
+    target = source.parent / (prefix + uuid.uuid4().hex)
+    target.mkdir(mode=0o700)
+    try:
+        for name, expected in files.items():
+            data, mode = read(spec, value, name)
+            if {"sha256": _sha(data), "bytes": len(data), "mode": mode} != expected:
+                raise WorkspaceError("workspace_review_changed")
+            dst = target / name
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            dst.write_bytes(data)  # New inodes: a child may still hold old file descriptors.
+            dst.chmod(mode)
+        return target
+    except BaseException:
+        shutil.rmtree(target)
+        raise
+
+
 def _seal(spec: dict, value: dict) -> str:
     """Copy into new inodes at a path never granted to the previous command.
 
@@ -315,24 +381,12 @@ def _seal(spec: dict, value: dict) -> str:
     the newly captured source files.
     """
     source = Path(value["root"])
-    # The stable prefix comes from the trusted controller, not from model text.
-    prefix = Path(value["control"]).name.removesuffix(".control") + ".workspace-"
-    target = source.parent / (prefix + uuid.uuid4().hex)
     files = manifest(spec, value)
-    target.mkdir(mode=0o700)
-    captured = {}
-    for name in files:
-        data, mode = read(spec, value, name)
-        destination = target / name
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        # write_bytes creates distinct inodes. Never use hardlinks for speed.
-        destination.write_bytes(data)
-        destination.chmod(mode)
-        captured[name] = {"sha256": _sha(data), "bytes": len(data), "mode": mode}
+    target = _copy_files(spec, value, files, ".workspace-")
     value["retired_roots"].append(str(source))
     value["root"] = str(target)
     value["sealed"] = True
-    return _revision(captured)
+    return _revision(files)
 
 
 def _mutate(spec: dict, value: dict, name: str, args: dict) -> dict:
@@ -394,6 +448,14 @@ def call(spec: dict, value: dict, name: str, args: dict, *, before_command=None,
     if name == "run_project_command":
         if set(args) != {"command", "timeout_seconds"}:
             raise WorkspaceError("invalid_workspace_query")
+        if not value["sealed"]:
+            raise WorkspaceError("workspace_result_not_sealed")
+        files = manifest(spec, value)
+        before_revision = _revision(files)
+        backup = None
+        if before_revision != value["initial_revision"]:
+            backup = _copy_files(spec, value, files, ".before-")
+            value["before_command"] = {"root": str(backup), "revision": before_revision}
         value["sealed"] = False
         if before_command is not None:
             before_command()
@@ -403,8 +465,18 @@ def call(spec: dict, value: dict, name: str, args: dict, *, before_command=None,
         finally:
             try:
                 revision = _seal(spec, value)
-            except (WorkspaceError, OSError):
+            except WorkspaceError as exc:
+                if str(exc) == "workspace_scope_changed":
+                    raise WorkspaceError("workspace_command_outside_scope") from None
                 raise WorkspaceError("workspace_freeze_failed") from None
+            except OSError:
+                raise WorkspaceError("workspace_freeze_failed") from None
+            if backup is not None:
+                del value["before_command"]
+                # A crash must not leave durable state pointing to a removed backup.
+                if before_command is not None:
+                    before_command()
+                shutil.rmtree(backup)
         result["revision"] = revision
         # The durable session stores this bounded command result. Large logs can
         # instead be written to a task file and read in chunks by either role.
