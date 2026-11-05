@@ -17,9 +17,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     env:
-      # Deliberately limited to two already public snapshots during the trial.
+      # Keep the historical base and the published fix immutable for this trial.
       BASE_SHA: e2b1b5921f0032202c3c3af13da3425e69ea6cda
-      TRIAL_SHA: 543d4bfaf29058fd852f5baca8927743954b8a59
+      TRIAL_SHA: b862b2802c3ace67330046bf49e5a2e5087450c5
     defaults:
       run:
         shell: bash
