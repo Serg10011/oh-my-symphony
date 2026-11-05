@@ -108,7 +108,11 @@ def _verify(get, number, commit, tree, parent):
     job = jobs["jobs"][0]
     _require(job["name"] == "verify" and job["head_sha"] == head and job["run_id"] == number
              and job["run_attempt"] == attempt and type(job["id"]) is int and job["id"] > 0
-             and job["status"] == "completed" and job["conclusion"] == run["conclusion"])
+             and job["status"] == "completed" and job["conclusion"] == run["conclusion"]
+             # A private runner can register a label resembling a hosted one.
+             # Pin GitHub's service-reported runner group for this public trial.
+             and job["labels"] == ["ubuntu-24.04"] and type(job["runner_group_id"]) is int
+             and job["runner_group_id"] == 0 and job["runner_group_name"] == "GitHub Actions")
     completed = job["completed_at"]
     _require(isinstance(completed, str) and re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z", completed))
     steps = job["steps"]

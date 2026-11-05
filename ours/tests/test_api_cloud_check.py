@@ -40,7 +40,8 @@ def responses(commit=TRIAL, tree=TREE, parent=PARENT):
         (cloud.WORKFLOW, "100644", BLOB), (".gitattributes", "100644", cloud.ATTRIBUTES),
         ("ours/ci/linux", "040000", cloud.TOOLS_TREE)]]
     job = {"name": "verify", "head_sha": HEAD, "run_id": RUN, "run_attempt": ATTEMPT, "id": 88,
-           "status": "completed", "conclusion": "failure", "completed_at": COMPLETED, "steps": steps}
+           "status": "completed", "conclusion": "failure", "completed_at": COMPLETED, "steps": steps,
+           "labels": ["ubuntu-24.04"], "runner_group_id": 0, "runner_group_name": "GitHub Actions"}
     return {f"actions/runs/{RUN}": run, f"git/trees/{HEAD}?recursive=1": {"tree": entries, "truncated": False},
             f"git/blobs/{BLOB}": {"sha": BLOB, "encoding": "base64", "size": len(raw),
                                   "content": base64.b64encode(raw).decode()},
@@ -82,7 +83,7 @@ def test_private_candidate_hashes_never_enter_any_request(monkeypatch, part):
 
 @pytest.mark.parametrize("change", ["repo", "fork", "private", "workflow", "branch", "event", "head", "pending",
                                     "tools", "attributes", "truncated", "recipe", "other_attempt", "duplicate",
-                                    "isolation", "cancelled", "skipped", "cleanup", "conclusion"])
+                                    "isolation", "cancelled", "skipped", "cleanup", "conclusion", "runner", "image_label"])
 def test_untrusted_or_incomplete_attempt_cannot_pass(monkeypatch, change):
     docs = responses()
     run, tree, blob, _, jobs = docs.values()
@@ -108,6 +109,10 @@ def test_untrusted_or_incomplete_attempt_cannot_pass(monkeypatch, change):
         job["steps"].append(job["steps"][4])
     elif change == "conclusion":
         job["conclusion"] = run["conclusion"] = "success"
+    elif change == "runner":
+        job["runner_group_id"] = 1
+    elif change == "image_label":
+        job["labels"] = ["self-hosted", "ubuntu-24.04"]
     else:
         i = {"isolation": 2, "cancelled": 4, "skipped": 4, "cleanup": 5}[change]
         job["steps"][i]["conclusion"] = change if change in ("skipped", "cancelled") else "failure"
