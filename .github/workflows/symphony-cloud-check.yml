@@ -19,7 +19,7 @@ jobs:
     env:
       # Keep the historical base and the published fix immutable for this trial.
       BASE_SHA: e2b1b5921f0032202c3c3af13da3425e69ea6cda
-      TRIAL_SHA: 872daaeb0325608e837c0fbad5f2a3f4e0bfbc16
+      TRIAL_SHA: f633623ed0808a65d0b13dff59c1027b22cd3f12
     defaults:
       run:
         shell: bash
