@@ -273,7 +273,9 @@ def ensure_stopped(board: Path, project: dict, names: set[str]) -> None:
             raise UpdateError("служба загружена в launchd: сначала останови её")
         if result.returncode != 113:
             raise UpdateError("не удалось подтвердить отсутствие службы в launchd")
-    result = subprocess.run(["ps", "-axo", "pid=,args="], capture_output=True, text=True, timeout=10)
+    # Captured ps output can truncate a long script path to terminal width.
+    # Two w flags request the full command on both macOS and Linux.
+    result = subprocess.run(["ps", "-axwwo", "pid=,args="], capture_output=True, text=True, timeout=10)
     if result.returncode:
         raise UpdateError("не удалось проверить процессы доски")
     targets = {str(board / name) for name in names | {"WORKFLOW.md", "setup.sh", "test.sh"}}

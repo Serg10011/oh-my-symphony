@@ -284,8 +284,11 @@ async def test_core_bridge_and_real_controller_exchange_without_provider_access(
     runner.write_text(f"""import sys,json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 sys.path.insert(0, {hooks!r})
 import httpx, api_board, api_workspace, api_sandbox
+# Mirror the parent fixture's platform double inside this test-only child.
+api_sandbox.sys = SimpleNamespace(platform="darwin")
 api_board.keychain_credentials = lambda _: {KEYS!r}
 api_workspace.preflight = lambda *a: {{'offline_fixture': True}}
 original = api_workspace.policy
