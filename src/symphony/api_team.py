@@ -23,6 +23,10 @@ from .workflow import AgentProfileConfig, ServiceConfig
 
 FORMAT = "api-team-v1"
 MAX_REPLY_BYTES = 8 * 1024 * 1024
+# A negotiated run may prefix its JSON reply with ASCII record separators,
+# one per durable journal checkpoint. No model text travels in these frames.
+CHECKPOINT_ENV = "SYMPHONY_API_TEAM_CHECKPOINTS"
+CHECKPOINT = b"\x1e"
 PUBLIC_ERRORS = {
     "api_assignment_changed": "Задача или настройки изменились. Посмотри назначение заново перед подтверждением",
     "api_confirmation_expired": "Время подтверждения истекло. Посмотри назначение заново",
@@ -63,7 +67,8 @@ def board_context(cfg: ServiceConfig, kind: str, identifier: str) -> dict[str, A
 
 
 async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
-                 payload: dict | None = None, run_id: str | None = None, heartbeat=None) -> dict:
+                 payload: dict | None = None, run_id: str | None = None, heartbeat=None,
+                 on_checkpoint=None) -> dict:
     if action not in {"prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run"}:
         raise SymphonyError("Неизвестное действие API-команды")
     profile = api_profile(cfg, kind)
@@ -78,6 +83,9 @@ async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
     # the subprocess. The trusted runner obtains keys only for an approved run.
     env = {"PATH": os.defpath, "HOME": str(Path.home()), "LANG": "en_US.UTF-8",
            "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1"}
+    track_checkpoints = action == "run" and on_checkpoint is not None
+    if track_checkpoints:
+        env[CHECKPOINT_ENV] = "1"
     proc = await asyncio.create_subprocess_exec(*argv, "--action", action,
         cwd=cfg.workflow_path.parent, env=env, stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
@@ -90,10 +98,15 @@ async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
         await stdin.drain()
         stdin.close()
         chunks = bytearray()
-        while block := await stdout.read(min(65536, MAX_REPLY_BYTES + 1 - len(chunks))):
-            chunks.extend(block)
-            if len(chunks) > MAX_REPLY_BYTES:
+        received = 0
+        while block := await stdout.read(min(65536, MAX_REPLY_BYTES + 1 - received)):
+            received += len(block)
+            if received > MAX_REPLY_BYTES:
                 raise SymphonyError("Ответ API-команды превышает допустимый размер")
+            if track_checkpoints and not chunks and block.startswith(CHECKPOINT):
+                on_checkpoint()
+                block = block.lstrip(CHECKPOINT)
+            chunks.extend(block)
         await proc.wait()
         try:
             reply = json.loads(chunks)
@@ -179,20 +192,26 @@ class ApiTeamExecutor:
         owning_task = asyncio.current_task()
         stopped = False
         reason, error = "api_team_finished", None
+
+        def checkpoint():
+            entry = orch._dispatch_state.entry_owned_by(context.issue.id, owning_task)
+            if entry is not None:
+                entry.last_progress_timestamp = datetime.now(timezone.utc)
+
         async def heartbeat():
             nonlocal stopped
             entry = orch._dispatch_state.entry_owned_by(context.issue.id, owning_task)
             if entry is None:
                 raise asyncio.CancelledError()
-            # Provider requests have their own bounded wait. The bridge process
-            # being alive is activity, not evidence that a task was accepted.
+            # Liveness is useful for the UI and pause polling. Only a journal
+            # checkpoint above moves the stall watchdog's separate clock.
             entry.last_codex_timestamp = datetime.now(timezone.utc)
             if orch.is_paused(context.issue.id) and not stopped:
                 await invoke(context.cfg, context.agent_kind, context.issue.identifier, "stop")
                 stopped = True
         try:
             result = await invoke(context.cfg, context.agent_kind, context.issue.identifier, "run",
-                                  run_id=context.run_id, heartbeat=heartbeat)
+                                  run_id=context.run_id, heartbeat=heartbeat, on_checkpoint=checkpoint)
             entry = orch._dispatch_state.entry_owned_by(context.issue.id, owning_task)
             if entry is not None:
                 orch._append_run_event(entry, "api_team_finished", {

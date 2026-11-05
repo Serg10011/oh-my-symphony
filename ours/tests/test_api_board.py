@@ -1,10 +1,12 @@
 """Browser assignments: explicit approval, immutable grants and no paid replay."""
 
 from dataclasses import replace
+import io
 import json
 from pathlib import Path
 import subprocess
 import shlex
+import signal
 import sys
 import time
 from types import SimpleNamespace
@@ -318,3 +320,45 @@ raise SystemExit(api_board.cli())
     review = await invoke(cfg, "api-team", board.identifier, "review")
     assert review["files"][0]["path"] == "tests/fixture.py"
     assert board.card()[0]["state"] == "needs_human" and not (board.repo / "tests/fixture.py").exists()
+
+
+@pytest.mark.parametrize("finish", ["success", "service_stop", "operator_stop"])
+def test_cli_signals_durable_progress_and_identifies_interrupts(board, monkeypatch, capsysbinary, finish):
+    from symphony.api_team import CHECKPOINT, CHECKPOINT_ENV
+
+    approve(board)
+    raw = json.dumps({"context": board.context, "run_id": "a" * 32}).encode()
+    monkeypatch.setattr(sys, "stdin", SimpleNamespace(buffer=io.BytesIO(raw)))
+    monkeypatch.setenv(CHECKPOINT_ENV, "1")
+    monkeypatch.setattr(board_api, "keychain_credentials", lambda _: KEYS)
+
+    def reply(request):
+        # The request is already durable when its checkpoint reaches the pipe.
+        prefix = capsysbinary.readouterr().out
+        assert prefix and not prefix.strip(CHECKPOINT)
+        assert session._load(board.session_path)["calls"][-1]["status"] == "in_flight"
+        if finish == "operator_stop":
+            board.stop()
+        if finish != "success":
+            signal.raise_signal(signal.SIGTERM)
+        return httpx.Response(200, json=frame("Готово"))
+
+    run = session.run
+    def offline_run(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(reply)
+        return run(*args, **kwargs)
+    monkeypatch.setattr(session, "run", offline_run)
+    previous = signal.getsignal(signal.SIGTERM)
+    try:
+        assert board_api.cli(["--settings", str(board.settings), "--action", "run"]) == 0
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+    raw_reply = capsysbinary.readouterr().out
+    result = json.loads(raw_reply.lstrip(CHECKPOINT))
+    if finish == "success":
+        assert raw_reply.startswith(CHECKPOINT) and result["status"] == "result"
+    else:
+        expected = "board_process_interrupted" if finish == "service_stop" else "operator_stopped"
+        assert result["status"] == "stopped" and result["reason"] == expected
+        report = session.spend_report(session._load(board.session_path))
+        assert report["stop_reason"] == expected and report["totals"]["unknown_usage_calls"] == 1

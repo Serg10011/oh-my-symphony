@@ -89,6 +89,7 @@ tools. These counters do not expand permissions or the assigned limits.
 RESOURCE_PREFIX = "Runtime resources: "
 REPORT_KIND = "api_session_spend"
 _CANCELLATION = ContextVar("api_session_cancellation", default=None)
+_CHECKPOINT = ContextVar("api_session_checkpoint", default=None)
 USAGE_KEYS = ("input_tokens", "output_tokens", "cached_input_tokens",
               "cache_write_input_tokens", "reasoning_tokens")
 
@@ -255,6 +256,9 @@ def _save(path: Path, state: dict) -> None:
     finally:
         if temporary is not None:
             os.unlink(temporary)
+    notify = _CHECKPOINT.get()
+    if notify is not None:
+        notify()
 
 
 def _read_state(path: Path) -> bytes:
@@ -697,6 +701,7 @@ REPORT_STATUSES = {"prepared": "подготовлена", "running": "выпо�
                    "dialogue_complete": "диалог завершён; приёмка результата отдельно"}
 REPORT_STOP_REASONS = {
     "operator_stopped": "остановлено оператором или после потери связи с доской",
+    "board_process_interrupted": "служба прервала процесс команды. Подробности сохранены в журнале службы",
     "board_execution_failed": "процесс API-команды прерван; автоматического повтора нет",
     "call_limit": "достигнут аварийный предел числа запросов",
     "output_limit": "исчерпан общий запас выходных токенов",
@@ -916,7 +921,7 @@ def _cancelled(path: Path, state: dict) -> bool:
 
 def interrupt(path, reason="operator_stopped") -> dict:
     """Record a stopped controller without replaying an in-flight request."""
-    if reason not in {"operator_stopped", "board_execution_failed"}:
+    if reason not in {"operator_stopped", "board_process_interrupted", "board_execution_failed"}:
         raise SessionError("invalid_stop_reason")
     path = _path(path)
     with _lock(path):
@@ -1248,12 +1253,14 @@ def _lead_loop(path, state, *, environ, transport):
 
 
 def run(path, *, environ=None, transport=None, require_budget=False, cancelled=None,
-        credential_loader=None) -> dict:
+        credential_loader=None, on_checkpoint=None) -> dict:
     token = _CANCELLATION.set(cancelled)
+    checkpoint_token = _CHECKPOINT.set(on_checkpoint)
     try:
         return _run(path, environ=environ, transport=transport, require_budget=require_budget,
                     credential_loader=credential_loader)
     finally:
+        _CHECKPOINT.reset(checkpoint_token)
         _CANCELLATION.reset(token)
 
 

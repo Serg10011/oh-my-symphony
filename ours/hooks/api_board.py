@@ -44,7 +44,9 @@ class BoardError(Exception):
 
 
 class Interrupted(BaseException):
-    pass
+    def __init__(self, reason="operator_stopped"):
+        super().__init__(reason)
+        self.reason = reason
 
 
 def _digest(value) -> str:
@@ -407,11 +409,12 @@ class Board:
             raise BoardError("api_candidate_result_changed")
         return result
 
-    def run(self, run_id, *, credentials=None, transport=None, cancelled=None):
+    def run(self, run_id, *, credentials=None, transport=None, cancelled=None, on_checkpoint=None):
         with session._lock(self.root / "owner"):
-            return self._run(run_id, credentials=credentials, transport=transport, cancelled=cancelled)
+            return self._run(run_id, credentials=credentials, transport=transport,
+                             cancelled=cancelled, on_checkpoint=on_checkpoint)
 
-    def _run(self, run_id, *, credentials=None, transport=None, cancelled=None):
+    def _run(self, run_id, *, credentials=None, transport=None, cancelled=None, on_checkpoint=None):
         with session._lock(self.path):
             value = self._load()
             if (not value or value["status"] != "queued" or self.stop_path.exists()
@@ -445,16 +448,17 @@ class Board:
                 raise Interrupted()
             # run invokes the loader only after its local isolation preflight.
             outcome = session.run(self.session_path, transport=transport, cancelled=should_stop,
-                                  credential_loader=credentials or keychain_credentials)
+                                  credential_loader=credentials or keychain_credentials, on_checkpoint=on_checkpoint)
             value.update(status="result" if outcome["status"] == "dialogue_complete" else "stopped",
                          reason=outcome["stop_reason"])
             if outcome["status"] == "dialogue_complete":
                 value["candidate"] = candidate.public_report(candidate.prepare(self.session_path, self.workflow.parent,
                     self.identifier, value["rules"], cancelled=should_stop))
-        except Interrupted:
+        except Interrupted as exc:
+            reason = "operator_stopped" if self.stop_path.exists() else exc.reason
             if self.session_path.exists():
-                session.interrupt(self.session_path, "operator_stopped")
-            value.update(status="stopped", reason="operator_stopped")
+                session.interrupt(self.session_path, reason)
+            value.update(status="stopped", reason=reason)
         except (BoardError, candidate.CandidateError, session.SessionError, session.workspace.WorkspaceError,
                 session.sandbox.SandboxError, project.ProjectError, OSError):
             if self.session_path.exists():
@@ -547,7 +551,7 @@ def cli(argv=None):
     parser.add_argument("--action", required=True, choices=["prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run"])
     args = parser.parse_args(argv)
     def interrupted(*_):
-        raise Interrupted()
+        raise Interrupted("board_process_interrupted")
     signal.signal(signal.SIGTERM, interrupted)
     try:
         raw = sys.stdin.buffer.read(MAX_MESSAGE + 1)
@@ -581,7 +585,15 @@ def cli(argv=None):
             if payload:
                 raise BoardError("invalid_board_payload")
             parent = os.getppid()
-            result = board.run(message.get("run_id"), cancelled=lambda: os.getppid() != parent)
+            notify = None
+            if os.environ.get("SYMPHONY_API_TEAM_CHECKPOINTS") == "1":
+                from symphony.api_team import CHECKPOINT
+
+                def notify():
+                    sys.stdout.buffer.write(CHECKPOINT)
+                    sys.stdout.buffer.flush()
+
+            result = board.run(message.get("run_id"), cancelled=lambda: os.getppid() != parent, on_checkpoint=notify)
         else:
             if payload:
                 raise BoardError("invalid_board_payload")

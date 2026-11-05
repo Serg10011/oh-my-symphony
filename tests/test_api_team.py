@@ -2,6 +2,7 @@
 
 import asyncio
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import shlex
 import sys
@@ -321,3 +322,48 @@ def test_api_panel_is_loaded_before_app_and_uses_nested_board_metadata():
     assert html.index('/static/api-team.js') < html.index('/static/app.js')
     assert "state.board?.board?.api_team_kinds" in (root / "app.js").read_text()
     assert "innerHTML" not in (root / "api-team.js").read_text()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("saves_progress", [True, False])
+async def test_stall_watchdog_uses_run_checkpoints_not_process_liveness(workflow, tmp_path, saves_progress):
+    # Exercise dispatch, the subprocess pipe and the real watchdog. Advance
+    # the run's age past the five-minute deadline without waiting five minutes.
+    release = tmp_path / "finish"
+    script = f"""import json, os, sys, time
+from pathlib import Path
+json.load(sys.stdin)
+assert os.environ[{api_team.CHECKPOINT_ENV!r}] == '1'
+if {saves_progress!r}:
+    sys.stdout.buffer.write({api_team.CHECKPOINT!r} * 2)
+    sys.stdout.buffer.flush()
+while not Path({str(release)!r}).exists():
+    time.sleep(.02)
+print('{{"status":"result"}}')
+"""
+    cfg = runner_config(workflow, tmp_path, script, timeout=15000)
+    workflow._config = cfg
+    tracker = FileBoardTracker(cfg.tracker)
+    tracker.update_fields("SEED-1", agent_kind="api-team")
+    issue = tracker.fetch_issue_full_by_id("SEED-1")
+    orch = Orchestrator(workflow)
+    orch._loop = asyncio.get_running_loop()
+    orch._ensure_run_registry(cfg)
+    try:
+        assert orch._dispatch(issue, cfg, attempt=None)
+        entry = orch._running[issue.id]
+        entry.started_at -= timedelta(minutes=6)
+        try:
+            async with asyncio.timeout(10):
+                while entry.last_codex_timestamp is None:
+                    await asyncio.sleep(.02)
+            await orch._reconcile_stall_state(issue.id, entry, cfg, now=datetime.now(timezone.utc),
+                                              stall_timeout_ms=300_000)
+            assert (entry.cancelled_at is None) is saves_progress
+            assert (entry.last_progress_timestamp is not None) is saves_progress
+        finally:
+            release.touch()
+            await asyncio.gather(entry.worker_task, return_exceptions=True)
+        assert orch.is_paused(issue.id) and issue.id not in orch._retry
+    finally:
+        orch._run_registry.close()
