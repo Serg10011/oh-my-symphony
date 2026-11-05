@@ -1,9 +1,13 @@
 """GitHub evidence for one immutable candidate, with no uploads or paid retries."""
 
 import base64
+from dataclasses import replace
+from datetime import datetime, timezone
 from functools import partial
 import json
 from pathlib import Path
+import shlex
+import sys
 
 import httpx
 import pytest
@@ -242,3 +246,154 @@ def test_old_assignments_have_no_cloud_access(board, monkeypatch):
     monkeypatch.setattr(cloud, "verify", lambda *a: pytest.fail("Old assignment gained a new grant"))
     with pytest.raises(controller.BoardError, match="cloud_not_enabled"):
         board.attach_check(str(RUN))
+
+
+def index_path(page=1):
+    return f"actions/workflows/{cloud.WORKFLOW_ID}/runs?per_page={cloud.PAGE_SIZE}&page={page}"
+
+
+def indexed(docs, title, *, order=10):
+    return {**docs[f"actions/runs/{RUN}"], "display_title": title, "run_number": order,
+            "created_at": datetime.now(timezone.utc).isoformat()}
+
+
+def visit(board):
+    return controller.sync_checks(board.settings, {**board.context, "identifier": ""})
+
+
+def test_service_finds_exact_run_after_restart_with_no_parent_or_browser_input(board, monkeypatch):
+    result = complete_card(board)
+    candidate = result["candidate"]
+    docs = responses(candidate["commit"], candidate["tree"], candidate["base_commit"])
+    current = indexed(docs, candidate["commit"])
+    other = {**current, "id": RUN + 1, "run_number": 11, "display_title": "0" * 40}
+    docs[index_path()] = {"workflow_runs": [other, {**current, "status": "in_progress", "conclusion": None}]}
+    seen = public_api(monkeypatch, docs)
+    visit(board)
+    assert board.show()["cloud_check"]["phase"] == "running"
+    assert seen == [index_path(), f"git/trees/{HEAD}?recursive=1", f"git/blobs/{BLOB}"]
+    reopened = controller.Board(board.settings, board.context)
+    visit(reopened)
+    assert len(seen) == 3
+    clock = controller.time.time()
+    monkeypatch.setattr(controller.time, "time", lambda: clock + 241)
+    docs[index_path()]["workflow_runs"][1] = current
+    visit(reopened)
+    final = reopened.show()
+    assert final["cloud_check"]["receipt"]["status"] == "passed" and "phase" not in final["cloud_check"]
+    assert final["session"]["calls"] == result["session"]["calls"]
+    assert not final["accepted"] and not final["delivered"] and reopened.card()[0]["state"] == "needs_human"
+    assert all(candidate["commit"] not in path for path in seen if not path.startswith("git/commits/"))
+    assert not any(str(RUN + 1) in path for path in seen)
+    # A cancelled later attempt hides the old success in the current UI;
+    # the original immutable receipt remains available in local history.
+    monkeypatch.setattr(controller.time, "time", lambda: clock + 500)
+    docs[index_path()]["workflow_runs"][1] = {**current, "run_attempt": 3, "conclusion": "cancelled"}
+    visit(reopened)
+    interrupted = reopened.show()["cloud_check"]
+    assert interrupted["phase"] == "interrupted" and interrupted["receipt"] is None
+    assert (board.root / f"cloud-{RUN}-{ATTEMPT}.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_service_subprocess_records_result_with_browser_closed(board):
+    from symphony import api_team
+    from symphony.orchestrator import Orchestrator
+    from symphony.workflow import WorkflowState
+
+    # The actual service bridge starts the real controller. Replace only its
+    # public HTTP transport; the child has no credentials or provider path.
+    runner = board.workflow.parent / "fixture public runs.py"
+    feed = board.workflow.parent / "public-runs.json"
+    runner.write_text(f"""import json, sys
+from functools import partial
+from pathlib import Path
+sys.path.insert(0, {str(Path(controller.__file__).parent)!r})
+import httpx, api_board, api_cloud_check as cloud
+docs = json.loads(Path({str(feed)!r}).read_text())
+def route(request):
+    assert request.method == "GET" and request.url.host == "api.github.com"
+    path = request.url.raw_path.decode().removeprefix(f"/repos/{{cloud.REPO}}/")
+    return httpx.Response(200, json=docs[path])
+httpx.Client = partial(httpx.Client, transport=httpx.MockTransport(route))
+raise SystemExit(api_board.cli())
+""")
+    command = shlex.join([str(Path(sys.prefix) / "bin/python"), str(runner), "--settings", str(board.settings)])
+    board.workflow.write_text(
+        "---\ntracker: {kind: file, board_root: ./kanban, active_states: [Todo], terminal_states: [needs_human, Done]}\n"
+        "agent:\n  kind: claude\n  feature_base_branch: our-main\n  profiles:\n    api-team:\n"
+        f"      format: api-team-v1\n      command: {json.dumps(command)}\n---\nFixture\n")
+    workflow = WorkflowState(board.workflow)
+    cfg, error = workflow.reload()
+    assert error is None and cfg is not None
+    cfg = replace(cfg, code_repo=board.repo)
+    board.context = api_team.board_context(cfg, "api-team", board.identifier)
+    before = complete_card(board)
+    candidate = before["candidate"]
+    docs = responses(candidate["commit"], candidate["tree"], candidate["base_commit"])
+    docs[index_path()] = {"workflow_runs": [indexed(docs, candidate["commit"])]}
+    feed.write_text(json.dumps(docs))
+    service = Orchestrator(workflow)
+    api_team.schedule_cloud_checks(service, cfg)
+    await service._cloud_check_task
+    after = controller.Board(board.settings, board.context).show()
+    assert after["cloud_check"]["receipt"]["status"] == "passed"
+    assert after["session"]["calls"] == before["session"]["calls"]
+    assert board.card()[0]["state"] == "needs_human" and not after["delivered"] and not after["accepted"]
+
+
+def test_public_title_cannot_manufacture_a_pass(board, monkeypatch):
+    candidate = complete_card(board)["candidate"]
+    docs = responses()
+    docs[index_path()] = {"workflow_runs": [indexed(docs, candidate["commit"])]}
+    public_api(monkeypatch, docs)
+    visit(board)
+    check = board.show()["cloud_check"]
+    assert check["receipt"] is None and "phase" not in check
+    assert not list(board.root.glob("cloud-*.json"))
+
+
+def test_background_leaves_private_or_superseded_card_offline(board, monkeypatch):
+    complete_card(board)
+    monkeypatch.setattr(cloud, "discover", lambda *a: pytest.fail("Stale card reached GitHub"))
+    git(board.repo, "remote", "set-url", "origin", "https://example.invalid/private")
+    visit(board)
+    assert not list(board.root.parent.glob("cloud-index-*.json"))
+    git(board.repo, "remote", "set-url", "origin", f"https://github.com/{cloud.REPO}.git")
+    board.tracker.update_fields(board.identifier, title="Новая карточка")
+    visit(board)
+    assert board.show()["cloud_check"] == {"status": "stale"}
+
+
+def test_public_index_catches_up_older_page_and_reuses_legacy_recipe(monkeypatch):
+    docs = responses()
+    blob = docs[f"git/blobs/{BLOB}"]
+    raw = base64.b64decode(blob["content"])
+    legacy = raw.replace(f"run-name: &trial_sha '{TRIAL}'\n".encode(), b"").replace(b"TRIAL_SHA: *trial_sha", f"TRIAL_SHA: {TRIAL}".encode())
+    blob.update(size=len(legacy), content=base64.b64encode(legacy).decode())
+    unrelated = indexed(docs, "0" * 40)
+    docs[index_path()] = {"workflow_runs": [unrelated] * cloud.PAGE_SIZE}
+    docs[index_path(2)] = {"workflow_runs": [unrelated] * cloud.PAGE_SIZE}
+    docs[index_path(3)] = {"workflow_runs": [indexed(docs, "Проверка до автоматической привязки")]}
+    seen = public_api(monkeypatch, docs)
+    scan = {}
+    assert not cloud.discover({TRIAL}, 0, scan) and scan["page"] == 3
+    assert cloud.discover({TRIAL}, 0, scan)[TRIAL]["run"] == RUN and scan["page"] == 2
+    assert seen.count(f"git/blobs/{BLOB}") == 1
+    docs[index_path()] = docs[index_path(3)]
+    assert cloud.discover({TRIAL}, 0, scan)[TRIAL]["run"] == RUN
+    assert seen.count(f"git/blobs/{BLOB}") == 1
+
+
+def test_rate_limit_survives_restart_without_new_calls(board, monkeypatch):
+    complete_card(board)
+    now = controller.time.time()
+    seen = []
+    def limited(request):
+        seen.append(request.url)
+        return httpx.Response(429, headers={"retry-after": "1800"})
+    monkeypatch.setattr(httpx, "Client", partial(httpx.Client, transport=httpx.MockTransport(limited)))
+    visit(board)
+    monkeypatch.setattr(controller.time, "time", lambda: now + 900)
+    visit(controller.Board(board.settings, board.context))
+    assert len(seen) == 1 and board.show()["cloud_check"]["receipt"] is None

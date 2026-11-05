@@ -143,6 +143,8 @@ async def _on_tick(self: Orchestrator) -> None:
         await self._notify_observers()
         return
 
+    from ..api_team import schedule_cloud_checks
+    schedule_cloud_checks(self, cfg)
     await self._auto_normalize_legacy_human_review_done(cfg)
     # Validate terminal FIX outcomes before fetching active candidates. A
     # source whose dependency only looks Done must never dispatch first.

@@ -17,6 +17,7 @@
 
   function mount({ el, identifier, request, isActive, onTransition, schedule = setInterval, unschedule = clearInterval }) {
     let token = null, busy = false, timer = null, lastStatus = null;
+    let nextCheckRead = 0;
     const status = el('p', { 'aria-live': 'polite' }, 'Загружаю назначение…');
     const error = el('p', { class: 'api-team-error', role: 'alert' });
     const assignment = el('div');
@@ -36,17 +37,10 @@
     const stop = button('Остановить', () => act('stop'));
     const refresh = button('Обновить', () => load());
     const review = button('Посмотреть изменения файлов', () => loadReview(0));
-    const runNumber = el('input', { type: 'text', inputmode: 'numeric', maxlength: '19',
-      'aria-label': 'Номер запуска GitHub Actions' });
-    const lookupError = el('p', { class: 'api-team-error', role: 'alert' });
-    const attach = button('Сверить проверку',
-      () => act('attach-check', { run_number: runNumber.value.trim() }, lookupError));
-    const lookup = el('div', { class: 'api-team-actions' }, [
-      el('label', {}, ['Номер запуска GitHub Actions ', runNumber]), attach]);
     const cloudStatus = el('p', { role: 'status' });
     const workflowLink = el('a', { target: '_blank', rel: 'noopener noreferrer' }, 'Открыть попытку на GitHub');
     const cloud = el('div', { role: 'group', 'aria-label': 'Проверка файлов на Linux' },
-      [el('strong', {}, 'Проверка файлов на Linux'), cloudStatus, workflowLink, lookup, lookupError]);
+      [el('strong', {}, 'Проверка файлов на Linux'), cloudStatus, workflowLink]);
     cloud.hidden = true;
     [prepare, confirm, stop, review, reportDetails, resultDetails].forEach(node => { node.hidden = true; });
     const actions = el('div', { class: 'api-team-actions' }, [prepare, confirm, stop, refresh, review]);
@@ -75,10 +69,10 @@
       confirm.hidden = data.status !== 'prepared' || !token;
       stop.hidden = !['prepared', 'queued', 'running'].includes(data.status) || data.stop_requested;
       review.hidden = !data.session?.execution || !['result', 'stopped'].includes(data.status);
-      const check = data.cloud_check, receipt = check?.receipt;
+      const check = data.cloud_check, receipt = check?.phase ? null : check?.receipt;
       cloud.hidden = !check;
-      lookup.hidden = check?.status !== 'ready';
       workflowLink.hidden = !receipt;
+      nextCheckRead = check?.status === 'ready' ? Date.now() + (receipt ? 60000 : 20000) : 0;
       if (receipt) {
         const outcome = receipt.status === 'passed' ? 'прошла' : 'завершилась с ошибкой';
         const base = receipt.comparison === 'success' ? 'прошла' : 'завершилась с ошибкой';
@@ -86,9 +80,15 @@
           ` Контрольная версия ${base}.`);
         workflowLink.href = `https://github.com/Serg10011/oh-my-symphony/actions/runs/${receipt.run}/attempts/${receipt.attempt}`;
       } else if (check) {
+        const phases = {
+          running: 'GitHub выполняет проверку.',
+          waiting: 'Ждём ответ GitHub. Конвейер повторит чтение автоматически.',
+          interrupted: 'Проверка прервана. Конвейер увидит следующую попытку автоматически.',
+          unverified: 'GitHub не подтвердил проверку этих файлов. Конвейер ожидает другую попытку.',
+        };
         setText(cloudStatus, check.status === 'ready'
-          ? `Версия ${check.commit.slice(0, 12)}. Укажи номер уже готового прогона. Доска только прочитает его результат.`
-          : 'Карточка, файлы, база или настройки изменились. Результат требует новой сверки.');
+          ? `Версия ${check.commit.slice(0, 12)}. ${phases[check.phase] || 'Когда будет готов прогон GitHub, результат появится здесь автоматически.'}`
+          : 'Карточка, файлы, база или настройки изменились. Прежняя проверка утратила силу.');
         workflowLink.removeAttribute('href');
       }
       reportDetails.hidden = !data.report_text;
@@ -121,23 +121,22 @@
       if (lastStatus !== null && lastStatus !== data.status) onTransition?.();
       lastStatus = data.status;
     }
-    async function operation(fn, errorNode = error) {
+    async function operation(fn) {
       if (busy || !active()) return;
       busy = true;
       buttons.forEach(node => { node.disabled = true; });
       error.textContent = '';
-      lookupError.textContent = '';
       try { await fn(); }
-      catch (err) { if (active()) errorNode.textContent = err.message || 'Не удалось получить ответ доски'; }
+      catch (err) { if (active()) error.textContent = err.message || 'Не удалось получить ответ доски'; }
       finally { busy = false; buttons.forEach(node => { node.disabled = false; }); }
     }
-    async function act(action, payload = {}, errorNode = error) {
+    async function act(action, payload = {}) {
       return operation(async () => {
         const data = await request(identifier, action, payload);
         if (!active()) return;
         token = data.confirmation_token || (action === 'prepare' ? null : token);
         render(data);
-      }, errorNode);
+      });
     }
     async function load() {
       return operation(async () => {
@@ -165,6 +164,10 @@
     timer = schedule(() => {
       if (!active()) { unschedule(timer); return; }
       if (['queued', 'running'].includes(lastStatus)) load();
+      else if (nextCheckRead && Date.now() >= nextCheckRead) {
+        nextCheckRead = Date.now() + 20000;
+        load();
+      }
     }, 5000);
     return section;
   }

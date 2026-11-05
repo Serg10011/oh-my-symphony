@@ -1,4 +1,5 @@
 name: Symphony Linux check
+run-name: &trial_sha 'f7873ec6a6f06fb8c5b2627d31566102c1d39730'
 
 on:
   workflow_dispatch:
@@ -19,7 +20,7 @@ jobs:
     env:
       # Keep the historical base and the published fix immutable for this trial.
       BASE_SHA: e2b1b5921f0032202c3c3af13da3425e69ea6cda
-      TRIAL_SHA: f7873ec6a6f06fb8c5b2627d31566102c1d39730
+      TRIAL_SHA: *trial_sha
     defaults:
       run:
         shell: bash

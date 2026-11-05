@@ -8,6 +8,7 @@ configuration. No action other than run reads credentials or calls a provider.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime
 import hashlib
 import hmac
 import json
@@ -241,6 +242,11 @@ class Board:
                     subject = self._cloud_subject(value)
                     receipt = self._cloud_receipt(value, subject)
                     result["cloud_check"] = {"status": "ready", "commit": subject["commit"], "receipt": receipt}
+                    seen = value.get("cloud_seen")
+                    if seen and (not receipt or (seen["run"], seen["attempt"]) != (receipt["run"], receipt["attempt"])):
+                        receipt = None
+                        result["cloud_check"]["receipt"] = None
+                        result["cloud_check"]["phase"] = seen["phase"]
                 except (BoardError, session.SessionError, ValueError, KeyError, TypeError):
                     result["cloud_check"] = {"status": "stale"}
             result["report_text"] = (result.get("report_text", "") + "\n\n"
@@ -257,7 +263,9 @@ class Board:
             current = session._decode(self.settings.read_bytes())
             origin = candidate._git(self.repo, "config", "--local", "--no-includes", "--get-all",
                                     "remote.origin.url").decode().removesuffix("\n")
-            if (front.get("state") != "needs_human" or self.card_digest(front, body) != value["result_card_digest"]
+            kind = front.get("agent_kind") or (front.get("agent") or {}).get("kind")
+            if (kind != self.context["agent_kind"] or front.get("state") != "needs_human"
+                    or self.card_digest(front, body) != value["result_card_digest"]
                     or current.get("cloud_check") != cloud.PROFILE or self.stop_path.exists()
                     or origin not in (f"https://github.com/{cloud.REPO}.git", f"git@github.com:{cloud.REPO}.git")
                     or str(self.repo) != value["spec"]["project"]["root"] or self._base_commit() != report["base_commit"]
@@ -285,10 +293,22 @@ class Board:
             raise BoardError("cloud_conflict")
         return evidence
 
+    def _record_check(self, value, subject, evidence):
+        previous = value.get("cloud_attempt")
+        if previous and previous["run"] == evidence["run"] and previous["attempt"] > evidence["attempt"]:
+            raise BoardError("cloud_conflict")
+        record = {"version": 1, "subject": subject, "evidence": evidence}
+        archive = self.root / f"cloud-{evidence['run']}-{evidence['attempt']}.json"
+        if archive.exists():
+            if session._decode(session._read_state(archive)) != record:
+                raise BoardError("cloud_conflict")
+        else:
+            session._save(archive, record)
+        value["cloud_attempt"] = {"run": evidence["run"], "attempt": evidence["attempt"]}
+
     def attach_check(self, run_number):
+        """Compatibility for the diagnostic CLI and already-open older clients."""
         cloud.run_number(run_number)
-        # Serialize explicit lookups only. A slow public API never owns the
-        # assignment or a live provider session. Recheck locally before saving.
         with session._lock(self.root / "cloud-lookup"):
             subject = self._cloud_subject(self._load())
             evidence = cloud.verify(run_number, subject["commit"], subject["tree"], subject["base_commit"])
@@ -296,19 +316,62 @@ class Board:
                 value = self._load()
                 if self._cloud_subject(value) != subject:
                     raise BoardError("cloud_stale")
-                previous = value.get("cloud_attempt")
-                if previous and previous["run"] == evidence["run"] and previous["attempt"] > evidence["attempt"]:
-                    raise BoardError("cloud_conflict")
-                record = {"version": 1, "subject": subject, "evidence": evidence}
-                archive = self.root / f"cloud-{evidence['run']}-{evidence['attempt']}.json"
-                if archive.exists():
-                    if session._decode(session._read_state(archive)) != record:
-                        raise BoardError("cloud_conflict")
-                else:
-                    session._save(archive, record)
-                value["cloud_attempt"] = {"run": evidence["run"], "attempt": evidence["attempt"]}
+                self._record_check(value, subject, evidence)
                 self._save(value)
         return self.show()
+
+    def follow_check(self, hint, expected, *, allow_verify):
+        """Observe a public index entry. Only separately verified evidence can pass."""
+        with session._lock(self.root / "cloud-lookup"):
+            value = self._load()
+            if self._cloud_subject(value) != expected:
+                raise BoardError("cloud_stale")
+            prev = value.get("cloud_seen")
+            if prev and (prev["order"], prev["attempt"]) > (hint["order"], hint["attempt"]):
+                return
+            same = prev and (prev["run"], prev["attempt"]) == (hint["run"], hint["attempt"])
+            if same and prev["phase"] in ("verified", "unverified"):
+                return
+            receipt = self._cloud_receipt(value, expected)
+            phase = hint["phase"]
+            if receipt:
+                if receipt["run"] == hint["run"]:
+                    if receipt["attempt"] > hint["attempt"]:
+                        return
+                    if receipt["attempt"] == hint["attempt"]:
+                        phase = "verified"
+                elif not prev and hint["created"] < datetime.fromisoformat(receipt["completed_at"]).timestamp():
+                    # Pre-index receipts have no workflow sequence. Retain
+                    # their evidence when replaying older public history.
+                    return
+            evidence = failure = None
+            used = phase == "finished"
+            if phase == "finished":
+                if not allow_verify:
+                    return False
+                try:
+                    evidence = cloud.verify(str(hint["run"]), expected["commit"], expected["tree"], expected["base_commit"])
+                    if evidence["attempt"] != hint["attempt"]:
+                        return  # A rerun started between listing and verification.
+                    phase = "verified"
+                except cloud.CloudError as exc:
+                    if str(exc) == "cloud_unavailable":
+                        phase, failure = "waiting", exc
+                    else:
+                        phase = "unverified"
+            observed = {**hint, "phase": phase}
+            if observed != prev:
+                with session._lock(self.path):
+                    value = self._load()
+                    if self._cloud_subject(value) != expected:
+                        raise BoardError("cloud_stale")
+                    if evidence:
+                        self._record_check(value, expected, evidence)
+                    value["cloud_seen"] = observed
+                    self._save(value)
+            if failure:
+                raise failure
+            return used
 
     def stop(self) -> dict:
         with session._lock(self.path):
@@ -404,6 +467,55 @@ class Board:
         return self.show()
 
 
+def sync_checks(settings: Path, context: dict):
+    """One free service tick for this profile, independent of the browser."""
+    if context.get("identifier") != "":
+        raise BoardError("invalid_board_context")
+    folder = Path(context["workflow"]).resolve(strict=True).parent / ".ours-state/api-team"
+    if not folder.is_dir() or session._decode(settings.read_bytes()).get("cloud_check") != cloud.PROFILE:
+        return {}
+    profile = _digest([str(settings.resolve()), context["agent_kind"]])[:24]
+    path = session._path(_directory(folder) / f"cloud-index-{profile}.json")
+    with session._lock(path):
+        scan = session._decode(session._read_state(path)) if path.exists() else {}
+        now = time.time()
+        if scan.get("next", 0) > now:
+            return {}
+        targets = []
+        for child in sorted(folder.iterdir()):
+            if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", child.name) or child.is_symlink()
+                    or not (child / "assignment.json").is_file()):
+                continue
+            try:
+                board = Board(settings, {**context, "identifier": child.name})
+                value = board._load()
+                subject = board._cloud_subject(value)
+                targets.append((board, subject, datetime.fromisoformat(value["created_at"]).timestamp()))
+            except (BoardError, session.SessionError, OSError, ValueError, KeyError):
+                continue
+        if not targets:
+            return {}
+        # Reserve the next visit before I/O, including across a restart. At
+        # most one new receipt per tick; discovery pages are shared by cards.
+        scan["next"] = now + 240
+        session._save(path, scan)
+        budget = True
+        try:
+            matches = cloud.discover({s["commit"] for _, s, _ in targets}, min(t for _, _, t in targets) - 3600, scan)
+            for board, subject, _ in targets:
+                hint = matches.get(subject["commit"])
+                if hint:
+                    try:
+                        if board.follow_check(hint, subject, allow_verify=budget):
+                            budget = False
+                    except (BoardError, session.SessionError):
+                        continue
+        except cloud.CloudError as exc:
+            scan["next"] = max(now + 600, exc.retry_at)
+        session._save(path, scan)
+    return {}
+
+
 def keychain_credentials(spec):
     """Read each required service once; never print/store its secret value."""
     result = {}
@@ -432,7 +544,7 @@ def keychain_credentials(spec):
 def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--settings", required=True)
-    parser.add_argument("--action", required=True, choices=["prepare", "confirm", "show", "stop", "review", "attach-check", "run"])
+    parser.add_argument("--action", required=True, choices=["prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run"])
     args = parser.parse_args(argv)
     def interrupted(*_):
         raise Interrupted()
@@ -444,10 +556,15 @@ def cli(argv=None):
         message = session._decode(raw)
         if not isinstance(message, dict) or set(message) - {"context", "payload", "run_id"}:
             raise BoardError("invalid_board_message")
-        board = Board(Path(args.settings), message["context"])
         payload = message.get("payload", {})
         if not isinstance(payload, dict):
             raise BoardError("invalid_board_payload")
+        if args.action == "sync-checks":
+            if payload or message.get("run_id") is not None:
+                raise BoardError("invalid_board_payload")
+            print(json.dumps(sync_checks(Path(args.settings), message["context"])))
+            return 0
+        board = Board(Path(args.settings), message["context"])
         if args.action == "confirm":
             if set(payload) != {"confirmation_token"}:
                 raise BoardError("invalid_board_payload")

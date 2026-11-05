@@ -13,10 +13,12 @@ import json
 import os
 from pathlib import Path
 import shlex
+import time
 from typing import Any
 
 from ._shell import process_identity, terminate_process_tree
 from .errors import SymphonyError
+from .logging import get_logger
 from .workflow import AgentProfileConfig, ServiceConfig
 
 FORMAT = "api-team-v1"
@@ -62,7 +64,7 @@ def board_context(cfg: ServiceConfig, kind: str, identifier: str) -> dict[str, A
 
 async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
                  payload: dict | None = None, run_id: str | None = None, heartbeat=None) -> dict:
-    if action not in {"prepare", "confirm", "show", "stop", "review", "attach-check", "run"}:
+    if action not in {"prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run"}:
         raise SymphonyError("Неизвестное действие API-команды")
     profile = api_profile(cfg, kind)
     context = board_context(cfg, kind, identifier)
@@ -106,6 +108,8 @@ async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
         return reply
     task = asyncio.create_task(exchange())
     timeout = profile.turn_timeout_ms / 1000 if action == "run" else 60
+    if action == "sync-checks":
+        timeout = 120
     try:
         async with asyncio.timeout(timeout):
             while not task.done():
@@ -119,6 +123,49 @@ async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
         await asyncio.gather(task, return_exceptions=True)
         if proc.returncode is None:
             await asyncio.shield(terminate_process_tree(proc, identity=identity, term_timeout=5))
+
+
+def _cloud_enabled(command: str) -> bool:
+    # Only an explicitly opted-in runner may be started by the service.
+    # Legacy API profiles (including wrappers without --settings) stay idle.
+    try:
+        args = shlex.split(command)
+        settings = [args[i + 1] if arg == "--settings" else arg.split("=", 1)[1]
+                    for i, arg in enumerate(args) if arg == "--settings" or arg.startswith("--settings=")]
+        if len(settings) != 1:
+            return False
+        path = Path(settings[0])
+        if not path.is_absolute() or not path.is_file() or path.stat().st_size > 1024 * 1024:
+            return False
+        with path.open("rb") as stream:
+            config = json.loads(stream.read(1024 * 1024 + 1))
+        return isinstance(config, dict) and config.get("cloud_check") == "oms-public-linux-v1"
+    except (OSError, ValueError, IndexError, RecursionError):
+        return False
+
+
+def schedule_cloud_checks(orch, cfg: ServiceConfig) -> None:
+    """The service owns this read-only work, even with the board closed."""
+    now = time.monotonic()
+    if cfg.tracker.kind != "file" or now < orch._next_cloud_check:
+        return
+    if orch._cloud_check_task is not None and not orch._cloud_check_task.done():
+        return
+    orch._next_cloud_check = now + 60
+    kinds = [kind for kind, p in cfg.agent.profiles.items() if p.format == FORMAT]
+    if not kinds or not (cfg.workflow_path.parent / ".ours-state/api-team").is_dir():
+        return
+
+    async def sync():
+        for kind in kinds:
+            if not await asyncio.to_thread(_cloud_enabled, cfg.agent.profiles[kind].command):
+                continue
+            try:
+                await invoke(cfg, kind, "", "sync-checks")
+            except (OSError, SymphonyError, TimeoutError) as exc:
+                get_logger().warning("api_team_cloud_sync_unavailable", profile=kind, error_type=type(exc).__name__)
+
+    orch._cloud_check_task = orch._spawn_supervised(sync(), name="api-team-cloud-checks")
 
 
 class ApiTeamExecutor:

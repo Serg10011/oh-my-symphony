@@ -132,6 +132,41 @@ async def test_receipt_route_is_explicit_local_post_and_cannot_schedule_work(cli
     assert (await client.post(path, data="12345")).status == 415
     response = await client.post(path, json=payload, headers={"Origin": str(client.make_url("/")).rstrip("/")})
     assert response.status == 200 and calls == [("SEED-1", "attach-check", payload)]
+    assert (await client.post("/api/v1/issues/SEED-1/api-team/sync-checks", json={})).status == 404
+
+
+@pytest.mark.asyncio
+async def test_service_owns_one_background_check_without_an_open_board(workflow, monkeypatch):
+    cfg = workflow.current()
+    orch = Orchestrator(workflow)
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+    async def invoke(cfg, kind, identifier, action):
+        calls.append((kind, identifier, action))
+        entered.set()
+        await release.wait()
+        return {}
+    monkeypatch.setattr(api_team, "invoke", invoke)
+    api_team.schedule_cloud_checks(orch, cfg)
+    assert orch._cloud_check_task is None
+    (cfg.workflow_path.parent / ".ours-state/api-team").mkdir(parents=True)
+    orch._next_cloud_check = 0
+    api_team.schedule_cloud_checks(orch, cfg)
+    await orch._cloud_check_task
+    assert not calls
+    settings = cfg.workflow_path.parent / "cloud-settings.json"
+    settings.write_text('{"cloud_check":"oms-public-linux-v1"}')
+    profile = replace(cfg.agent.profiles["api-team"],
+                      command=cfg.agent.profiles["api-team"].command + " --settings " + shlex.quote(str(settings)))
+    cfg = replace(cfg, agent=replace(cfg.agent, profiles={"api-team": profile}))
+    orch._next_cloud_check = 0
+    api_team.schedule_cloud_checks(orch, cfg)
+    await asyncio.wait_for(entered.wait(), 2)
+    orch._next_cloud_check = 0
+    api_team.schedule_cloud_checks(orch, cfg)
+    assert calls == [("api-team", "", "sync-checks")]
+    release.set()
+    await orch._cloud_check_task
 
 
 @pytest.mark.asyncio
