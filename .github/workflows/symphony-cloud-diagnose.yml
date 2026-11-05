@@ -1,0 +1,65 @@
+name: Symphony cloud trial diagnosis
+on:
+  push:
+    branches: [codex/browser-api-pipeline]
+    paths:
+      - .github/workflows/symphony-cloud-diagnose.yml
+      - ours/ci/diagnostics/**
+permissions: {}
+jobs:
+  observe:
+    if: github.repository == 'Serg10011/oh-my-symphony' && github.ref == 'refs/heads/codex/browser-api-pipeline' && toJSON(github.event.repository.private) == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    env:
+      BASE: e2b1b5921f0032202c3c3af13da3425e69ea6cda
+      TRIAL: 543d4bfaf29058fd852f5baca8927743954b8a59
+      HARNESS: 92725f643b7f9238a1cc09e7fa8fcc2299258656
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Prepare the public trial and its original Linux tools
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          git init -q --bare sources.git
+          git -C sources.git fetch -q --no-tags --depth=1 https://github.com/Serg10011/oh-my-symphony.git \
+            "$BASE:refs/heads/base" "$TRIAL:refs/heads/trial" "$HARNESS" "$GITHUB_SHA"
+          git -C sources.git archive "$HARNESS" ours/ci/linux | tar -xf -
+          git -C sources.git show "$GITHUB_SHA:ours/ci/diagnostics/observe.py" > observe.py
+          git -C sources.git show base:uv.lock > ours/ci/linux/uv.lock
+          git -C sources.git show base:ours/hooks/summarize.py > ours/ci/linux/summarize.py
+          python3 ours/ci/linux/locked-requirements.py ours/ci/linux/uv.lock > ours/ci/linux/requirements.txt
+          docker build --tag symphony-check:local ours/ci/linux
+          docker image inspect --format 'TEST_IMAGE={{.Id}}' symphony-check:local
+      - name: Prove isolation again
+        run: bash "$RUNNER_TEMP/ours/ci/linux/host.sh" probe
+      - name: Observe process discovery and the offline fixture on the unmodified trial
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          token=$(cat /proc/sys/kernel/random/uuid)
+          echo "::stop-commands::$token"
+          trap 'echo "::$token::"' EXIT
+          docker run --rm --init --name symphony-check --read-only --user 10001:10001 \
+            --network none --cap-drop ALL --security-opt no-new-privileges:true \
+            --pids-limit 1536 --cpus 4 --memory 8g --memory-swap 8g --ulimit nofile=16384:16384 \
+            --tmpfs /tmp:rw,exec,nosuid,nodev,size=5g,mode=1777 \
+            --mount "type=bind,src=$PWD/sources.git,dst=/sources.git,readonly" \
+            --mount "type=bind,src=$PWD/observe.py,dst=/opt/observe.py,readonly" \
+            symphony-check:local bash -euc '
+              mkdir -p "$HOME"; git config --global --add safe.directory /sources.git
+              git config --global user.name Test; git config --global user.email check@localhost
+              git clone -q --depth 1 --branch trial file:///sources.git /tmp/project
+              cd /tmp/project; test "$(git rev-parse HEAD)" = "$1"
+              python -m venv --system-site-packages .venv; export PATH="$PWD/.venv/bin:$PATH"
+              python -m pip install --no-index --no-build-isolation --no-deps -e .
+              python /opt/observe.py
+            ' bash "$TRIAL"
+      - name: Release test container
+        if: always()
+        run: |
+          if docker container inspect symphony-check >/dev/null 2>&1; then docker rm -f symphony-check; fi
+          if docker container inspect symphony-check >/dev/null 2>&1; then exit 1; fi
+          echo "No test container remains on the runner."
