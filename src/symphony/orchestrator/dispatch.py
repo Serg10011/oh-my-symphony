@@ -718,6 +718,11 @@ def _eligibility_contract_decision(
             "inactive",
             f"inactive state: {issue.state}",
         )
+    from ..api_team import confirmed_in_queue, uses_board_queue
+    if (uses_board_queue(cfg, issue.agent_kind or cfg.agent.kind)
+            and not confirmed_in_queue(cfg, issue.identifier)):
+        return _EligibilityDecision(_EligibilityDisposition.REJECT, "api_not_queued",
+                                    "API assignment is not confirmed and queued")
     if not (issue.id and issue.identifier and issue.title and issue.state):
         return _EligibilityDecision(
             _EligibilityDisposition.REJECT,

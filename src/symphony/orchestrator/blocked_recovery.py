@@ -628,8 +628,12 @@ async def _auto_normalize_legacy_human_review_done(self: Orchestrator, cfg: Serv
     except Exception as exc:
         log.warning("human_review_normalize_fetch_failed", error=str(exc))
         return 0
+    from ..api_team import uses_board_queue
     moved = 0
     for issue in terminal_issues:
+        if uses_board_queue(cfg, issue.agent_kind):
+            # The API board accepts evidence tied to the exact files, never a prose "Confirm Done".
+            continue
         if not _legacy_human_review_is_done(issue):
             continue
         note_body = (

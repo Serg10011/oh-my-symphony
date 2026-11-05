@@ -23,11 +23,13 @@ import sys
 import time
 
 import api_executor as api
+import api_board_models as models
 import api_candidate as candidate
 import api_cloud_check as cloud
 import api_project as project
 import api_session as session
 from symphony.errors import SymphonyError
+from symphony.api_team import normal_review_lane
 from symphony.trackers.file import FileBoardTracker, parse_ticket_file
 from symphony.workflow import TrackerConfig
 
@@ -93,6 +95,17 @@ class Board:
         self.path = self.root / "assignment.json"
         self.session_path = self.root / "session.json"
         self.stop_path = self.root / "stop-requested"
+        self.teams = models.Teams(self.settings, self.context)
+        self.review_lane = normal_review_lane(context["terminal_states"])
+
+    def _can_prepare_from(self, current):
+        # Historical cards may already be parked at the original confirmation gate.
+        return current == "needs_human" or bool(self.review_lane and current == self.context["active_states"][0])
+
+    def _cancel_lane(self):
+        return next((s for s in self.context["terminal_states"] if s.casefold() in {"cancelled", "отменено"}),
+                    next((s for s in self.context["terminal_states"] if self.review_lane and s.casefold() == "archive"),
+                         "needs_human"))
 
     def card(self):
         path = self.tracker.find_path(self.identifier)
@@ -111,7 +124,7 @@ class Board:
         return project._git(str(self.repo), ["rev-parse", "--verify", "--end-of-options",
                                             base + "^{commit}"], limit=128).decode().strip()
 
-    def proposal(self) -> dict:
+    def proposal(self, team=None) -> dict:
         raw = session._decode(self.settings.read_bytes())
         if (not isinstance(raw, dict) or set(raw) - {"cloud_check"} != {"version", "paths", "session", "execution"}
                 or ("cloud_check" in raw and raw["cloud_check"] != cloud.PROFILE)
@@ -122,7 +135,11 @@ class Board:
         pinned = front.get("agent_kind") or (front.get("agent") or {}).get("kind")
         if pinned != self.context["agent_kind"]:
             raise BoardError("api_card_agent_changed")
-        spec = session.validate_spec({**raw["session"], "task": str(front.get("title", "")) + "\n\n" + body,
+        roles = self.teams.default() if team is None else models.pair(team)
+        options = {**raw["session"], **roles}
+        if roles["lead_profile"] != raw["session"].get("lead_profile", "deepseek-lead"):
+            options.pop("lead_effort", None)
+        spec = session.validate_spec({**options, "task": str(front.get("title", "")) + "\n\n" + body,
                                       "project": {"root": str(self.repo), "paths": raw["paths"],
                                                   "commit": self._base_commit()},
                                       "execution": raw["execution"]})
@@ -155,19 +172,19 @@ class Board:
     def _save(self, value):
         session._save(self.path, value)
 
-    def prepare(self) -> dict:
+    def prepare(self, team=None) -> dict:
         with session._lock(self.path):
             previous = self._load()
             if previous and previous["status"] != "prepared":
                 raise BoardError("api_assignment_already_used")
             front, _ = self.card()
-            if front.get("state") != "needs_human":
+            if not self._can_prepare_from(front.get("state")):
                 raise BoardError("api_card_must_wait_for_confirmation")
-            proposal = self.proposal()
+            proposal = self.proposal(team)
             token = secrets.token_urlsafe(32)
             value = {"version": 1, "identifier": self.identifier, "status": "prepared",
                      "created_at": session._now(), "expires_at": time.time() + PENDING_SECONDS,
-                     "token_sha256": _digest(token), **proposal}
+                     "token_sha256": _digest(token), "team_override": team, **proposal}
             self._save(value)
         return {**self.show(), "confirmation_token": token}
 
@@ -184,16 +201,16 @@ class Board:
                 return self.show()
             if time.time() > value["expires_at"]:
                 raise BoardError("api_confirmation_expired")
-            if self.proposal()["binding"] != value["binding"]:
+            if self.proposal(value.get("team_override"))["binding"] != value["binding"]:
                 raise BoardError("api_assignment_changed")
 
             def mutate(front, body):
                 if (self.card_digest(front, body) != value["card_digest"]
-                        or front.get("state") != "needs_human"):
+                        or not self._can_prepare_from(front.get("state"))):
                     raise BoardError("api_assignment_changed")
                 # Consume before publishing an executable state. A lost write
                 # can leave an idle assignment; it cannot start a second run.
-                value.update(status="queued", confirmed_at=session._now())
+                value.update(status="queued", confirmed_at=session._now(), board_stages=[self.context["active_states"][0]])
                 self._save(value)
                 front["state"] = self.context["active_states"][0]
                 front["updated_at"] = session._now()
@@ -204,7 +221,8 @@ class Board:
     def show(self) -> dict:
         value = self._load()
         if value is None:
-            return {"version": 1, "status": "unassigned", "identifier": self.identifier}
+            return {"version": 1, "status": "unassigned", "identifier": self.identifier,
+                    "team_picker": {"default": self.teams.default(), "override": None, **models.catalog()}}
         if value["status"] == "running":
             # The lifetime lock survives HTTP disconnects but is released by
             # the OS on process death. A crashed owner can never be retried.
@@ -231,6 +249,11 @@ class Board:
                   "reason": value.get("reason"), "run_id": value.get("run_id"),
                   "stop_requested": self.stop_path.exists(), "accepted": False, "delivered": False,
                   "delivery_status": "not_implemented"}
+        if "board_stages" in value:
+            result["board_stages"] = value["board_stages"]
+        if value["status"] == "prepared":
+            result["team_picker"] = {"default": self.teams.default(), "override": value.get("team_override"),
+                                     **models.catalog()}
         if self.session_path.exists():
             state = session._load(self.session_path)
             result["session"] = session.summary(state)
@@ -266,7 +289,10 @@ class Board:
             origin = candidate._git(self.repo, "config", "--local", "--no-includes", "--get-all",
                                     "remote.origin.url").decode().removesuffix("\n")
             kind = front.get("agent_kind") or (front.get("agent") or {}).get("kind")
-            if (kind != self.context["agent_kind"] or front.get("state") != "needs_human"
+            lanes = {value.get("result_lane", "needs_human")}
+            if value.get("check_lane") and self.review_lane:
+                lanes.update((self.review_lane, "needs_human"))
+            if (kind != self.context["agent_kind"] or front.get("state") not in lanes
                     or self.card_digest(front, body) != value["result_card_digest"]
                     or current.get("cloud_check") != cloud.PROFILE or self.stop_path.exists()
                     or origin not in (f"https://github.com/{cloud.REPO}.git", f"git@github.com:{cloud.REPO}.git")
@@ -308,6 +334,28 @@ class Board:
             session._save(archive, record)
         value["cloud_attempt"] = {"run": evidence["run"], "attempt": evidence["attempt"]}
 
+    def _checked_lane(self, value, subject):
+        """Project only durable verification evidence onto the original, unchanged card."""
+        pending = value.get("check_lane")
+        if not pending or not self.review_lane:
+            return
+        target = pending
+        receipt = self._cloud_receipt(value, subject)
+        seen = value.get("cloud_seen")
+        if receipt and (not seen or (seen["run"], seen["attempt"]) == (receipt["run"], receipt["attempt"])):
+            target = self.review_lane if receipt["status"] == "passed" else "needs_human"
+        if value["board_stages"][-1] == target:
+            return
+        def mutate(front, body):
+            if (front.get("state") not in {pending, self.review_lane, "needs_human"}
+                    or self.card_digest(front, body) != value["result_card_digest"]):
+                raise BoardError("cloud_stale")
+            front.update(state=target, updated_at=session._now())
+            return front, body
+        self.tracker._mutate_ticket(self.identifier, mutate)
+        value["board_stages"].append(target)
+        self._save(value)
+
     def attach_check(self, run_number):
         """Compatibility for the diagnostic CLI and already-open older clients."""
         cloud.run_number(run_number)
@@ -320,6 +368,7 @@ class Board:
                     raise BoardError("cloud_stale")
                 self._record_check(value, subject, evidence)
                 self._save(value)
+                self._checked_lane(value, subject)
         return self.show()
 
     def follow_check(self, hint, expected, *, allow_verify):
@@ -333,6 +382,10 @@ class Board:
                 return
             same = prev and (prev["run"], prev["attempt"]) == (hint["run"], hint["attempt"])
             if same and prev["phase"] in ("verified", "unverified"):
+                with session._lock(self.path):
+                    value = self._load()
+                    if self._cloud_subject(value) == expected:
+                        self._checked_lane(value, expected)
                 return
             receipt = self._cloud_receipt(value, expected)
             phase = hint["phase"]
@@ -371,6 +424,7 @@ class Board:
                         self._record_check(value, expected, evidence)
                     value["cloud_seen"] = observed
                     self._save(value)
+                    self._checked_lane(value, expected)
             if failure:
                 raise failure
             return used
@@ -385,19 +439,25 @@ class Board:
                 if value["status"] != "running":
                     value.update(status="stopped", reason="operator_stopped")
                     self._save(value)
-                    self._hold(value, "Запуск отменён до обращения к моделям.")
+                    self._hold(value, "Запуск отменён до обращения к моделям.", self._cancel_lane())
         return self.show()
 
-    def _hold(self, value, text):
+    def _hold(self, value, text, lane="needs_human"):
+        moved = False
         def mutate(front, body):
+            nonlocal moved
             # Do not overwrite operator edits or a different/recreated card.
             if (self.card_digest(front, body) != value["card_digest"]
                     or front.get("state") not in {*self.context["active_states"], "needs_human"}):
                 return front, body
-            front["state"] = "needs_human"
+            front["state"] = lane
+            moved = True
             front["updated_at"] = session._now()
             return front, _held_body(body, text)
         self.tracker._mutate_ticket(self.identifier, mutate)
+        if moved and "board_stages" in value and value["board_stages"][-1] != lane:
+            value["board_stages"].append(lane)
+            self._save(value)
 
     def review(self, offset=0):
         value = self._load()
@@ -421,7 +481,9 @@ class Board:
                     or not isinstance(run_id, str) or not re.fullmatch(r"[0-9a-f]{32}", run_id)):
                 raise BoardError("api_assignment_not_queued")
             try:
-                unchanged = self.proposal()["binding"] == value["binding"]
+                # An approved run keeps its team when the board default changes.
+                # Repository, raw settings, task and permissions are still revalidated.
+                unchanged = self.proposal(models.from_spec(value["spec"]))["binding"] == value["binding"]
             except (BoardError, candidate.CandidateError, session.SessionError, project.ProjectError, OSError, ValueError):
                 unchanged = False
             if not unchanged:
@@ -432,6 +494,8 @@ class Board:
             value.update(status="running", run_id=run_id, started_at=session._now())
             self._save(value)
         try:
+            self._stage(value, ("In Progress", "В работе"))
+            self._save(value)
             session.create(self.session_path, value["spec"])
             def should_stop():
                 if self.stop_path.exists() or bool(cancelled and cancelled()):
@@ -452,6 +516,7 @@ class Board:
             value.update(status="result" if outcome["status"] == "dialogue_complete" else "stopped",
                          reason=outcome["stop_reason"])
             if outcome["status"] == "dialogue_complete":
+                self._stage(value, ("Verify", "Проверка"))
                 value["candidate"] = candidate.public_report(candidate.prepare(self.session_path, self.workflow.parent,
                     self.identifier, value["rules"], cancelled=should_stop))
         except Interrupted as exc:
@@ -465,10 +530,32 @@ class Board:
                 session.interrupt(self.session_path, "board_execution_failed")
             value.update(status="stopped", reason="board_execution_failed")
         with session._lock(self.path):
+            if value["status"] == "result" and self.review_lane and value.get("candidate", {}).get("status") == "awaiting_full_checks":
+                lane = next((s for s in self.context["active_states"] if s.casefold() in {"verify", "проверка"}), None)
+                if lane:
+                    value.update(result_lane=lane, check_lane=lane)
+            elif self.stop_path.exists() and value.get("reason") == "operator_stopped":
+                value["result_lane"] = self._cancel_lane()
             value["finished_at"] = session._now()
             self._save(value)
-        self._hold(value, RESULT_NOTE)
+            self._hold(value, RESULT_NOTE, value.get("result_lane", "needs_human"))
         return self.show()
+
+    def _stage(self, value, names):
+        target = next((s for s in self.context["active_states"] if s.casefold() in
+                       {name.casefold() for name in names}), None)
+        if not target:
+            return
+        def mutate(front, body):
+            if (front.get("state") not in self.context["active_states"]
+                    or self.card_digest(front, body) != value["card_digest"]):
+                raise Interrupted()
+            if front["state"] != target:
+                front.update(state=target, updated_at=session._now())
+            return front, body
+        self.tracker._mutate_ticket(self.identifier, mutate)
+        if "board_stages" in value and value["board_stages"][-1] != target:
+            value["board_stages"].append(target)
 
 
 def sync_checks(settings: Path, context: dict):
@@ -548,7 +635,7 @@ def keychain_credentials(spec):
 def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--settings", required=True)
-    parser.add_argument("--action", required=True, choices=["prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run"])
+    parser.add_argument("--action", required=True, choices=["prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run", "team-options", "set-team-default"])
     args = parser.parse_args(argv)
     def interrupted(*_):
         raise Interrupted("board_process_interrupted")
@@ -563,13 +650,29 @@ def cli(argv=None):
         payload = message.get("payload", {})
         if not isinstance(payload, dict):
             raise BoardError("invalid_board_payload")
+        if args.action in {"team-options", "set-team-default"}:
+            if message.get("run_id") is not None or message["context"]["identifier"] != "":
+                raise BoardError("invalid_board_payload")
+            teams = models.Teams(Path(args.settings), message["context"])
+            if args.action == "team-options" and set(payload) <= {"identifiers"}:
+                result = teams.directory(payload.get("identifiers", []))
+            elif args.action == "set-team-default" and set(payload) == {"team"}:
+                result = teams.save(payload["team"])
+            else:
+                raise BoardError("invalid_board_payload")
+            print(json.dumps(result))
+            return 0
         if args.action == "sync-checks":
             if payload or message.get("run_id") is not None:
                 raise BoardError("invalid_board_payload")
             print(json.dumps(sync_checks(Path(args.settings), message["context"])))
             return 0
         board = Board(Path(args.settings), message["context"])
-        if args.action == "confirm":
+        if args.action == "prepare":
+            if set(payload) - {"team"}:
+                raise BoardError("invalid_board_payload")
+            result = board.prepare(payload.get("team"))
+        elif args.action == "confirm":
             if set(payload) != {"confirmation_token"}:
                 raise BoardError("invalid_board_payload")
             result = board.confirm(payload["confirmation_token"])

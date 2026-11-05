@@ -27,6 +27,30 @@ def _same_origin(request: web.Request) -> bool:
 
 
 def register_api_team_routes(app, ctx, orchestrator):
+    async def team_settings(request):
+        if not _request_is_loopback(request):
+            return _json_error(403, "api_team_local_only", "Настройки команды доступны только с этого компьютера")
+        kind = request.match_info["kind"]
+        cfg = ctx.config()
+        profile = api_team.api_profile(cfg, kind)
+        if not profile or not api_team.supports_team_settings(profile.command) or cfg.tracker.kind != "file":
+            return _json_error(404, "api_team_not_selected", "Такая API-команда не настроена")
+        if request.method == "POST":
+            if request.content_type != "application/json" or not _same_origin(request):
+                return _json_error(403, "api_team_origin", "Изменяй назначение на странице своей доски")
+            action, payload = "set-team-default", await _read_json(request)
+            if set(payload) != {"team"}:
+                return _json_error(400, "invalid_board_payload", "Допускается только выбор пары моделей")
+        else:
+            ids = request.query.getall("id", [])
+            if len(ids) > 100:
+                return _json_error(400, "invalid_board_payload", "Слишком много карточек")
+            action, payload = "team-options", {"identifiers": [_check_identifier(i) for i in ids]}
+        result = await api_team.invoke(cfg, kind, "", action, payload=payload)
+        return web.json_response(result, headers={"Cache-Control": "no-store, private"})
+    app.router.add_get("/api/v1/api-teams/{kind}", _wrap(team_settings))
+    app.router.add_post("/api/v1/api-teams/{kind}", _wrap(team_settings))
+
     async def handle(request, action="show"):
         if not _request_is_loopback(request):
             return _json_error(403, "api_team_local_only", "API-команда пока доступна только с этого компьютера")

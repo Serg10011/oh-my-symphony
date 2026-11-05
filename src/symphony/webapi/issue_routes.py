@@ -9,7 +9,7 @@ from typing import Any
 
 from aiohttp import web
 
-from ..api_team import api_profile
+from ..api_team import api_profile, normal_review_lane, supports_team_settings, uses_board_queue
 
 from ..errors import SymphonyError
 from ..issue import Issue, registration_order_key
@@ -171,6 +171,8 @@ def _register_issue_routes(
                     "default_agent_kind": cfg.agent.kind,
                     "agent_kinds": sorted(selectable_agent_kinds(cfg.agent.profiles)),
                     "api_team_kinds": sorted(k for k in cfg.agent.profiles if api_profile(cfg, k)),
+                    "api_team_model_kinds": sorted(k for k, profile in cfg.agent.profiles.items()
+                                                   if api_profile(cfg, k) and supports_team_settings(profile.command)),
                 },
                 "columns": _columns_payload(cfg),
                 "issues": issues,
@@ -370,6 +372,8 @@ def _register_issue_routes(
         tracker = ctx.file_tracker()
         title = _check_title(body.get("title"))
         agent_kind = _check_agent_kind(body.get("agent_kind"), cfg)
+        if not agent_kind and uses_board_queue(cfg, cfg.agent.kind):
+            agent_kind = cfg.agent.kind
         state = (
             _check_state(cfg, body.get("state"))
             if body.get("state")
@@ -379,7 +383,9 @@ def _register_issue_routes(
         if api_profile(cfg, agent_kind) is not None:
             if "needs_human" not in cfg.tracker.terminal_states:
                 return _json_error(409, "api_team_states", "Для API-команды нужен статус needs_human")
-            state = "needs_human"
+            if uses_board_queue(cfg, agent_kind) and not normal_review_lane(cfg.tracker.terminal_states):
+                return _json_error(409, "api_team_states", "Для обычной приёмки добавь завершающую колонку Human Review")
+            state = cfg.tracker.active_states[0] if uses_board_queue(cfg, agent_kind) else "needs_human"
         fields = {
             "title": title,
             "state": state,
@@ -609,7 +615,10 @@ def _register_issue_routes(
             if "agent_kind" in fields and fields["agent_kind"] != current.agent_kind:
                 if orchestrator.find_running_issue_id(identifier) is not None:
                     return _json_error(409, "state_in_use", "Сначала останови текущий запуск")
-                fields["state"] = new_state = "needs_human"
+                kind = fields.get("agent_kind", current.agent_kind)
+                if uses_board_queue(cfg, kind) and not normal_review_lane(cfg.tracker.terminal_states):
+                    return _json_error(409, "api_team_states", "Для обычной приёмки добавь завершающую колонку Human Review")
+                fields["state"] = new_state = cfg.tracker.active_states[0] if uses_board_queue(cfg, kind) else "needs_human"
 
         if not fields:
             return _json_error(400, "empty_patch", "no editable fields in body")

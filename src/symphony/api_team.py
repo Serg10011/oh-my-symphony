@@ -13,7 +13,9 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import re
 import shlex
+import stat
 import time
 from typing import Any
 
@@ -29,12 +31,13 @@ MAX_REPLY_BYTES = 8 * 1024 * 1024
 CHECKPOINT_ENV = "SYMPHONY_API_TEAM_CHECKPOINTS"
 CHECKPOINT = b"\x1e"
 PUBLIC_ERRORS = {
+    "invalid_composition": "Такое сочетание ведущего и исполнителя не поддерживается",
     "api_assignment_changed": "Задача или настройки изменились. Посмотри назначение заново перед подтверждением",
     "api_confirmation_expired": "Время подтверждения истекло. Посмотри назначение заново",
     "invalid_api_confirmation": "Подтверждение недействительно. Посмотри назначение заново",
     "api_assignment_already_used": "Это назначение уже использовано. Обнови панель, чтобы увидеть результат",
     "api_result_not_ready": "Изменения будут доступны после завершения или остановки команды",
-    "api_card_must_wait_for_confirmation": "Перед подготовкой назначения переведи карточку в needs_human",
+    "api_card_must_wait_for_confirmation": "Назначение можно подготовить только у ожидающей запуска карточки",
     "api_keychain_unavailable": "Не удалось получить ключ из Связки ключей",
     "session_busy": "Команда обновляет журнал. Повтори чтение через несколько секунд",
     "cloud_invalid_run": "Введи номер запуска GitHub Actions цифрами",
@@ -51,6 +54,46 @@ PUBLIC_ERRORS = {
 def api_profile(cfg: ServiceConfig, kind: str | None) -> AgentProfileConfig | None:
     profile = cfg.agent_profile(kind or "")
     return profile if profile is not None and profile.format == FORMAT else None
+
+
+def supports_team_settings(command: str) -> bool:
+    """Old custom runners do not implement the board model directory."""
+    try:
+        args = shlex.split(command)
+    except ValueError:
+        return False
+    return (any(Path(arg).is_absolute() and Path(arg).name == "api_board.py" for arg in args)
+            and any(arg == "--settings" or arg.startswith("--settings=") for arg in args))
+
+
+def uses_board_queue(cfg: ServiceConfig, kind: str | None) -> bool:
+    profile = api_profile(cfg, kind)
+    return profile is not None and supports_team_settings(profile.command)
+
+
+def normal_review_lane(states) -> str | None:
+    return next((s for s in states if s.casefold() in {"human review", "приёмка", "приемка"}), None)
+
+
+def confirmed_in_queue(cfg: ServiceConfig, identifier: str) -> bool:
+    """Cheap, read-only eligibility check; the runner still checks the full binding under lock."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", identifier):
+        return False
+    path = cfg.workflow_path.resolve().parent / ".ours-state" / "api-team" / identifier / "assignment.json"
+    try:
+        if path.resolve(strict=True) != path:
+            return False
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as stream:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600
+                    or info.st_uid != os.getuid() or info.st_size > 1024 * 1024):
+                return False
+            data = json.loads(stream.read(1024 * 1024 + 1))
+            return (isinstance(data, dict) and data.get("identifier") == identifier
+                    and data.get("status") == "queued" and bool(data.get("confirmed_at")))
+    except (OSError, ValueError, RecursionError, RuntimeError):
+        return False
 
 
 def board_context(cfg: ServiceConfig, kind: str, identifier: str) -> dict[str, Any]:
@@ -70,7 +113,8 @@ def board_context(cfg: ServiceConfig, kind: str, identifier: str) -> dict[str, A
 async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
                  payload: dict | None = None, run_id: str | None = None, heartbeat=None,
                  on_checkpoint: Callable[[], None] | None = None) -> dict:
-    if action not in {"prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run"}:
+    if action not in {"prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run",
+                      "team-options", "set-team-default"}:
         raise SymphonyError("Неизвестное действие API-команды")
     profile = api_profile(cfg, kind)
     context = board_context(cfg, kind, identifier)

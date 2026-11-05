@@ -180,7 +180,12 @@
   }
 
   const api = {
-    getBoard: () => apiRequest('/board'),
+    getBoard: async () => window.SymphonyApiModels.decorate(await apiRequest('/board'), (kind, ids) => {
+      const params = new URLSearchParams(ids.map(id => ['id', id]));
+      return apiRequest('/api-teams/' + encodeURIComponent(kind) + '?' + params, { signal: AbortSignal.timeout(4500) });
+    }),
+    saveTeam: (kind, team) => apiRequest('/api-teams/' + encodeURIComponent(kind),
+      { method: 'POST', body: JSON.stringify({ team }) }),
     getRequests: () => apiRequest('/requests'),
     getRequestSchedule: (kind, id) => {
       const params = new URLSearchParams({ kind, id });
@@ -897,10 +902,11 @@
     return el('select', { class: 'select' }, columns.map((c) => el('option', { value: c.name, selected: c.name === current }, c.name)));
   }
 
-  function buildAgentSelect(current) {
+  function buildAgentSelect(current, identifier) {
     const kinds = (state.board && state.board.board.agent_kinds) || [];
     const options = [el('option', { value: '', selected: !current }, t('board.defaultAgent'))];
-    for (const kind of kinds) options.push(el('option', { value: kind, selected: kind === current }, kind));
+    for (const kind of kinds) options.push(el('option', { value: kind, selected: kind === current },
+      window.SymphonyApiModels.kindLabel(state.board, kind, kind === current ? identifier : null)));
     return el('select', { class: 'select' }, options);
   }
 
@@ -1957,7 +1963,8 @@
       badges.appendChild(el('span', { class: `badge-priority ${meta.className}` }, `${meta.short} ${meta.label}`));
     }
     for (const label of issue.labels) badges.appendChild(el('span', { class: 'chip-label' }, label));
-    if (issue.agent_kind) badges.appendChild(el('span', { class: 'chip-agent' }, issue.agent_kind));
+    if (issue.agent_kind) badges.appendChild(el('span', { class: 'chip-agent' },
+      window.SymphonyApiModels.kindLabel(state.board, issue.agent_kind, issue.identifier)));
     else if (issue.last_agent_kind) {
       // Stage-routed board: no pin is written, so show who actually ran it.
       badges.appendChild(el('span', {
@@ -2214,7 +2221,7 @@
       );
     });
 
-    const agentSelect = buildAgentSelect(detail.agent_kind);
+    const agentSelect = buildAgentSelect(detail.agent_kind, detail.identifier);
     agentSelect.addEventListener('change', () => commitField(
       detail.identifier, 'agent_kind', agentSelect.value,
       () => { agentSelect.value = detail.agent_kind || ''; },
@@ -2300,6 +2307,10 @@
     if (isApiTeam) container.appendChild(window.SymphonyApiTeam.mount({
       el, identifier: detail.identifier, request: api.apiTeam,
       isActive: () => state.drawerIssue === detail.identifier,
+      onProfiles: profiles => {
+        const option = Array.from(agentSelect.options).find(o => o.value === detail.agent_kind);
+        if (option && profiles.lead) option.textContent = window.SymphonyApiModels.confirmedLabel(detail.agent_kind, profiles);
+      },
       onTransition: async () => {
         await refreshBoard();
         const current = state.board?.issues?.find(card => card.identifier === detail.identifier);
@@ -5189,7 +5200,8 @@
     const kinds = (state.board && state.board.board.agent_kinds) || wf.agent_kinds || [];
     const defaultLabel = t('settings.workflowDefault', { kind: (wf.agent && wf.agent.kind) || t('board.defaultAgent') });
     const options = [el('option', { value: '', selected: !current }, defaultLabel)];
-    for (const kind of kinds) options.push(el('option', { value: kind, selected: kind === current }, kind));
+    for (const kind of kinds) options.push(el('option', { value: kind, selected: kind === current },
+      window.SymphonyApiModels.kindLabel(state.board, kind)));
     return options;
   }
 
@@ -5426,6 +5438,9 @@
       body.appendChild(buildBoardInfoCard(wf));
       body.appendChild(buildInterfaceCard());
       body.appendChild(buildRefreshCard());
+      for (const [kind, data] of Object.entries(board.teamDirectory || {})) {
+        if (data) body.appendChild(window.SymphonyApiModels.settings(el, kind, data, api.saveTeam));
+      }
       body.appendChild(settingsSectionHeading(t('settings.workflowSetup'), t('settings.workflowSetupDescription')));
       body.appendChild(buildLanePresetCard(lanePresets, wf));
       body.appendChild(buildBranchPolicyCard(wf));

@@ -16,12 +16,17 @@
   const number = value => Number.isFinite(value) ? value.toLocaleString('ru-RU') : 'не указан';
   const model = value => value ? `${value.model} · усилие ${value.effort}` : 'не назначен';
 
-  function mount({ el, identifier, request, isActive, onTransition, schedule = setInterval, unschedule = clearInterval }) {
+  function mount({ el, identifier, request, isActive, onTransition, onProfiles, schedule = setInterval, unschedule = clearInterval }) {
     let token = null, busy = false, timer = null, lastStatus = null;
+    let selection = null, pickerKey = '';
     let nextCheckRead = 0;
     const status = el('p', { 'aria-live': 'polite' }, 'Загружаю назначение…');
     const error = el('p', { class: 'api-team-error', role: 'alert' });
     const assignment = el('div');
+    const route = el('p', { class: 'form-hint' });
+    route.hidden = true;
+    const selector = el('fieldset', { class: 'api-team-model-picker', 'aria-label': 'Команда карточки' });
+    selector.hidden = true;
     const report = el('pre', { class: 'api-team-text', tabindex: '0' });
     const reportDetails = el('details', {}, [el('summary', {}, 'Расходы и работа участников'), report]);
     const result = el('pre', { class: 'api-team-text', tabindex: '0' });
@@ -33,7 +38,7 @@
       buttons.push(node);
       return node;
     };
-    const prepare = button('Посмотреть назначение', () => act('prepare'));
+    const prepare = button('Посмотреть назначение', () => act('prepare', pickerKey ? { team: selection } : {}));
     const confirm = button('Подтвердить платный запуск', () => act('confirm', { confirmation_token: token }));
     const stop = button('Остановить', () => act('stop'));
     const refresh = button('Обновить', () => load());
@@ -46,7 +51,7 @@
     [prepare, confirm, stop, review, reportDetails, resultDetails].forEach(node => { node.hidden = true; });
     const actions = el('div', { class: 'api-team-actions' }, [prepare, confirm, stop, refresh, review]);
     const section = el('section', { class: 'api-team-panel', 'aria-label': 'API-команда' }, [
-      el('div', { class: 'section-heading' }, 'API-команда'), status, error, assignment, actions,
+      el('div', { class: 'section-heading' }, 'API-команда'), status, route, error, selector, assignment, actions,
       el('p', { class: 'form-hint' }, 'Сначала проверь назначение. Только отдельное подтверждение ставит платную работу в очередь. После остановки автоматического повтора нет.'),
       el('p', { class: 'form-hint' }, 'После проверки файлов решение о приёмке принимаешь ты.'),
       cloud, resultDetails, reportDetails, files,
@@ -62,12 +67,42 @@
       }
     }
     function render(data) {
+      route.hidden = !data.board_stages?.length;
+      if (!route.hidden) setText(route, 'Пройденные колонки: ' + data.board_stages.join(' → '));
       status.textContent = statuses[data.status] || 'Неизвестное состояние команды';
+      if (data.status === 'result' && data.candidate?.status === 'blocked')
+        status.textContent = 'Нужна помощь: проверка отклонила файлы команды.';
+      if (data.status === 'result' && data.candidate?.status === 'no_changes')
+        status.textContent = 'Нужна помощь: команда завершила работу без изменений файлов.';
       if (data.stop_requested && data.status === 'running') status.textContent += '. Остановка запрошена; текущий ответ ещё может оплачиваться.';
       if (data.reason) status.textContent += ' ' + (reasons[data.reason] || 'Причина остановки указана в отчёте.');
       if (data.status !== 'prepared') token = null;
       prepare.hidden = !['unassigned', 'prepared'].includes(data.status);
       confirm.hidden = data.status !== 'prepared' || !token;
+      const choices = data.team_picker;
+      selector.hidden = !choices || !['unassigned','prepared'].includes(data.status);
+      if (!selector.hidden && window.SymphonyApiModels) {
+        const key = JSON.stringify(choices);
+        if (key !== pickerKey) {
+          pickerKey = key; selection = choices.override;
+          const flag = el('input', { type: 'checkbox', 'aria-label': 'Другая команда для этой карточки' });
+          flag.checked = Boolean(selection);
+          const invalidate = () => { token = null; confirm.hidden = true; };
+          const make = current => window.SymphonyApiModels.picker(el, choices, current, pair => {
+            selection = pair; invalidate();
+          });
+          let inputs = make(selection || choices.default);
+          inputs.disable(!flag.checked);
+          const checkbox = el('label', {}, [flag, ' Другая команда для этой карточки']);
+          selector.replaceChildren(checkbox, inputs.row);
+          flag.addEventListener('change', () => {
+            invalidate();
+            if (!flag.checked) { selection = null; inputs = make(choices.default); selector.replaceChildren(checkbox, inputs.row); }
+            else selection = inputs.value();
+            inputs.disable(!flag.checked);
+          });
+        }
+      } else { pickerKey = ''; selection = null; }
       stop.hidden = !['prepared', 'queued', 'running'].includes(data.status) || data.stop_requested;
       review.hidden = !data.session?.execution || !['result', 'stopped'].includes(data.status);
       const check = data.cloud_check, receipt = check?.phase ? null : check?.receipt;
@@ -97,6 +132,7 @@
       setText(report, data.report_text || '');
       setText(result, data.session?.result || '');
       if (data.profiles) {
+        onProfiles?.(data.profiles);
         const limits = data.limits || {}, project = data.project || {};
         const rows = [
           ['Ведущий', model(data.profiles.lead)], ['Исполнитель', model(data.profiles.worker)],
@@ -125,16 +161,18 @@
     async function operation(fn) {
       if (busy || !active()) return;
       busy = true;
+      selector.disabled = true;
       buttons.forEach(node => { node.disabled = true; });
       error.textContent = '';
       try { await fn(); }
       catch (err) { if (active()) error.textContent = err.message || 'Не удалось получить ответ доски'; }
-      finally { busy = false; buttons.forEach(node => { node.disabled = false; }); }
+      finally { busy = false; selector.disabled = false; buttons.forEach(node => { node.disabled = false; }); }
     }
     async function act(action, payload = {}) {
       return operation(async () => {
         const data = await request(identifier, action, payload);
         if (!active()) return;
+        if (action === 'prepare') window.SymphonyApiModels?.invalidate();
         token = data.confirmation_token || (action === 'prepare' ? null : token);
         render(data);
       });
