@@ -213,7 +213,30 @@ def public_report(value: dict) -> dict:
             "issues": value.get("issues", [])[:20]}
 
 
-def render_report(value: dict) -> str:
+def check_identity(path: Path, value: dict, state: dict) -> None:
+    """Match the reported result to the sealed workspace and the actual private ref."""
+    report = value["candidate"]
+    repo = path.parent / "candidate.git"
+    saved = session._decode(session._read_state(path.parent / "candidate.json"))
+    if (repo.resolve(strict=True) != repo or saved.get("repository") != str(repo)
+            or public_report(saved) != report or saved["rules"] != value["rules"]
+            or report["identifier"] != value["identifier"] or report["checks"]["static"] != "passed"
+            or state["status"] != "dialogue_complete" or state["spec"] != value["spec"]
+            or not state["execution_state"]["sealed"]):
+        raise CandidateError("api_candidate_result_changed")
+    workspace.validate_state(state["execution_state"], state["spec"], state["project_snapshot"], path)
+    commit = _oid(project._git(str(repo), ["rev-parse", "--verify", "refs/heads/candidate^{commit}"], 128))
+    header = project._git(str(repo), ["cat-file", "commit", commit], 65536).split(b"\n\n", 1)[0].splitlines()
+    parents = [line[7:].decode("ascii") for line in header if line.startswith(b"parent ")]
+    trees = [line[5:].decode("ascii") for line in header if line.startswith(b"tree ")]
+    base = value["spec"]["project"]["commit"]
+    if (commit != report["commit"] or trees != [report["tree"]] or parents != [base]
+            or report["base_commit"] != base or workspace._revision(workspace.manifest(
+                state["spec"], state["execution_state"])) != report["revision"]):
+        raise CandidateError("api_candidate_result_changed")
+
+
+def render_report(value: dict, *, cloud_checked=False) -> str:
     value = public_report(value)
     labels = {"awaiting_full_checks": "Кандидат собран; полный прогон ещё не выполнен.",
               "no_changes": "Изменений файлов нет; задача автоматически не принята.",
@@ -230,11 +253,13 @@ def render_report(value: dict) -> str:
               "api_result_not_complete": "Нет завершённого результата команды",
               "workspace_result_not_sealed": "Рабочие файлы ещё не закреплены после выполнения команды",
               "candidate_preparation_failed": "Не удалось подтвердить настройки, целостность или готовность результата"}
-    rows = ["Проверка и передача файлов", labels[value["status"]]]
+    rows = ["Проверка и передача файлов", "Кандидат собран. Итог Linux-проверки показан отдельно."
+            if cloud_checked else labels[value["status"]]]
     rows.append(f"Изменённых файлов: {value['file_count']}.")
     for issue in value["issues"]:
         rows.append(issues.get(issue["code"], "Подготовка прервана") + (": " + issue["path"] if "path" in issue else ""))
     if value["issue_count"] > len(value["issues"]):
         rows.append(f"Других замечаний: {value['issue_count'] - len(value['issues'])}.")
-    rows.append("Полная проверка и доставка не выполнены. Приёмка остаётся за человеком.")
+    rows.append("Доставка ожидает отдельного решения. Приёмка остаётся за человеком." if cloud_checked
+                else "Полная проверка и доставка не выполнены. Приёмка остаётся за человеком.")
     return "\n".join(rows)

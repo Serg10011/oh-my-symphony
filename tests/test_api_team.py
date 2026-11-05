@@ -118,6 +118,23 @@ async def test_browser_actions_are_same_origin_and_never_expose_run(client, monk
 
 
 @pytest.mark.asyncio
+async def test_receipt_route_is_explicit_local_post_and_cannot_schedule_work(client, monkeypatch):
+    await select_api(client)
+    calls = []
+    async def invoke(cfg, kind, identifier, action, **kw):
+        calls.append((identifier, action, kw["payload"]))
+        return {"cloud_check": {"status": "ready"}}
+    monkeypatch.setattr(api_team, "invoke", invoke)
+    path = "/api/v1/issues/SEED-1/api-team/attach-check"
+    payload = {"run_number": "12345"}
+    assert (await client.get(path)).status == 405
+    assert (await client.post(path, json=payload, headers={"Origin": "https://other.invalid"})).status == 403
+    assert (await client.post(path, data="12345")).status == 415
+    response = await client.post(path, json=payload, headers={"Origin": str(client.make_url("/")).rstrip("/")})
+    assert response.status == 200 and calls == [("SEED-1", "attach-check", payload)]
+
+
+@pytest.mark.asyncio
 async def test_unselected_card_cannot_prepare_paid_assignment(client, monkeypatch):
     async def forbidden(*a, **kw):
         pytest.fail("No bridge process for unselected card")

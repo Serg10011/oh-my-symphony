@@ -48,7 +48,7 @@ def register_api_team_routes(app, ctx, orchestrator):
             orchestrator.request_refresh()
         return web.json_response(result, headers={"Cache-Control": "no-store, private"})
     app.router.add_get("/api/v1/issues/{identifier}/api-team", _wrap(handle))
-    for action in ("prepare", "confirm", "stop", "review"):
+    for action in ("prepare", "confirm", "stop", "review", "attach-check"):
         app.router.add_post("/api/v1/issues/{identifier}/api-team/" + action,
                             _wrap(_with_action(handle, action)))
 

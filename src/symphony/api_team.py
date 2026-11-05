@@ -30,6 +30,14 @@ PUBLIC_ERRORS = {
     "api_card_must_wait_for_confirmation": "Перед подготовкой назначения переведи карточку в needs_human",
     "api_keychain_unavailable": "Не удалось получить ключ из Связки ключей",
     "session_busy": "Команда обновляет журнал. Повтори чтение через несколько секунд",
+    "cloud_invalid_run": "Введи номер запуска GitHub Actions цифрами",
+    "cloud_not_enabled": "Для этого назначения чтение публичных проверок не включено",
+    "cloud_stale": "Карточка, файлы, база или настройки изменились. Сверить этот результат уже нельзя",
+    "cloud_other_candidate": "В этом запуске проверяли другую версию файлов",
+    "cloud_unavailable": "GitHub сейчас не отдал данные запуска. Проверь номер или повтори чтение позже",
+    "cloud_untrusted": "Не удалось подтвердить репозиторий, сценарий или шаги проверки",
+    "cloud_incomplete": "У прогона пока нет завершённого результата с подтверждённой изоляцией и уборкой",
+    "cloud_conflict": "Данные этой попытки расходятся с записью в истории карточки",
 }
 
 
@@ -54,7 +62,7 @@ def board_context(cfg: ServiceConfig, kind: str, identifier: str) -> dict[str, A
 
 async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
                  payload: dict | None = None, run_id: str | None = None, heartbeat=None) -> dict:
-    if action not in {"prepare", "confirm", "show", "stop", "review", "run"}:
+    if action not in {"prepare", "confirm", "show", "stop", "review", "attach-check", "run"}:
         raise SymphonyError("Неизвестное действие API-команды")
     profile = api_profile(cfg, kind)
     context = board_context(cfg, kind, identifier)

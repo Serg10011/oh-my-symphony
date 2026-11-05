@@ -1,6 +1,6 @@
 """Explicit, single-use API assignments for the existing file-backed board.
 
-The browser supplies only a confirmation token or a review cursor. Project
+The browser supplies a confirmation token, review cursor or public run number. Project
 permissions, provider profiles and execution settings come from trusted local
 configuration. No action other than run reads credentials or calls a provider.
 """
@@ -23,6 +23,7 @@ import time
 
 import api_executor as api
 import api_candidate as candidate
+import api_cloud_check as cloud
 import api_project as project
 import api_session as session
 from symphony.errors import SymphonyError
@@ -33,6 +34,8 @@ FORMAT = "api-team-v1"
 MAX_MESSAGE = 1024 * 1024
 PENDING_SECONDS = 600
 KEYCHAIN_SERVICES = {"DEEPSEEK_API_KEY": "symphony.deepseek", "OPENAI_API_KEY": "symphony.openai"}
+RESULT_NOTE = ("API-команда завершила запуск. Изменения, расходы и сведения о проверке доступны "
+               "в панели карточки. Решение о приёмке остаётся за человеком.")
 
 
 class BoardError(Exception):
@@ -46,6 +49,10 @@ class Interrupted(BaseException):
 def _digest(value) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False,
                                      default=str, allow_nan=False).encode()).hexdigest()
+
+
+def _held_body(body, note):
+    return body.rstrip() + "\n\n## API Team\n\n" + note + "\n"
 
 
 def _directory(path: Path) -> Path:
@@ -96,9 +103,15 @@ class Board:
         fields = {k: v for k, v in front.items() if k not in {"state", "updated_at", "last_agent_kind"}}
         return _digest({"front": fields, "body": body})
 
+    def _base_commit(self):
+        base = self.context["base_branch"] or "HEAD"
+        return project._git(str(self.repo), ["rev-parse", "--verify", "--end-of-options",
+                                            base + "^{commit}"], limit=128).decode().strip()
+
     def proposal(self) -> dict:
         raw = session._decode(self.settings.read_bytes())
-        if (not isinstance(raw, dict) or set(raw) != {"version", "paths", "session", "execution"}
+        if (not isinstance(raw, dict) or set(raw) - {"cloud_check"} != {"version", "paths", "session", "execution"}
+                or ("cloud_check" in raw and raw["cloud_check"] != cloud.PROFILE)
                 or raw["version"] != 1 or not isinstance(raw["session"], dict)
                 or set(raw["session"]) - {"context", "lead_profile", "worker_profile", "lead_effort", "limits", "budget"}):
             raise BoardError("invalid_api_board_settings")
@@ -106,12 +119,9 @@ class Board:
         pinned = front.get("agent_kind") or (front.get("agent") or {}).get("kind")
         if pinned != self.context["agent_kind"]:
             raise BoardError("api_card_agent_changed")
-        base = self.context["base_branch"] or "HEAD"
-        commit = project._git(str(self.repo), ["rev-parse", "--verify", "--end-of-options",
-                                               base + "^{commit}"], limit=128).decode().strip()
         spec = session.validate_spec({**raw["session"], "task": str(front.get("title", "")) + "\n\n" + body,
                                       "project": {"root": str(self.repo), "paths": raw["paths"],
-                                                  "commit": commit},
+                                                  "commit": self._base_commit()},
                                       "execution": raw["execution"]})
         session._path(self.session_path)
         spec["project"], snapshot = project.snapshot(spec["project"])
@@ -122,8 +132,12 @@ class Board:
                    "snapshot": snapshot["digest"], "profiles": session._profiles(spec),
                    "context": self.context, "settings": raw, "code": code,
                    "workflow_sha256": hashlib.sha256(self.workflow.read_bytes()).hexdigest(), "rules": rules}
-        return {"binding": _digest(binding), "card_digest": binding["card"], "spec": spec,
-                "profiles": binding["profiles"], "project_digest": snapshot["digest"], "rules": rules}
+        proposal = {"binding": _digest(binding), "card_digest": binding["card"], "spec": spec,
+                    "profiles": binding["profiles"], "project_digest": snapshot["digest"], "rules": rules}
+        if "cloud_check" in raw:
+            proposal.update(cloud_profile=cloud.PROFILE,
+                            result_card_digest=self.card_digest(front, _held_body(body, RESULT_NOTE).strip()))
+        return proposal
 
     def _load(self) -> dict | None:
         if not self.path.exists():
@@ -221,9 +235,80 @@ class Board:
         if value.get("candidate"):
             result["candidate"] = candidate.public_report(value["candidate"])
             result["delivery_status"] = value["candidate"]["status"]
+            receipt = None
+            if value.get("cloud_profile") and value["candidate"]["status"] == "awaiting_full_checks":
+                try:
+                    subject = self._cloud_subject(value)
+                    receipt = self._cloud_receipt(value, subject)
+                    result["cloud_check"] = {"status": "ready", "commit": subject["commit"], "receipt": receipt}
+                except (BoardError, session.SessionError, ValueError, KeyError, TypeError):
+                    result["cloud_check"] = {"status": "stale"}
             result["report_text"] = (result.get("report_text", "") + "\n\n"
-                                     + candidate.render_report(value["candidate"]))
+                                     + candidate.render_report(value["candidate"], cloud_checked=bool(receipt)))
         return result
+
+    def _cloud_subject(self, value):
+        if (not value or value.get("cloud_profile") != cloud.PROFILE or value["status"] != "result"
+                or value.get("candidate", {}).get("status") != "awaiting_full_checks"):
+            raise BoardError("cloud_not_enabled")
+        report = value["candidate"]
+        try:
+            front, body = self.card()
+            current = session._decode(self.settings.read_bytes())
+            origin = candidate._git(self.repo, "config", "--local", "--no-includes", "--get-all",
+                                    "remote.origin.url").decode().removesuffix("\n")
+            if (front.get("state") != "needs_human" or self.card_digest(front, body) != value["result_card_digest"]
+                    or current.get("cloud_check") != cloud.PROFILE or self.stop_path.exists()
+                    or origin not in (f"https://github.com/{cloud.REPO}.git", f"git@github.com:{cloud.REPO}.git")
+                    or str(self.repo) != value["spec"]["project"]["root"] or self._base_commit() != report["base_commit"]
+                    or candidate.rules_snapshot(self.workflow.parent) != value["rules"]):
+                raise BoardError("cloud_stale")
+            candidate.check_identity(self.session_path, value, session._load(self.session_path))
+        except (candidate.CandidateError, session.SessionError, session.workspace.WorkspaceError,
+                project.ProjectError, SymphonyError, OSError, ValueError, KeyError, TypeError, AttributeError):
+            raise BoardError("cloud_stale") from None
+        return {"profile": cloud.PROFILE, "identifier": self.identifier, "binding": value["binding"],
+                "run_id": value["run_id"], **{k: report[k] for k in ("commit", "tree", "revision", "base_commit")}}
+
+    def _cloud_receipt(self, value, subject):
+        ref = value.get("cloud_attempt")
+        if ref is None:
+            return None
+        number, attempt = ref["run"], ref["attempt"]
+        if any(type(n) is not int or n <= 0 for n in (number, attempt)):
+            raise BoardError("cloud_conflict")
+        record = session._decode(session._read_state(self.root / f"cloud-{number}-{attempt}.json"))
+        evidence = record["evidence"]
+        if (record["version"] != 1 or record["subject"] != subject or evidence["run"] != number
+                or evidence["attempt"] != attempt or evidence["status"] not in ("passed", "failed")
+                or any(evidence[k] != subject[k] for k in ("commit", "tree", "base_commit"))):
+            raise BoardError("cloud_conflict")
+        return evidence
+
+    def attach_check(self, run_number):
+        cloud.run_number(run_number)
+        # Serialize explicit lookups only. A slow public API never owns the
+        # assignment or a live provider session. Recheck locally before saving.
+        with session._lock(self.root / "cloud-lookup"):
+            subject = self._cloud_subject(self._load())
+            evidence = cloud.verify(run_number, subject["commit"], subject["tree"], subject["base_commit"])
+            with session._lock(self.path):
+                value = self._load()
+                if self._cloud_subject(value) != subject:
+                    raise BoardError("cloud_stale")
+                previous = value.get("cloud_attempt")
+                if previous and previous["run"] == evidence["run"] and previous["attempt"] > evidence["attempt"]:
+                    raise BoardError("cloud_conflict")
+                record = {"version": 1, "subject": subject, "evidence": evidence}
+                archive = self.root / f"cloud-{evidence['run']}-{evidence['attempt']}.json"
+                if archive.exists():
+                    if session._decode(session._read_state(archive)) != record:
+                        raise BoardError("cloud_conflict")
+                else:
+                    session._save(archive, record)
+                value["cloud_attempt"] = {"run": evidence["run"], "attempt": evidence["attempt"]}
+                self._save(value)
+        return self.show()
 
     def stop(self) -> dict:
         with session._lock(self.path):
@@ -246,7 +331,7 @@ class Board:
                 return front, body
             front["state"] = "needs_human"
             front["updated_at"] = session._now()
-            return front, body.rstrip() + "\n\n## API Team\n\n" + text + "\n"
+            return front, _held_body(body, text)
         self.tracker._mutate_ticket(self.identifier, mutate)
 
     def review(self, offset=0):
@@ -315,9 +400,7 @@ class Board:
         with session._lock(self.path):
             value["finished_at"] = session._now()
             self._save(value)
-        self._hold(value, "API-команда завершила запуск. Результат и расходы — в панели карточки. "
-                   "Проверка и кандидат изменений — там же. Полный прогон и доставка ещё не выполнены; "
-                   "завершение диалога не означает приёмку. Платного повтора не будет.")
+        self._hold(value, RESULT_NOTE)
         return self.show()
 
 
@@ -349,7 +432,7 @@ def keychain_credentials(spec):
 def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--settings", required=True)
-    parser.add_argument("--action", required=True, choices=["prepare", "confirm", "show", "stop", "review", "run"])
+    parser.add_argument("--action", required=True, choices=["prepare", "confirm", "show", "stop", "review", "attach-check", "run"])
     args = parser.parse_args(argv)
     def interrupted(*_):
         raise Interrupted()
@@ -373,6 +456,10 @@ def cli(argv=None):
             if set(payload) - {"offset"}:
                 raise BoardError("invalid_board_payload")
             result = board.review(payload.get("offset", 0))
+        elif args.action == "attach-check":
+            if set(payload) != {"run_number"}:
+                raise BoardError("invalid_board_payload")
+            result = board.attach_check(payload["run_number"])
         elif args.action == "run":
             if payload:
                 raise BoardError("invalid_board_payload")
@@ -384,10 +471,10 @@ def cli(argv=None):
             result = getattr(board, args.action)()
         print(json.dumps(result, ensure_ascii=False, allow_nan=False))
         return 0
-    except (BoardError, candidate.CandidateError, session.SessionError, project.ProjectError, OSError, ValueError, KeyError) as exc:
+    except (BoardError, cloud.CloudError, candidate.CandidateError, session.SessionError, project.ProjectError, OSError, ValueError, KeyError) as exc:
         # Detailed provider/OS error bodies may contain credentials. This is a
         # fixed bridge error, not a swallowed success or a license to retry.
-        code = str(exc) if isinstance(exc, (BoardError, session.SessionError)) else "api_board_action_refused"
+        code = str(exc) if isinstance(exc, (BoardError, cloud.CloudError, session.SessionError)) else "api_board_action_refused"
         print(json.dumps({"error": code}))
         return 2
 

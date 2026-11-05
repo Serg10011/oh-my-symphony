@@ -36,13 +36,22 @@
     const stop = button('Остановить', () => act('stop'));
     const refresh = button('Обновить', () => load());
     const review = button('Посмотреть изменения файлов', () => loadReview(0));
+    const runNumber = el('input', { type: 'text', inputmode: 'numeric', maxlength: '19',
+      'aria-label': 'Номер запуска GitHub Actions' });
+    const attach = button('Сверить проверку', () => act('attach-check', { run_number: runNumber.value.trim() }));
+    const lookup = el('div', { class: 'api-team-actions' }, [
+      el('label', {}, ['Номер запуска GitHub Actions ', runNumber]), attach]);
+    const cloudStatus = el('p', { role: 'status' });
+    const workflowLink = el('a', { target: '_blank', rel: 'noopener noreferrer' }, 'Открыть попытку на GitHub');
+    const cloud = el('div', {}, [el('strong', {}, 'Проверка файлов на Linux'), cloudStatus, workflowLink, lookup]);
+    cloud.hidden = true;
     [prepare, confirm, stop, review, reportDetails, resultDetails].forEach(node => { node.hidden = true; });
     const actions = el('div', { class: 'api-team-actions' }, [prepare, confirm, stop, refresh, review]);
     const section = el('section', { class: 'api-team-panel', 'aria-label': 'API-команда' }, [
       el('div', { class: 'section-heading' }, 'API-команда'), status, error, assignment, actions,
       el('p', { class: 'form-hint' }, 'Сначала проверь назначение. Только отдельное подтверждение ставит платную работу в очередь. После остановки автоматического повтора нет.'),
-      el('p', { class: 'form-hint' }, 'Проверка по правилам доски и доставка изменений пока не подключены. Завершённый диалог не означает, что задача принята.'),
-      resultDetails, reportDetails, files,
+      el('p', { class: 'form-hint' }, 'После проверки файлов решение о приёмке принимаешь ты.'),
+      cloud, resultDetails, reportDetails, files,
     ]);
     function active() { return isActive() && section.isConnected; }
     function setText(node, text) {
@@ -63,6 +72,22 @@
       confirm.hidden = data.status !== 'prepared' || !token;
       stop.hidden = !['prepared', 'queued', 'running'].includes(data.status) || data.stop_requested;
       review.hidden = !data.session?.execution || !['result', 'stopped'].includes(data.status);
+      const check = data.cloud_check, receipt = check?.receipt;
+      cloud.hidden = !check;
+      lookup.hidden = check?.status !== 'ready';
+      workflowLink.hidden = !receipt;
+      if (receipt) {
+        const outcome = receipt.status === 'passed' ? 'прошла' : 'завершилась с ошибкой';
+        const base = receipt.comparison === 'success' ? 'прошла' : 'завершилась с ошибкой';
+        setText(cloudStatus, `Сохранённая попытка №${receipt.attempt}. Проверка коммита ${check.commit.slice(0, 12)} ${outcome}.` +
+          ` Контрольная версия ${base}.`);
+        workflowLink.href = `https://github.com/Serg10011/oh-my-symphony/actions/runs/${receipt.run}/attempts/${receipt.attempt}`;
+      } else if (check) {
+        setText(cloudStatus, check.status === 'ready'
+          ? `Версия ${check.commit.slice(0, 12)}. Укажи номер уже готового прогона. Доска только прочитает его результат.`
+          : 'Карточка, файлы, база или настройки изменились. Результат требует новой сверки.');
+        workflowLink.removeAttribute('href');
+      }
       reportDetails.hidden = !data.report_text;
       resultDetails.hidden = !data.session?.result;
       setText(report, data.report_text || '');
