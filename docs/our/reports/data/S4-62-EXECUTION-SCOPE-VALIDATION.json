@@ -55,7 +55,23 @@
   "linux": {
     "run": 42117026505,
     "workflow": "16aeef64d20cb84fd37902a001155c2339413c2b",
-    "result": "pending"
+    "result": "passed",
+    "attempt": 1,
+    "url": "https://github.com/Serg10011/oh-my-symphony/actions/runs/42117026505/attempts/1",
+    "comparison": {
+      "passed": 6230,
+      "skipped": 140,
+      "failed": 1
+    },
+    "development": {
+      "passed": 6429,
+      "skipped": 148,
+      "failed": 0
+    },
+    "container_removed": true,
+    "remaining_baseline_failures": [
+      "ours/tests/test_project_update.py::test_running_manual_script_is_detected"
+    ]
   },
   "merged_or_installed": false
 }
