@@ -1,5 +1,5 @@
 name: Symphony Linux check
-run-name: &trial_sha '524a41321e67431493106223ed2808b294ab4010'
+run-name: &trial_sha 'f67487f01267b038e4c3c254300844ad964da41e'
 
 on:
   workflow_dispatch:
