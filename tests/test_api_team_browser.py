@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from symphony import api_team
+from symphony.errors import SymphonyError
 from tests.test_api_team import client, workflow, select_api  # noqa: F401
 from tests.test_webapi import board_dir  # noqa: F401
 
@@ -93,6 +94,8 @@ async def test_card_shows_attempt_and_comparison_without_a_new_run(request, monk
     async def invoke(cfg, kind, identifier, action, **kw):
         actions.append(action)
         if action == "attach-check":
+            if kw["payload"] == {"run_number": "23456"}:
+                raise SymphonyError("В этом запуске проверяли другую версию файлов", reason="cloud_other_candidate")
             assert kw["payload"] == {"run_number": "12345"}
             check["receipt"] = {"run": 12345, "attempt": 2, "status": "passed", "comparison": "failure"}
         return {"status": "result", "cloud_check": check}
@@ -108,18 +111,23 @@ async def test_card_shows_attempt_and_comparison_without_a_new_run(request, monk
             await page.locator(".card", has_text="SEED-1").click()
             panel = page.get_by_role("region", name="API-команда")
             field = panel.get_by_role("textbox", name="Номер запуска GitHub Actions")
+            await field.fill("23456")
+            await panel.get_by_role("button", name="Сверить проверку").click()
+            alert = panel.get_by_role("group", name="Проверка файлов на Linux").get_by_role("alert")
+            await playwright.expect(alert).to_contain_text("В этом запуске проверяли другую версию файлов")
             await field.fill("12345")
             await panel.get_by_role("button", name="Сверить проверку").click()
             await panel.get_by_text("Контрольная версия завершилась с ошибкой.", exact=False).wait_for()
             link = panel.get_by_role("link", name="Открыть попытку на GitHub")
             assert (await link.get_attribute("href")).endswith("/12345/attempts/2")
             assert "Проверка коммита cccccccccccc прошла" in await panel.inner_text()
+            assert not await alert.inner_text()
             check.clear()
             check["status"] = "stale"
             await panel.get_by_role("button", name="Обновить", exact=True).click()
             await panel.get_by_text("Результат требует новой сверки.", exact=False).wait_for()
             assert not await field.is_visible() and not await link.is_visible()
-            assert set(actions) == {"show", "attach-check"} and actions.count("attach-check") == 1
+            assert set(actions) == {"show", "attach-check"} and actions.count("attach-check") == 2
         finally:
             await browser.close()
 

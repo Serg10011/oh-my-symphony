@@ -38,12 +38,15 @@
     const review = button('Посмотреть изменения файлов', () => loadReview(0));
     const runNumber = el('input', { type: 'text', inputmode: 'numeric', maxlength: '19',
       'aria-label': 'Номер запуска GitHub Actions' });
-    const attach = button('Сверить проверку', () => act('attach-check', { run_number: runNumber.value.trim() }));
+    const lookupError = el('p', { class: 'api-team-error', role: 'alert' });
+    const attach = button('Сверить проверку',
+      () => act('attach-check', { run_number: runNumber.value.trim() }, lookupError));
     const lookup = el('div', { class: 'api-team-actions' }, [
       el('label', {}, ['Номер запуска GitHub Actions ', runNumber]), attach]);
     const cloudStatus = el('p', { role: 'status' });
     const workflowLink = el('a', { target: '_blank', rel: 'noopener noreferrer' }, 'Открыть попытку на GitHub');
-    const cloud = el('div', {}, [el('strong', {}, 'Проверка файлов на Linux'), cloudStatus, workflowLink, lookup]);
+    const cloud = el('div', { role: 'group', 'aria-label': 'Проверка файлов на Linux' },
+      [el('strong', {}, 'Проверка файлов на Linux'), cloudStatus, workflowLink, lookup, lookupError]);
     cloud.hidden = true;
     [prepare, confirm, stop, review, reportDetails, resultDetails].forEach(node => { node.hidden = true; });
     const actions = el('div', { class: 'api-team-actions' }, [prepare, confirm, stop, refresh, review]);
@@ -118,22 +121,23 @@
       if (lastStatus !== null && lastStatus !== data.status) onTransition?.();
       lastStatus = data.status;
     }
-    async function operation(fn) {
+    async function operation(fn, errorNode = error) {
       if (busy || !active()) return;
       busy = true;
       buttons.forEach(node => { node.disabled = true; });
       error.textContent = '';
+      lookupError.textContent = '';
       try { await fn(); }
-      catch (err) { if (active()) error.textContent = err.message || 'Не удалось получить ответ доски'; }
+      catch (err) { if (active()) errorNode.textContent = err.message || 'Не удалось получить ответ доски'; }
       finally { busy = false; buttons.forEach(node => { node.disabled = false; }); }
     }
-    async function act(action, payload = {}) {
+    async function act(action, payload = {}, errorNode = error) {
       return operation(async () => {
         const data = await request(identifier, action, payload);
         if (!active()) return;
         token = data.confirmation_token || (action === 'prepare' ? null : token);
         render(data);
-      });
+      }, errorNode);
     }
     async function load() {
       return operation(async () => {
