@@ -21,6 +21,7 @@ REPO = "Serg10011/oh-my-symphony"
 REPO_ID = 1431130186
 WORKFLOW_ID = 408070416
 BRANCH = "codex/browser-api-pipeline"
+CHECK_PREFIX = "codex/api-check/"
 WORKFLOW = ".github/workflows/symphony-cloud-check.yml"
 OID = re.compile(r"[0-9a-f]{40}")
 TRIAL_LINE = re.compile(rb"(?m)^(run-name: &trial_sha ')([0-9a-f]{40})(?='$)")
@@ -28,6 +29,7 @@ LEGACY_TRIAL_LINE = re.compile(rb"(?m)^(      TRIAL_SHA: )([0-9a-f]{40})$")
 # Reviewed at 22bdec0. Only the trial input may vary. The comparison base,
 # dependency lock, summarizer source, commands and permissions stay pinned.
 RECIPE = "2162a8a52c57ccfaf1047c18e0234ac7f6961d9771160a0c7599b8b2d7c1de18"
+CHECK_RECIPE = "c625651b8d2bfdfbaaee1128632a7e73f1e40da867a8f18d6145a724b4e7be9e"
 LEGACY_RECIPE = "61ca6f311b15c0f00a1c1cc931097526519aedca5a8527c48e95c17e187b65f9"
 PAGE_SIZE = 30
 TOOLS_TREE = "75538fbd39a5f1abbda09a2fa3c6257843dfa717"
@@ -95,17 +97,18 @@ def _trial(get, head):
     _require(blob["sha"] == oid and blob["encoding"] == "base64" and 0 < blob["size"] <= 8192)
     raw = base64.b64decode(blob["content"].replace("\n", ""), validate=True)
     _require(len(raw) == blob["size"])
-    for line, digest in ((TRIAL_LINE, RECIPE), (LEGACY_TRIAL_LINE, LEGACY_RECIPE)):
+    for line, digest in ((TRIAL_LINE, RECIPE), (TRIAL_LINE, CHECK_RECIPE), (LEGACY_TRIAL_LINE, LEGACY_RECIPE)):
         matches = line.findall(raw)
         if len(matches) == 1 and hashlib.sha256(line.sub(rb"\g<1>TRIAL", raw)).hexdigest() == digest:
             return matches[0][1].decode("ascii")
     raise CloudError("cloud_untrusted")
 
 
-def _verify(get, number, commit, tree, parent):
+def _verify(get, number, commit, tree, parent, source_commit=None):
     run = get(f"actions/runs/{number}")
     _require(run["id"] == number and run["workflow_id"] == WORKFLOW_ID and run["path"] == WORKFLOW
-             and run["event"] in ("push", "workflow_dispatch") and run["head_branch"] == BRANCH)
+             and run["event"] in ("push", "workflow_dispatch")
+             and run["head_branch"] in (BRANCH, CHECK_PREFIX + commit))
     for repo in (run["repository"], run["head_repository"]):
         _require(repo["id"] == REPO_ID and repo["full_name"] == REPO and repo["private"] is False)
     if run["status"] != "completed" or run["conclusion"] not in ("success", "failure"):
@@ -117,7 +120,8 @@ def _verify(get, number, commit, tree, parent):
         raise CloudError("cloud_other_candidate")
     tested = get(f"git/commits/{public_trial}")
     _require(tested["sha"] == public_trial)
-    if tested["tree"]["sha"] != tree or [p["sha"] for p in tested["parents"]] != [parent]:
+    parents = [parent] if source_commit is None else [source_commit, parent]
+    if tested["tree"]["sha"] != tree or [p["sha"] for p in tested["parents"]] != parents:
         raise CloudError("cloud_other_candidate")
     jobs = get(f"actions/runs/{number}/attempts/{attempt}/jobs")
     _require(jobs["total_count"] == len(jobs["jobs"]) == 1)
@@ -141,6 +145,7 @@ def _verify(get, number, commit, tree, parent):
     _require((run["conclusion"] == "success") == ("failure" not in outcomes))
     return {"run": number, "attempt": attempt, "job": job["id"], "completed_at": completed, "workflow_commit": head,
             "commit": commit, "tree": tree, "base_commit": parent, "comparison": outcomes[3],
+            **({"source_commit": source_commit} if source_commit is not None else {}),
             "status": "passed" if outcomes[4] == "success" else "failed"}
 
 
@@ -158,10 +163,15 @@ def _reader():
         raise CloudError("cloud_untrusted") from None
 
 
-def verify(number, commit, tree, parent):
+def verify(number, commit, tree, parent, source_commit=None):
     number = run_number(number)
     with _reader() as get:
-        return _verify(get, number, commit, tree, parent)
+        return _verify(get, number, commit, tree, parent, source_commit)
+
+
+def verify_subject(number, subject):
+    parents = [subject["source_commit"]] if "source_commit" in subject else []
+    return verify(str(number), subject["commit"], subject["tree"], subject["base_commit"], *parents)
 
 
 def discover(wanted, oldest, scan):
@@ -185,7 +195,9 @@ def discover(wanted, oldest, scan):
                 if created < oldest:
                     more = False
                     continue
-                if (run.get("workflow_id") != WORKFLOW_ID or run.get("head_branch") != BRANCH
+                branch = run.get("head_branch", "")
+                if (run.get("workflow_id") != WORKFLOW_ID or
+                    (branch != BRANCH and not (branch.startswith(CHECK_PREFIX) and branch[len(CHECK_PREFIX):] in wanted))
                         or run.get("event") not in ("push", "workflow_dispatch")):
                     continue
                 title = run.get("display_title", "")
@@ -206,7 +218,7 @@ def discover(wanted, oldest, scan):
                 # Even the in-progress indicator belongs to the actual input,
                 # not to a title set by another revision of the workflow.
                 commit = inputs[head]
-                if commit not in wanted:
+                if commit not in wanted or branch not in (BRANCH, CHECK_PREFIX + commit):
                     continue
                 number, order, attempt = (run[k] for k in ("id", "run_number", "run_attempt"))
                 _require(all(type(n) is int and n > 0 for n in (number, order, attempt)))

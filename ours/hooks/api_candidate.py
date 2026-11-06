@@ -236,7 +236,7 @@ def check_identity(path: Path, value: dict, state: dict) -> None:
         raise CandidateError("api_candidate_result_changed")
 
 
-def render_report(value: dict, *, cloud_checked=False) -> str:
+def render_report(value: dict, *, cloud_checked=False, accepted=False) -> str:
     value = public_report(value)
     labels = {"awaiting_full_checks": "Кандидат собран; полный прогон ещё не выполнен.",
               "no_changes": "Изменений файлов нет; задача автоматически не принята.",
@@ -260,6 +260,10 @@ def render_report(value: dict, *, cloud_checked=False) -> str:
         rows.append(issues.get(issue["code"], "Подготовка прервана") + (": " + issue["path"] if "path" in issue else ""))
     if value["issue_count"] > len(value["issues"]):
         rows.append(f"Других замечаний: {value['issue_count'] - len(value['issues'])}.")
-    rows.append("Доставка ожидает отдельного решения. Приёмка остаётся за человеком." if cloud_checked
-                else "Полная проверка и доставка не выполнены. Приёмка остаётся за человеком.")
+    if accepted:
+        rows.append("Приёмка подтверждена. Состояние PR указано в карточке.")
+    elif cloud_checked:
+        rows.append("Доставка ожидает отдельного решения. Приёмка остаётся за человеком.")
+    else:
+        rows.append("Полная проверка и доставка не выполнены. Приёмка остаётся за человеком.")
     return "\n".join(rows)

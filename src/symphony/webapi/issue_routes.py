@@ -611,7 +611,7 @@ def _register_issue_routes(
         if api_profile(cfg, fields.get("agent_kind", current.agent_kind)) is not None:
             if new_state is not None and new_state.lower() not in {"needs_human", "archive"}:
                 return _json_error(409, "api_team_confirmation_required",
-                                   "Запускай API-команду через её панель. Проверка и доставка результата пока не подключены")
+                                   "Открой панель API-команды в карточке. Там доступны действия для текущей версии")
             if "agent_kind" in fields and fields["agent_kind"] != current.agent_kind:
                 if orchestrator.find_running_issue_id(identifier) is not None:
                     return _json_error(409, "state_in_use", "Сначала останови текущий запуск")

@@ -67,12 +67,14 @@ def register_api_team_routes(app, ctx, orchestrator):
             return _json_error(404, "issue_not_found", "Карточка не найдена")
         if api_team.api_profile(cfg, issue.agent_kind) is None:
             return _json_error(409, "api_team_not_selected", "Для карточки не назначена API-команда")
+        if action in {"publish-check", "accept"} and not api_team.uses_board_queue(cfg, issue.agent_kind):
+            return _json_error(409, "release_destination_invalid", "Доставка доступна через штатный профиль API-доски")
         result = await api_team.invoke(cfg, issue.agent_kind, identifier, action, payload=payload)
-        if action in {"confirm", "stop"}:
+        if action in {"confirm", "stop", "publish-check", "accept"}:
             orchestrator.request_refresh()
         return web.json_response(result, headers={"Cache-Control": "no-store, private"})
     app.router.add_get("/api/v1/issues/{identifier}/api-team", _wrap(handle))
-    for action in ("prepare", "confirm", "stop", "review", "attach-check"):
+    for action in ("prepare", "confirm", "stop", "review", "attach-check", "publish-check", "accept"):
         app.router.add_post("/api/v1/issues/{identifier}/api-team/" + action,
                             _wrap(_with_action(handle, action)))
 

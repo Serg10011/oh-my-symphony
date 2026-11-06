@@ -56,6 +56,25 @@ PUBLIC_ERRORS = {
     "cloud_untrusted": "Не удалось подтвердить репозиторий, сценарий или шаги проверки",
     "cloud_incomplete": "У прогона пока нет завершённого результата с подтверждённой изоляцией и уборкой",
     "cloud_conflict": "Данные этой попытки расходятся с записью в истории карточки",
+    "release_offer_changed": "Версия или результат проверки изменились. Обнови карточку перед подтверждением",
+    "release_base_not_synced": "База проекта и GitHub расходятся. Синхронизируй клон проекта и снова открой карточку",
+    "release_destination_invalid": "Для этой доставки нужны публичная OMS, база our-main и обычная карточка проекта",
+    "release_target_changed": "Файлы или настройки проверки изменились. Нужна сверка результата",
+    "release_receipt_changed": "GitHub изменил результат попытки. Доска обновит статус проверки",
+    "release_branch_occupied": "Ветка или запись доставки уже используется. Проверь её до публикации",
+    "release_branch_changed": "Ветка на GitHub изменилась или была удалена. Нужна проверка человеком",
+    "release_branch_unconfirmed": "GitHub не подтвердил создание ветки. Повтори действие для показанной версии",
+    "release_pr_unconfirmed": "GitHub пока не подтвердил PR. Повтори доставку, чтобы сверить ветку и PR",
+    "release_pr_changed": "PR относится к другой ветке, базе или версии. Требуется проверка человеком",
+    "release_remote_unavailable": "Не удалось завершить доставку через GitHub. Повтори действие для этой версии",
+    "release_check_recipe_changed": "Сценарий или инструменты Linux-проверки отличаются от проверенных",
+    "release_gh_unavailable": "Для публикации нужен установленный GitHub CLI",
+    "release_merge_conflict": "При объединении с новой базой возник конфликт. Требуется внимание человека",
+    "release_base_diverged": "История базовой ветки разошлась с версией задачи. Требуется внимание человека",
+    "release_paths_changed": "Объединение с новой базой затронуло защищённые файлы или вышло за состав задачи",
+    "release_possible_secret": "В изменённых файлах найдена строка, похожая на ключ. Требуется проверка человеком",
+    "release_already_in_base": "В текущей базе уже есть эти изменения. Проверь, можно ли закрыть задачу",
+    "release_base_after_acceptance": "База сдвинулась после разрешения доставки. Проверь опубликованную версию",
 }
 
 
@@ -149,7 +168,7 @@ async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
                  payload: dict | None = None, run_id: str | None = None, heartbeat=None,
                  on_checkpoint: Callable[[], None] | None = None) -> dict:
     if action not in {"prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run",
-                      "team-options", "set-team-default"}:
+                      "team-options", "set-team-default", "publish-check", "accept"}:
         raise SymphonyError("Неизвестное действие API-команды")
     profile = api_profile(cfg, kind)
     context = board_context(cfg, kind, identifier)
@@ -203,6 +222,8 @@ async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
     timeout = profile.turn_timeout_ms / 1000 if action == "run" else 60
     if action == "sync-checks":
         timeout = 120
+    elif action in {"publish-check", "accept"}:
+        timeout = 900
     try:
         async with asyncio.timeout(timeout):
             while not task.done():

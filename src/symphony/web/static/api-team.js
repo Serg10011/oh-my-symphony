@@ -26,7 +26,7 @@
 
   function mount({ el, identifier, request, isActive, onTransition, onProfiles, schedule = setInterval, unschedule = clearInterval }) {
     let token = null, busy = false, timer = null, lastStatus = null;
-    let selection = null, pickerKey = '';
+    let selection = null, pickerKey = '', releaseChoice = null, lastLane = null;
     let nextCheckRead = 0;
     const status = el('p', { 'aria-live': 'polite' }, 'Загружаю назначение…');
     const error = el('p', { class: 'api-team-error', role: 'alert' });
@@ -62,6 +62,17 @@
     const stop = button('Остановить', () => act('stop'));
     const refresh = button('Обновить', () => load());
     const review = button('Посмотреть изменения файлов', () => loadReview(0));
+    const reviewOriginal = button('Изменения исходной версии', () => loadReview(0, 'original'));
+    const releaseStatus = el('p', { role: 'status' });
+    const releaseFiles = el('pre', { class: 'api-team-text' });
+    const releaseList = el('details', {}, [el('summary', {}, 'Файлы этой версии'), releaseFiles]);
+    const releaseButton = button('', () => {
+      if (releaseChoice) act(releaseChoice.stage, { offer: releaseChoice.offer });
+    });
+    const releaseLink = el('a', { target: '_blank', rel: 'noopener noreferrer' }, 'Открыть PR');
+    const releaseBox = el('div', { role: 'group', 'aria-label': 'Передача результата' },
+      [releaseStatus, releaseList, reviewOriginal, releaseButton, releaseLink]);
+    releaseBox.hidden = true;
     const cloudStatus = el('p', { role: 'status' });
     const workflowLink = el('a', { target: '_blank', rel: 'noopener noreferrer' }, 'Открыть попытку на GitHub');
     const cloud = el('div', { role: 'group', 'aria-label': 'Проверка файлов на Linux' },
@@ -73,7 +84,7 @@
       el('div', { class: 'section-heading' }, 'API-команда'), status, route, error, selector, spend, assignment, actions,
       el('p', { class: 'form-hint' }, 'Сначала проверь назначение. Только отдельное подтверждение ставит платную работу в очередь. После остановки автоматического повтора нет.'),
       el('p', { class: 'form-hint' }, 'После проверки файлов решение о приёмке принимаешь ты.'),
-      cloud, resultDetails, reportDetails, files,
+      cloud, releaseBox, resultDetails, reportDetails, files,
     ]);
     function active() { return isActive() && section.isConnected; }
     function setText(node, text) {
@@ -93,6 +104,34 @@
         status.textContent = 'Нужна помощь: проверка отклонила файлы команды.';
       if (data.status === 'result' && data.candidate?.status === 'no_changes')
         status.textContent = 'Нужна помощь: команда завершила работу без изменений файлов.';
+      const release = data.release;
+      releaseBox.hidden = !release || ['checking', 'waiting'].includes(release.stage);
+      releaseChoice = release?.offer ? release : null;
+      releaseButton.hidden = !releaseChoice;
+      releaseList.hidden = !releaseChoice;
+      reviewOriginal.hidden = !releaseChoice?.original;
+      releaseLink.hidden = true;
+      if (!releaseBox.hidden) {
+        if (releaseChoice) {
+          const publishing = release.stage === 'publish-check';
+          const destination = `${release.repo} · ${release.branch}`;
+          setText(releaseStatus, `${release.rebuilt ? 'Версия на обновлённой базе' : 'Версия'} ${release.commit.slice(0, 12)}. Изменённых файлов — ${release.file_count}. ` +
+            (publishing ? `Проверка опубликует эти файлы в ${destination}.` :
+              `После приёмки откроется PR из ${destination} в ${release.base}.`) +
+            (publishing && release.original ? ` В историю войдёт также исходная версия ${release.original.commit.slice(0, 12)}.` : ''));
+          const names = group => group.files.join('\n') + (group.files.length < group.file_count ? '\n…' : '');
+          setText(releaseFiles, names(release) + (release.original ? '\n\nИсходная версия\n' + names(release.original) : ''));
+          releaseButton.textContent = publishing ? 'Опубликовать и проверить на GitHub' :
+            (release.accepted ? 'Продолжить создание PR' : 'Принять версию и открыть PR');
+        } else if (release.stage === 'delivered') {
+          setText(releaseStatus, `Версия ${release.commit.slice(0, 12)} принята · PR №${release.pr.number}`);
+          releaseLink.href = `https://github.com/Serg10011/oh-my-symphony/pull/${release.pr.number}`;
+          releaseLink.hidden = false;
+        } else {
+          setText(releaseStatus, release.message || 'Для доставки требуется внимание.');
+        }
+      }
+      if (data.accepted) status.textContent = data.delivered ? 'Версия принята, PR открыт' : 'Версия принята, ожидает создания PR';
       if (data.stop_requested && data.status === 'running') status.textContent += '. Остановка запрошена; текущий ответ ещё может оплачиваться.';
       if (data.reason) status.textContent += ' ' + (reasons[data.reason] || 'Причина остановки указана в отчёте.');
       if (data.session?.execution?.review_source === 'before_command')
@@ -193,8 +232,10 @@
           assignment.replaceChildren(list, task, access);
         }
       }
-      if (lastStatus !== null && lastStatus !== data.status) onTransition?.();
+      const lane = data.board_stages?.at(-1);
+      if (lastStatus !== null && (lastStatus !== data.status || lastLane !== lane)) onTransition?.();
       lastStatus = data.status;
+      lastLane = lane;
     }
     async function operation(fn) {
       if (busy || !active()) return;
@@ -221,14 +262,17 @@
         if (active()) render(data);
       });
     }
-    async function loadReview(offset) {
+    async function loadReview(offset, version = 'checked') {
       return operation(async () => {
-        const data = await request(identifier, 'review', { offset });
+        const data = await request(identifier, 'review', version === 'original' ? { offset, version } : { offset });
         if (!active()) return;
         const previous = files.querySelector('button');
         if (previous) previous.remove();
         if (offset === 0) {
           files.replaceChildren(el('p', {}, `Изменённых файлов: ${number(data.total)}`));
+          if (data.source === 'delivery_target') files.prepend(el('p', {},
+            `Изменения версии ${data.commit.slice(0, 12)} относительно обновлённой базы ${data.base_commit.slice(0, 12)}.`));
+          if (data.source === 'original_candidate') files.prepend(el('p', {}, `Исходная версия ${data.commit.slice(0, 12)}.`));
           if (data.source === 'before_command') files.prepend(el('p', {},
             'Черновик до остановившей работу команды. Её изменения здесь не показаны; задача не сдана.'));
         }
@@ -237,7 +281,7 @@
           files.appendChild(el('details', {}, [el('summary', {}, `${file.path} — ${change}`),
             el('pre', { class: 'api-team-text', tabindex: '0' }, file.binary ? 'Двоичный файл; текстового сравнения нет.' : file.diff || 'Нет текстовых изменений')]));
         }
-        if (data.next_offset !== null) files.appendChild(button('Следующие файлы', () => loadReview(data.next_offset)));
+        if (data.next_offset !== null) files.appendChild(button('Следующие файлы', () => loadReview(data.next_offset, version)));
       });
     }
     // Initial load starts after the caller attaches the drawer to the document.

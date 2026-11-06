@@ -382,6 +382,18 @@ class Delivery:
 
     def _push(self) -> int:
         project, board = self.load_board()
+        if project.get("api_team") or (board / pc.STATE_DIR / "api-team" / self.id / "assignment.json").exists():
+            # A formerly stopped API card may later have an explicitly
+            # selected CLI backend. Follow the current card and workflow.
+            from symphony.api_team import api_profile
+            from symphony.trackers.file import parse_ticket_file
+            from symphony.workflow import build_service_config, load_workflow
+
+            cfg = build_service_config(load_workflow(board / "WORKFLOW.md"))
+            fields, _ = parse_ticket_file(board / pc.BOARD_DIR / f"{self.id}.md")
+            kind = fields.get("agent_kind") or (fields.get("agent") or {}).get("kind") or cfg.agent.kind
+            if api_profile(cfg, kind) is not None:
+                raise Refused("API-карточку доставляет панель приёмки проверенной версии на доске")
         repo, base = project["delivery"].get("repo"), project["delivery"].get("base")
         self.check_delivery_section(project, repo, base)
         front, body = self.read_card(board, project)
