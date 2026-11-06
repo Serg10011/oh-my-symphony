@@ -23,7 +23,7 @@ from ..errors import SymphonyError
 from ..factory.wayfinder import factory_proof_commands
 from ..issue import BlockerRef, Issue, normalize_state
 from ..skills import render_skill_block, select_skills_for_stage
-from ..workflow import ServiceConfig, selectable_agent_kinds
+from ..workflow import ServiceConfig
 from ..workflow.levels import LevelError
 from ..workspace import WorkspaceManager
 from .constants import ARCHIVE_SWEEP_INTERVAL_SEC, WAIT_AGE_BUMP_MIN, _TOKEN_EMA_ALPHA
@@ -734,7 +734,7 @@ def _eligibility_contract_decision(
             "incomplete issue identity",
         )
     requested_agent = _requested_agent_kind(issue)
-    kinds = selectable_agent_kinds(cfg.agent.profiles)
+    kinds = cfg.board_agent_kinds()
     if requested_agent is not None and requested_agent not in kinds:
         log.warning(
             "ticket_agent_kind_unsupported",
@@ -1371,6 +1371,9 @@ def _dispatch(
         "retry" if attempt is not None else "initial"
     )
     agent_kind = cfg.agent.kind_for_state(issue.state, _requested_agent_kind(issue))
+    if cfg.agent.allowed_kinds and agent_kind not in cfg.board_agent_kinds():
+        log.warning("ticket_agent_kind_unsupported", identifier=issue.identifier, agent_kind=agent_kind)
+        return False
     acquisition = self._try_acquire_run_lease(
         cfg=cfg,
         issue=issue,

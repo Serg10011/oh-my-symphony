@@ -14,7 +14,6 @@ from ..orchestrator.scheduler import (
     dependency_cycle_nodes,
 )
 from ..workflow import (
-    selectable_agent_kinds,
     SUPPORTED_CI_MODES,
     ServiceConfig,
 )
@@ -425,7 +424,7 @@ def _workflow_payload(cfg: ServiceConfig) -> dict[str, Any]:
                 cfg.tracker.active_states
             ),
         },
-        "agent_kinds": sorted(selectable_agent_kinds(cfg.agent.profiles)),
+        "agent_kinds": sorted(cfg.board_agent_kinds()),
         "continuous_improvement": _continuous_improvement_payload(cfg),
         "preview": {
             "enabled": cfg.preview.enabled,

@@ -9,6 +9,7 @@ from typing import Any
 
 from aiohttp import web
 
+from .. import api_team
 from ..api_team import api_profile, normal_review_lane, supports_team_settings, uses_board_queue
 
 from ..errors import SymphonyError
@@ -26,7 +27,6 @@ from ..skills import normalize_skill_names
 from ..trackers.file import FileBoardTracker, parse_ticket_file
 from ..trackers.validate import validate_ticket_dependencies
 from ..workflow import (
-    selectable_agent_kinds,
     ServiceConfig,
 )
 from ..workflow.mutate import WorkflowMutationError
@@ -169,7 +169,9 @@ def _register_issue_routes(
                     "tracker_kind": cfg.tracker.kind,
                     "read_only": read_only,
                     "default_agent_kind": cfg.agent.kind,
-                    "agent_kinds": sorted(selectable_agent_kinds(cfg.agent.profiles)),
+                    "new_issue_kind": cfg.agent.new_issue_kind,
+                    "id_prefix": cfg.tracker.id_prefix,
+                    "agent_kinds": sorted(cfg.board_agent_kinds()),
                     "api_team_kinds": sorted(k for k in cfg.agent.profiles if api_profile(cfg, k)),
                     "api_team_model_kinds": sorted(k for k, profile in cfg.agent.profiles.items()
                                                    if api_profile(cfg, k) and supports_team_settings(profile.command)),
@@ -371,7 +373,7 @@ def _register_issue_routes(
         cfg = ctx.config()
         tracker = ctx.file_tracker()
         title = _check_title(body.get("title"))
-        agent_kind = _check_agent_kind(body.get("agent_kind"), cfg)
+        agent_kind = _check_agent_kind(body.get("agent_kind"), cfg) or cfg.agent.new_issue_kind
         if not agent_kind and uses_board_queue(cfg, cfg.agent.kind):
             agent_kind = cfg.agent.kind
         state = (
@@ -421,10 +423,11 @@ def _register_issue_routes(
             prefix = (
                 prefix_raw.strip().upper()
                 if isinstance(prefix_raw, str) and prefix_raw.strip()
-                else "TASK"
+                else cfg.tracker.id_prefix
             )
             if not re.match(r"^[A-Za-z][A-Za-z0-9]{0,15}$", prefix):
                 raise WorkflowMutationError("prefix must be 1-16 alphanumeric chars")
+        fields["api_defaults"] = await api_team.defaults_for_new_card(cfg, agent_kind, body.get("prefix"), identifier_arg)
         identifier, _ = await asyncio.to_thread(
             partial(
                 tracker.create_validated,

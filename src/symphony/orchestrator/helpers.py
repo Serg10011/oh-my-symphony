@@ -24,7 +24,7 @@ from ..issue import Issue, normalize_state, sort_for_dispatch
 from ..logging import get_logger
 from ..notifications import NotificationEvent, dispatch_notification
 from ..ticket_markdown import parse_body_dependency_ids
-from ..workflow import ServiceConfig, selectable_agent_kinds
+from ..workflow import ServiceConfig
 from ..workflow.levels import apply_level
 from .constants import (
     _AUTO_TRIAGE_ACCEPTANCE_RE,
@@ -211,7 +211,7 @@ def _config_for_issue_agent(cfg: ServiceConfig, issue: Issue) -> ServiceConfig:
     `level` (else `agent.default_level`) also sets model, effort and limits.
     """
     pin = _requested_agent_kind(issue)
-    kinds = selectable_agent_kinds(cfg.agent.profiles)
+    kinds = cfg.board_agent_kinds()
     if pin is not None and pin not in kinds:
         raise ConfigValidationError(
             f"ticket agent.kind must be one of {sorted(kinds)}",

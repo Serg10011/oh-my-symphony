@@ -20,10 +20,12 @@ the current `WORKFLOW.md` (or an explicit one passed with --workflow).
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from pathlib import Path
 
+from .. import api_team
 from ..errors import SymphonyError
 from ..issue import Issue, normalize_state
 from ..trackers.file import FileBoardTracker, parse_ticket_file
@@ -227,6 +229,12 @@ def cmd_new(args: argparse.Namespace) -> int:
         return 1
     try:
         level = _check_level(args)
+        cfg = _resolve_config(args) if args.workflow is not None or args.root is None else None
+        kind, frozen = args.agent_kind, None
+        if cfg and cfg.tracker.board_root == tracker.board_root:
+            kind = kind or cfg.agent.new_issue_kind or None
+            if cfg.agent.new_issue_kind and api_team.uses_board_queue(cfg, kind):
+                frozen = asyncio.run(api_team.defaults_for_new_card(cfg, kind, args.prefix, identifier))
     except SymphonyError as exc:
         print(f"error: {_operator_message(exc)}", file=sys.stderr)
         return 1
@@ -246,14 +254,15 @@ def cmd_new(args: argparse.Namespace) -> int:
         # calls must not each see an acyclic board and jointly create a cycle.
         resolved, path = fbt.create_validated(
             identifier=identifier,
-            prefix=args.prefix,
+            prefix=args.prefix or tracker.id_prefix,
             validate=_validate,
             title=args.title,
             state=state,
             priority=args.priority,
             labels=_collect_labels(args),
             description=description,
-            agent_kind=args.agent_kind,
+            agent_kind=kind,
+            api_defaults=frozen,
             skills=args.skills.split(",") if args.skills else None,
             blocked_by=blocked_by or None,
             request=args.request,
@@ -483,7 +492,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_workflow_args(p_new)
     p_new.add_argument("id", nargs="?", help="explicit unused identifier; omit for automatic allocation")
     p_new.add_argument("title", help="ticket title")
-    p_new.add_argument("--prefix", default="TASK", help="prefix for automatic IDs (default: TASK)")
+    p_new.add_argument("--prefix", help="prefix for automatic IDs (default: project prefix, otherwise TASK)")
     p_new.add_argument("--creation-key", default=None, help="idempotent creation key for an explicit ID (64 hex characters)")
     p_new.add_argument("--json", action="store_true", help="print the resulting ticket as JSON")
     p_new.add_argument('--staged', action='store_true', help='require a non-dispatched state and a creation key')
@@ -596,7 +605,7 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     if getattr(args, "agent_kind", None) is not None:
         cfg = _resolve_config(args)
-        kinds = selectable_agent_kinds(cfg.agent.profiles if cfg else ())
+        kinds = cfg.board_agent_kinds() if cfg else selectable_agent_kinds()
         if args.agent_kind not in kinds:
             print(
                 f"error: unknown agent kind {args.agent_kind!r}; expected one of {sorted(kinds)}",

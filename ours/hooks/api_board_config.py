@@ -8,6 +8,7 @@ import shlex
 import yaml
 
 import api_cloud_check as cloud
+import api_executor as api
 import api_session as session
 
 
@@ -15,27 +16,53 @@ def load_settings(path: Path) -> dict:
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 1024 * 1024:
         raise session.SessionError("invalid_api_board_settings")
     raw = session._decode(path.read_bytes())
-    if (not isinstance(raw, dict) or set(raw) - {"cloud_check"} != {"version", "paths", "session", "execution"}
+    if (not isinstance(raw, dict) or set(raw) - {"cloud_check", "mode", "route"} != {"version", "paths", "session", "execution"}
             or type(raw["version"]) is not int or raw["version"] != 1
             or ("cloud_check" in raw and raw["cloud_check"] != cloud.PROFILE)
+            or ("mode" in raw and raw["mode"] not in ("economy", "productivity"))
+            or ("route" in raw and raw["route"] != "single-api")
             or not isinstance(raw["session"], dict)
             or set(raw["session"]) - {"context", "lead_profile", "worker_profile", "lead_effort", "limits", "budget"}):
         raise session.SessionError("invalid_api_board_settings")
     return raw
 
 
-def render(text: str, board: Path, project: dict, hooks: Path) -> str:
+def session_options(raw, roles):
+    options = {**raw["session"], **roles}
+    lead = options.get("lead_profile", "deepseek-lead")
+    if "mode" in raw:
+        if "lead_effort" in raw["session"]:
+            raise session.SessionError("invalid_api_board_settings")
+        if lead not in ("deepseek-lead", "sol-lead"):
+            raise session.SessionError("invalid_composition")
+        options["lead_effort"] = "max" if raw["mode"] == "productivity" else api.profile_for(lead).effort
+    elif lead != raw["session"].get("lead_profile", "deepseek-lead"):
+        options.pop("lead_effort", None)
+    return options
+
+
+def render(text: str, board: Path, project: dict, hooks: Path, *, settings_dir: Path | None = None) -> str:
     options = project["api_team"]
     settings = board / options["settings_file"]
-    raw = load_settings(settings)
+    raw = load_settings((settings_dir or board) / options["settings_file"])
     # Validate grants, model profiles and limits without reading repository
     # objects, obtaining credentials or creating a session/assignment.
-    session.validate_spec({**raw["session"], "task": "Validate board settings",
+    session.validate_spec({**session_options(raw, {}), "task": "Validate board settings",
         "project": {"root": project["project"]["repo"], "paths": raw["paths"], "commit": "0" * 40},
         "execution": raw["execution"]})
     _, front, body = text.split("---\n", 2)
     workflow = yaml.safe_load(front)
     agent = workflow["agent"]
+    workflow["tracker"]["id_prefix"] = project["project"]["id_prefix"]
+    if options["default"] or options.get("new_cards"):
+        agent["new_issue_kind"] = "api-team"
+    if raw.get("route") == "single-api":
+        if not options["default"]:
+            raise session.SessionError("invalid_api_board_settings")
+        agent["allowed_kinds"] = ["api-team"]
+        tracker = workflow["tracker"]
+        tracker["active_states"] = ["Todo", "In Progress", "Verify"]
+        tracker["terminal_states"] = ["Human Review", "needs_human", "Done", "Blocked", "Archive"]
     agent["profiles"] = {"api-team": {
         "format": "api-team-v1",
         "command": shlex.join([project["tools"]["python"], "-B", str(hooks / "api_board.py"),

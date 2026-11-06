@@ -2047,8 +2047,10 @@
     const stateSelect = buildStateSelect(defaults.state);
     const prioritySelect = buildPrioritySelect(null);
     const labelsInput = el('input', { class: 'input', type: 'text', placeholder: t('board.labelsPlaceholder') });
-    const agentSelect = buildAgentSelect('');
-    const prefixInput = el('input', { class: 'input', type: 'text', placeholder: 'TASK', maxlength: 16 });
+    const agentSelect = buildAgentSelect(state.board?.board?.new_issue_kind || '');
+    const prefixInput = el('input', {
+      class: 'input', type: 'text', placeholder: state.board?.board?.id_prefix || 'TASK', maxlength: 16,
+    });
     const blockedByInput = el('input', { class: 'input', type: 'text', placeholder: t('board.blockedByPlaceholder') });
     const requestInput = el('input', { class: 'input', type: 'text', placeholder: t('board.requestPlaceholder') });
 
@@ -2077,7 +2079,7 @@
           agent_kind: agentSelect.value,
           blocked_by: parseIdList(blockedByInput.value),
           request: requestInput.value.trim(),
-          prefix: prefixInput.value.trim() || 'TASK',
+          prefix: prefixInput.value.trim() || undefined,
         });
         showToast(t('board.issueCreated', { id: created.identifier }), 'success');
         await refreshBoard();

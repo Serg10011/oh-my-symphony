@@ -243,6 +243,9 @@ def build_service_config(
         else "Archive"
     )
 
+    id_prefix = tracker_raw.get("id_prefix", "TASK")
+    if not isinstance(id_prefix, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,15}", id_prefix):
+        raise ConfigValidationError("tracker.id_prefix must be an identifier prefix", value=id_prefix)
     tracker = TrackerConfig(
         kind=tracker_kind,
         endpoint=tracker_endpoint,
@@ -261,6 +264,7 @@ def build_service_config(
         email=tracker_email,
         network_timeout_seconds=network_timeout_seconds,
         run_history_path=base_dir / ".symphony" / "state.db",
+        id_prefix=id_prefix.upper(),
     )
 
     polling_raw = cfg.get("polling") or {}
@@ -342,6 +346,12 @@ def build_service_config(
     default_level = parse_default_level(agent_raw.get("default_level"), levels)
     agent_profiles = _validated_agent_profiles(agent_raw.get("profiles"))
     selectable_kinds = selectable_agent_kinds(agent_profiles)
+    allowed = agent_raw.get("allowed_kinds")
+    if allowed is not None:
+        if (not isinstance(allowed, list) or not allowed
+                or any(not isinstance(k, str) or k not in selectable_kinds for k in allowed)):
+            raise ConfigValidationError("agent.allowed_kinds must list selectable backends", value=allowed)
+        selectable_kinds = set(allowed)
     agent_kind = _canonical_agent_kind(
         _as_str(agent_raw.get("kind"), DEFAULT_AGENT_KIND).strip().lower()
         or DEFAULT_AGENT_KIND
@@ -352,8 +362,13 @@ def build_service_config(
             "(built-in kinds or agent.profiles names)",
             value=agent_kind,
         )
+    new_kind = agent_raw.get("new_issue_kind", "")
+    if not isinstance(new_kind, str) or (new_kind and new_kind not in selectable_kinds):
+        raise ConfigValidationError("agent.new_issue_kind must be a selectable backend", value=new_kind)
     agent = AgentConfig(
         kind=agent_kind,
+        new_issue_kind=new_kind,
+        allowed_kinds=tuple(sorted(selectable_kinds)) if allowed is not None else (),
         max_concurrent_agents=_validated_positive_or_default(
             agent_raw.get("max_concurrent_agents"),
             DEFAULT_MAX_CONCURRENT_AGENTS,
