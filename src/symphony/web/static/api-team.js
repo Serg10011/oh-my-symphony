@@ -16,6 +16,208 @@
   };
   const number = value => Number.isFinite(value) ? value.toLocaleString('ru-RU') : 'не указан';
   const model = value => value ? `${value.model} · усилие ${value.effort}` : 'не назначен';
+  const amountPattern = /([0-9]+(?:\.[0-9]{1,6})?)\s*USD/;
+
+  // The board already returns the detailed spend report as text. Read the
+  // same amounts from it instead of inventing a second price calculation.
+  function micros(value) {
+    const match = typeof value === 'string' ? amountPattern.exec(value) : null;
+    if (!match) return null;
+    const [whole, fraction = ''] = match[1].split('.');
+    return Number(whole) * 1000000 + Number((fraction + '000000').slice(0, 6));
+  }
+
+  function usd(value) {
+    if (value === null || value === undefined) return 'н/д';
+    return `${Math.floor(value / 1000000)}.${String(value % 1000000).padStart(6, '0')} USD`;
+  }
+
+  function count(value) {
+    if (typeof value !== 'string') return null;
+    const match = /^\s*([0-9][0-9\s\u00a0\u202f]*)/.exec(value);
+    if (!match) return null;
+    const digits = match[1].replace(/[\s\u00a0\u202f]/g, '');
+    return digits ? Number(digits) : null;
+  }
+
+  function costLine(value) {
+    const known = micros(value);
+    return { known, complete: known !== null && value.includes('осторожная оценка по каталогу') };
+  }
+
+  function modelRows(lines) {
+    const start = lines.findIndex(line => line.trim() === 'Итог по моделям');
+    if (start < 0) return [];
+    let end = lines.findIndex((line, index) => index > start && line.trim() === 'Токены и кеш за сессию');
+    if (end < 0) end = lines.length;
+    const rows = [];
+    let current = null;
+    for (let index = start + 1; index < end; index += 1) {
+      const line = lines[index];
+      const heading = /^  (.+): запросов (.*)$/.exec(line);
+      if (heading) {
+        current = { model: heading[1], calls: count(heading[2]), profiles: [], known: null, complete: false };
+        rows.push(current);
+        continue;
+      }
+      if (!current) continue;
+      const profiles = /^    профили: (.*)$/.exec(line);
+      if (profiles) {
+        current.profiles = profiles[1].split(',').map(item => item.trim()).filter(Boolean);
+        continue;
+      }
+      const cost = /^    стоимость: (.*)$/.exec(line);
+      if (cost) Object.assign(current, costLine(cost[1]));
+    }
+    return rows;
+  }
+
+  function spendSummary(text, session, profiles) {
+    if (typeof text !== 'string' || !text.trim()) return null;
+    const lines = text.split(/\r?\n/);
+    const sessionProfiles = session && typeof session === 'object' ? session.profiles : null;
+    const boardProfiles = profiles && typeof profiles === 'object' ? profiles : null;
+    const profile = role => (sessionProfiles && sessionProfiles[role])
+      || (boardProfiles && boardProfiles[role]) || null;
+    const lead = profile('lead'), worker = profile('worker');
+    const leadName = (session && typeof session.lead_profile === 'string' && session.lead_profile)
+      || (lead && lead.name) || null;
+    const declaredWorker = session && Object.prototype.hasOwnProperty.call(session, 'worker_profile')
+      ? session.worker_profile : undefined;
+    const workerName = (typeof declaredWorker === 'string' && declaredWorker)
+      || (worker && worker.name) || null;
+    const leadModel = lead && lead.model ? lead.model : null;
+    const workerModel = worker && worker.model ? worker.model : null;
+    const rows = modelRows(lines);
+    let totalLine = null, knownLine = null, missingLine = null;
+    for (const line of lines) {
+      if (totalLine === null && line.startsWith('  оценка за всю сессию:')) totalLine = line;
+      if (knownLine === null && line.startsWith('  известная часть:')) knownLine = line;
+      if (missingLine === null && line.startsWith('  запросов без оценки:')) missingLine = line;
+    }
+    if (!rows.length && totalLine === null && knownLine === null) return null;
+
+    let totalKnown = null, totalComplete = false, knownTotal = null;
+    let estimatedRequests = null, reportedCalls = null, missing = null;
+    if (totalLine !== null) {
+      if (!totalLine.includes('полной суммы нет')) {
+        totalKnown = micros(totalLine);
+        totalComplete = totalKnown !== null;
+      }
+    }
+    if (knownLine !== null) {
+      knownTotal = micros(knownLine);
+      const match = /известная часть:.*? за\s+(.+?)\s+из\s+(.+?)\s+запросов/.exec(knownLine);
+      if (match) {
+        estimatedRequests = count(match[1]);
+        reportedCalls = count(match[2]);
+      }
+    }
+    if (missingLine !== null) {
+      missing = count(missingLine.replace(/^  запросов без оценки:\s*/, ''));
+    }
+    if (totalLine === null && knownLine === null) {
+      totalKnown = rows.reduce((sum, row) => sum + (row.known === null ? 0 : row.known), 0);
+      knownTotal = totalKnown;
+      totalComplete = rows.length > 0 && rows.every(row => row.complete && row.known !== null);
+    }
+    if (reportedCalls === null) {
+      reportedCalls = rows.reduce((sum, row) => sum + (typeof row.calls === 'number' ? row.calls : 0), 0);
+    }
+
+    const roleState = () => ({ assigned: false, known: 0, knownSeen: false, complete: true,
+      seen: false, calls: 0 });
+    const roles = { lead: roleState(), worker: roleState() };
+    roles.lead.assigned = Boolean(leadName || leadModel || lead);
+    roles.worker.assigned = Boolean(workerName || workerModel || worker);
+    const roleName = name => {
+      if (leadName && name === leadName) return 'lead';
+      if (workerName && name === workerName) return 'worker';
+      if (!leadName && /-lead$/i.test(name)) return 'lead';
+      if (!workerName && /-worker$/i.test(name)) return 'worker';
+      return null;
+    };
+    let breakdownIncomplete = false, unallocatedKnown = 0;
+    for (const row of rows) {
+      const rowRoles = new Set();
+      for (const name of row.profiles) {
+        const role = roleName(name);
+        if (role) {
+          rowRoles.add(role);
+          roles[role].assigned = true;
+        }
+      }
+      if (!rowRoles.size) {
+        if (leadModel && row.model === leadModel) rowRoles.add('lead');
+        if (workerModel && row.model === workerModel) rowRoles.add('worker');
+      }
+      if (rowRoles.size === 1) {
+        const state = roles[Array.from(rowRoles)[0]];
+        state.seen = true;
+        if (typeof row.calls === 'number') state.calls += row.calls;
+        if (row.known !== null) {
+          state.known += row.known;
+          state.knownSeen = true;
+        }
+        if (!row.complete || row.known === null) state.complete = false;
+      } else {
+        breakdownIncomplete = true;
+        if (row.known !== null) unallocatedKnown += row.known;
+        for (const role of rowRoles) roles[role].complete = false;
+      }
+    }
+    const usageCalls = name => {
+      if (!name || !session || !session.usage) return null;
+      const usage = session.usage[name];
+      return usage && typeof usage === 'object' && typeof usage.calls === 'number' ? usage.calls : null;
+    };
+    const expected = { lead: usageCalls(leadName), worker: usageCalls(workerName) };
+    for (const key of ['lead', 'worker']) {
+      const state = roles[key];
+      if (!state.assigned) continue;
+      if (typeof expected[key] === 'number') {
+        if (state.seen) {
+          if (state.calls < expected[key]) state.complete = false;
+        } else if (expected[key] > 0) {
+          state.known = null;
+          state.complete = false;
+        }
+      }
+      if (!state.knownSeen && state.known !== null && state.seen) state.known = null;
+      if (state.known === null) state.complete = false;
+    }
+    const roleValue = state => {
+      if (!state.assigned) return 'не назначен';
+      if (state.known === null) return 'н/д';
+      return usd(state.known) + (state.complete ? '' : ' (неполный)');
+    };
+
+    let value = totalKnown !== null ? totalKnown : knownTotal;
+    const totalIncomplete = !totalComplete || (typeof missing === 'number' && missing > 0);
+    if (totalIncomplete && knownTotal !== null) value = knownTotal;
+    let note;
+    if (totalIncomplete) {
+      note = value === null ? 'Сумма неизвестна; итог неполный.' : 'Показана известная часть; итог неполный';
+      if (typeof missing === 'number' && missing > 0) {
+        note += `: ${missing}${typeof reportedCalls === 'number' ? ` из ${reportedCalls}` : ''} запросов без оценки`;
+      } else {
+        note += ': часть запросов без оценки';
+      }
+      note += '.';
+    } else if (breakdownIncomplete) {
+      note = 'Оценка по каталогу; разбивка по участникам неполная.';
+    } else {
+      note = 'Оценка по каталогу; счёт провайдера не сверен.';
+    }
+    if (breakdownIncomplete && totalIncomplete) note += ' Часть расхода не разделена между участниками.';
+    return {
+      lead: { value: roleValue(roles.lead), incomplete: roles.lead.assigned && !roles.lead.complete },
+      worker: { value: roleValue(roles.worker), incomplete: roles.worker.assigned && !roles.worker.complete },
+      total: { value: value === null ? 'н/д' : usd(value), incomplete: totalIncomplete },
+      note,
+      breakdownIncomplete,
+    };
+  }
 
   function mount({ el, identifier, request, isActive, onTransition, onProfiles, schedule = setInterval, unschedule = clearInterval }) {
     let token = null, busy = false, timer = null, lastStatus = null;
@@ -23,6 +225,17 @@
     let nextCheckRead = 0;
     const status = el('p', { 'aria-live': 'polite' }, 'Загружаю назначение…');
     const error = el('p', { class: 'api-team-error', role: 'alert' });
+    const spendLead = el('dd');
+    const spendWorker = el('dd');
+    const spendTotal = el('dd');
+    const spendList = el('dl', { class: 'api-team-assignment' }, [
+      el('dt', {}, 'Ведущий'), spendLead, el('dt', {}, 'Исполнитель'), spendWorker,
+      el('dt', {}, 'Итого'), spendTotal,
+    ]);
+    const spendNote = el('p', { class: 'form-hint' });
+    const spend = el('div', { class: 'api-team-spend', role: 'group', 'aria-label': 'Расход команды' },
+      [el('strong', {}, 'Расход команды'), spendList, spendNote]);
+    spend.hidden = true;
     const assignment = el('div');
     const route = el('p', { class: 'form-hint' });
     route.hidden = true;
@@ -52,7 +265,7 @@
     [prepare, confirm, stop, review, reportDetails, resultDetails].forEach(node => { node.hidden = true; });
     const actions = el('div', { class: 'api-team-actions' }, [prepare, confirm, stop, refresh, review]);
     const section = el('section', { class: 'api-team-panel', 'aria-label': 'API-команда' }, [
-      el('div', { class: 'section-heading' }, 'API-команда'), status, route, error, selector, assignment, actions,
+      el('div', { class: 'section-heading' }, 'API-команда'), status, route, error, selector, spend, assignment, actions,
       el('p', { class: 'form-hint' }, 'Сначала проверь назначение. Только отдельное подтверждение ставит платную работу в очередь. После остановки автоматического повтора нет.'),
       el('p', { class: 'form-hint' }, 'После проверки файлов решение о приёмке принимаешь ты.'),
       cloud, resultDetails, reportDetails, files,
@@ -129,6 +342,14 @@
           ? `Версия ${check.commit.slice(0, 12)}. ${phases[check.phase] || 'Когда будет готов прогон GitHub, результат появится здесь автоматически.'}`
           : 'Карточка, файлы, база или настройки изменились. Прежняя проверка утратила силу.');
         workflowLink.removeAttribute('href');
+      }
+      const spendData = spendSummary(data.report_text, data.session, data.profiles);
+      spend.hidden = !spendData;
+      if (spendData) {
+        setText(spendLead, spendData.lead.value);
+        setText(spendWorker, spendData.worker.value);
+        setText(spendTotal, spendData.total.value);
+        setText(spendNote, spendData.note);
       }
       reportDetails.hidden = !data.report_text;
       resultDetails.hidden = !data.session?.result;
@@ -217,5 +438,5 @@
     }, 5000);
     return section;
   }
-  root.SymphonyApiTeam = { mount };
+  root.SymphonyApiTeam = { mount, spendSummary };
 })(globalThis);

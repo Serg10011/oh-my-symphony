@@ -2359,3 +2359,9 @@ a { color: inherit; }
 .api-team-assignment dd { margin: 0; overflow-wrap: anywhere; }
 .api-team-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; padding: 10px; font-size: 12px; }
 .api-team-error { color: var(--danger, #c43d3d); }
+
+/* Spend summary stays visible before the detailed report is expanded. */
+.api-team-spend { margin: 12px 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+.api-team-spend[hidden] { display: none; }
+.api-team-spend .api-team-assignment { margin: 8px 0 4px; }
+.api-team-spend .form-hint { margin: 4px 0 0; }
