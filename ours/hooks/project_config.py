@@ -160,7 +160,7 @@ _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
         "id_prefix": (str, True),
         "port": (int, True),
     },
-    "tools": {"python": (str, True), "symphony": (str, True), "claude": (str, True)},
+    "tools": {"python": (str, True), "symphony": (str, True), "claude": (str, False)},
     "checks": {
         "forbidden_paths": (list, False),
         "allow_paths": (list, False),
@@ -200,6 +200,8 @@ _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
         "max_subtask_level": (str, False),
     },
     "delivery": {"repo": (str, False), "base": (str, False)},
+    "api_team": {"settings_file": (str, False), "default": (bool, False),
+                 "turn_timeout_ms": (int, False), "stall_timeout_ms": (int, False)},
     "service": {"model": (str, False)},
     "billing": {"mode": (str, False), "api_key_file": (str, False)},
 }
@@ -515,6 +517,17 @@ def validate_project(data: dict) -> dict:
                 raise ProjectError(f"{PROJECT_FILE}: нет ключа [{section}] {key}")
         out[section] = dict(raw)
     project, tools = out["project"], out["tools"]
+    api_team = out["api_team"]
+    if "api_team" in data:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*\.json", api_team.get("settings_file", "")):
+            raise ProjectError("project.toml: [api_team] settings_file: нужно имя JSON-файла в папке доски")
+        api_team.setdefault("default", False)
+        api_team.setdefault("turn_timeout_ms", 7_200_000)
+        api_team.setdefault("stall_timeout_ms", 2_100_000)
+        if not STALL_MIN_MS <= api_team["stall_timeout_ms"] < api_team["turn_timeout_ms"]:
+            raise ProjectError("project.toml: [api_team]: stall_timeout_ms должен быть не меньше 300000 и меньше turn_timeout_ms")
+    if not api_team.get("default") and "claude" not in tools:
+        raise ProjectError("project.toml: нет ключа [tools] claude")
     if not NAME_RE.match(project["name"]):
         raise ProjectError(f"{PROJECT_FILE}: имя {project['name']!r} не подходит под ^[a-z0-9][a-z0-9-]*$")
     if not PREFIX_RE.match(project["id_prefix"]):
@@ -526,7 +539,7 @@ def validate_project(data: dict) -> dict:
     if project["port"] > 65535:
         raise ProjectError(f"{PROJECT_FILE}: порт {project['port']} больше 65535")
     for where, path in (("[project] repo", project["repo"]), *(
-        (f"[tools] {key}", tools[key]) for key in ("python", "symphony", "claude")
+        (f"[tools] {key}", value) for key, value in tools.items()
     )):
         if not Path(path).is_absolute():
             raise ProjectError(f"{PROJECT_FILE}: {where} должен быть абсолютным путём")
@@ -543,6 +556,8 @@ def validate_project(data: dict) -> dict:
         )
     out["timeouts"] = {**DEFAULT_TIMEOUTS, **out["timeouts"]}
     integration = out["integration"] = {**DEFAULT_INTEGRATION, **out["integration"]}
+    if api_team.get("default") and integration["enabled"]:
+        raise ProjectError("project.toml: [api_team] default = true пока требует [integration] enabled = false: составные API-задачи ещё не подключены")
     _check_branch_prefix(integration["branch_prefix"])
     plan = out["plan"] = {**DEFAULT_PLAN, **out["plan"]}
     if "max_subtask_level" in plan and plan["max_subtask_level"] not in out["levels"]["levels"]:
@@ -1185,6 +1200,8 @@ def _write_private(path: Path, text: str) -> None:
 def sync_claude_settings(board: Path, project: dict) -> str:
     """Make <board>/claude-settings.json match the project (both modes, mode 600);
     returns what was done: "written" | "unchanged"."""
+    if project.get("api_team", {}).get("default"):
+        return "unchanged"
     path = board / CLAUDE_SETTINGS_FILE
     text = claude_settings_text(project)
     try:
@@ -1310,13 +1327,13 @@ def template_values(board: Path, project: dict) -> dict[str, object]:
     hooks = OURS_DIR / "hooks"
     q = shlex.quote
     claude = " ".join(
-        [q(tools["claude"]), "-p", "--output-format", "stream-json", "--verbose",
+        [q(tools.get("claude", "/usr/bin/false")), "-p", "--output-format", "stream-json", "--verbose",
          "--permission-mode", "acceptEdits", "--allowedTools"]
         + [q(rule) for rule in agent_bash_rules(board, project["agent"]["allowed_bash"])]
         + [f"--add-dir {q(str(board / d))}" for d in (BOARD_DIR, ARTIFACTS_DIR, WIKI_DIR)]
     )
     quota_lines = ""
-    if billing_mode(project) == "api":
+    if billing_mode(project) == "api" and not project.get("api_team", {}).get("default"):
         problems = billing_key_problems(board, project)
         if problems:
             raise ProjectError(
@@ -1386,4 +1403,14 @@ def render_workflow(board: Path, project: dict, template: Path = TEMPLATE) -> st
         # JSON strings are valid YAML double-quoted scalars.
         return json.dumps(text, ensure_ascii=False) if kind == "yaml" else shlex.quote(text)
 
-    return _PLACEHOLDER.sub(substitute, template.read_text(encoding="utf-8"))
+    text = _PLACEHOLDER.sub(substitute, template.read_text(encoding="utf-8"))
+    if project.get("api_team"):
+        import api_board_config
+        import api_session
+
+        try:
+            return api_board_config.render(text, board.resolve(), project, OURS_DIR / "hooks")
+        except (api_session.SessionError, OSError, ValueError, KeyError) as exc:
+            raise ProjectError("project.toml: [api_team]: настройки API-команды не приняты; "
+                               "проверь JSON-файл, модели, пути и ограничения") from exc
+    return text

@@ -23,6 +23,7 @@ import sys
 import time
 
 import api_executor as api
+import api_board_config as board_config
 import api_board_models as models
 import api_candidate as candidate
 import api_cloud_check as cloud
@@ -125,12 +126,7 @@ class Board:
                                             base + "^{commit}"], limit=128).decode().strip()
 
     def proposal(self, team=None) -> dict:
-        raw = session._decode(self.settings.read_bytes())
-        if (not isinstance(raw, dict) or set(raw) - {"cloud_check"} != {"version", "paths", "session", "execution"}
-                or ("cloud_check" in raw and raw["cloud_check"] != cloud.PROFILE)
-                or raw["version"] != 1 or not isinstance(raw["session"], dict)
-                or set(raw["session"]) - {"context", "lead_profile", "worker_profile", "lead_effort", "limits", "budget"}):
-            raise BoardError("invalid_api_board_settings")
+        raw = board_config.load_settings(self.settings)
         front, body = self.card()
         pinned = front.get("agent_kind") or (front.get("agent") or {}).get("kind")
         if pinned != self.context["agent_kind"]:

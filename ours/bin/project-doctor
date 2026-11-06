@@ -106,15 +106,17 @@ def inside(path: Path, root: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def check_tools(report: Report, tools: dict) -> bool:
+def check_tools(report: Report, tools: dict, *, api_only: bool = False) -> bool:
     ok = True
-    for key in ("python", "symphony", "claude"):
+    for key in (("python", "symphony") if api_only else ("python", "symphony", "claude")):
         path = Path(tools[key])
         if path.is_file() and os.access(path, os.X_OK):
             report.add("PASS", f"[tools] {key}: {path}")
         else:
             report.add("FAIL", f"[tools] {key}: {path} не найден или не исполняемый")
             ok = False
+    if api_only:
+        return ok
     claude = Path(tools["claude"])
     if claude.is_file() and os.access(claude, os.X_OK):
         try:
@@ -171,6 +173,9 @@ def check_billing(report: Report, board: Path, project: dict) -> None:
 
     The output of the helper is only matched against the shape of a key, never printed.
     """
+    if project.get("api_team", {}).get("default"):
+        report.add("PASS", "API-команда: оплата по назначенным профилям; ключи здесь не читаются, запросов к моделям нет")
+        return
     if pc.billing_mode(project) != "api":
         report.add("PASS", "оплата: подписка ([billing] mode = \"plan\")")
         return
@@ -206,6 +211,9 @@ def check_agent_files(report: Report, board: Path, project: dict) -> None:
     render step of this run (which rewrites them, and [timeouts] may have just changed):
     a FAIL means the render did not write them.
     """
+    if project.get("api_team", {}).get("default"):
+        report.add("PASS", "API-команда: настройки Claude не используются; профиль проверяет project-render")
+        return
     path = board / pc.CLAUDE_SETTINGS_FILE
     try:
         actual = path.read_text(encoding="utf-8")
@@ -487,7 +495,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     report.add("PASS", f"{pc.PROJECT_FILE} разобран")
 
-    tools_ok = check_tools(report, project["tools"])
+    tools_ok = check_tools(report, project["tools"], api_only=bool(project.get("api_team", {}).get("default")))
     repo_ok = check_repo(report, project["project"])
     check_board(report, board, project)
     check_billing(report, board, project)
@@ -496,7 +504,9 @@ def main(argv: list[str] | None = None) -> int:
     check_key_env(report, board)
     scripts_ok = check_scripts(report, board)
 
-    if tools_ok and repo_ok and scripts_ok and report.fails == 0:
+    if project.get("api_team", {}).get("default"):
+        report.add("SKIP", "API-команда: полный прогон выполняется отдельно в облаке; setup.sh и test.sh на хосте не запускаются")
+    elif tools_ok and repo_ok and scripts_ok and report.fails == 0:
         baseline = trial(report, board, project)
         if baseline is not None:
             pc.ensure_state_dir(board)
@@ -512,10 +522,14 @@ def main(argv: list[str] | None = None) -> int:
     if rendered:
         # tests_s may have just changed: the stall watchdog follows it (K13).
         try:
-            tests_s = pc.load_project(board)["timeouts"]["tests_s"]
-            report.add("PASS", f"stall_timeout_ms = {pc.stall_timeout_ms(tests_s)} "
-                       f"(max(300 с, tests_s {tests_s} + {pc.STALL_MARGIN_S} с))")
-            check_agent_files(report, board, pc.load_project(board))
+            current = pc.load_project(board)
+            tests_s = current["timeouts"]["tests_s"]
+            if current.get("api_team", {}).get("default"):
+                report.add("PASS", f"API-команда: stall_timeout_ms = {current['api_team']['stall_timeout_ms']}")
+            else:
+                report.add("PASS", f"stall_timeout_ms = {pc.stall_timeout_ms(tests_s)} "
+                           f"(max(300 с, tests_s {tests_s} + {pc.STALL_MARGIN_S} с))")
+            check_agent_files(report, board, current)
         except pc.ProjectError as exc:  # pragma: no cover - render just read the same file
             report.add("FAIL", f"{pc.PROJECT_FILE}: {exc}")
     if rendered and tools_ok:

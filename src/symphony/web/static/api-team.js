@@ -149,7 +149,7 @@
           : 'Карточка, файлы, база или настройки изменились. Прежняя проверка утратила силу.');
         workflowLink.removeAttribute('href');
       }
-      const spendData = spendSummary(data.report_text, data.session, data.profiles);
+      const spendData = data.session ? spendSummary(data.report_text, data.session, data.profiles) : null;
       spend.hidden = !spendData;
       if (spendData) {
         const markSpend = (node, incomplete) => {
