@@ -1,0 +1,48 @@
+{
+  "code_commit": "7f24401e91168fb5b8be273d271dbad25d06f527",
+  "installed_commit": "e2b1b5921f0032202c3c3af13da3425e69ea6cda",
+  "merged_or_installed": false,
+  "mac": {
+    "dates": ["2026-11-05", "2026-11-06"],
+    "targeted_passed": 473,
+    "previous_scroll_cases_passed_separately": 5,
+    "browser": "Chromium",
+    "ruff": "pass",
+    "pyright_errors": 0,
+    "pyright_warnings": 0
+  },
+  "standalone_service": {
+    "before_confirmation": "no session after three seconds at one-second polling",
+    "observed_card_states": ["Todo", "In Progress", "Verify"],
+    "assignment_history_matched_card": true,
+    "dispatches": 1,
+    "synthetic_responses": 2,
+    "paid_calls": 0,
+    "candidate": "awaiting_full_checks",
+    "source_repository_unchanged": true,
+    "instance_stopped": true
+  },
+  "receipt_cases_with_synthetic_github": {
+    "exact_files_passed": "Human Review",
+    "exact_files_failed": "needs_human",
+    "automatic_acceptance": false
+  },
+  "linux": {
+    "status": "completed",
+    "run": 42108394079,
+    "attempt": 1,
+    "workflow_commit": "bde9f018f558e36ecf80569bc5dfcf301997e6de",
+    "url": "https://github.com/Serg10011/oh-my-symphony/actions/runs/42108394079/attempts/1",
+    "overall_conclusion": "failure",
+    "installed": {"passed": 6230, "skipped": 140, "failed": 1},
+    "installed_failure": "ours/tests/test_project_update.py::test_running_manual_script_is_detected",
+    "development": {"passed": 6426, "skipped": 147, "failed": 0},
+    "verified_development_receipt": "passed",
+    "development_tree": "dd74d3d12f38c6e602f59a2b3ffbd2785d037f3a",
+    "duration_seconds": 1381,
+    "container_removed": true,
+    "job_log_sha256": "96edb863452fa197ee22c503dcbca91bbe8d9c3b48259541cce05c369276ab77"
+  },
+  "private_archive": "archives/s4-62-board-models-routing-20261105",
+  "scope": "Architect's board and runner changes only. The private PILOT-2 draft was not published, run on GitHub or installed."
+}

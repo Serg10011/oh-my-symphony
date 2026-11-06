@@ -1,0 +1,117 @@
+{
+  "task": "S4-62",
+  "recorded_at": "2026-11-05T01:39:52.980521+03:00",
+  "scope": "Третий блок: отдельный Git-кандидат и предварительные проверки. Полный прогон кандидата, доставка и project-render ещё не подключены.",
+  "branch": "codex/browser-api-pipeline",
+  "parent_commit": "985d18ce1a0e4eab9f164edd9d554a5080a0bf59",
+  "installed_base_commit": "e2b1b5921f0032202c3c3af13da3425e69ea6cda",
+  "pr": "https://github.com/Serg10011/oh-my-symphony/pull/106",
+  "status": "prepared_not_accepted_not_installed",
+  "assigned_model": "Astra",
+  "assigned_effort": "max",
+  "subagents": false,
+  "validation": {
+    "focused": {
+      "passed": 74,
+      "skipped": 0,
+      "failed": 0,
+      "errors": 0,
+      "junit_seconds": 11.977,
+      "started_at": "2026-11-05T01:27:55.066021+03:00"
+    },
+    "ours-full": {
+      "passed": 2205,
+      "skipped": 3,
+      "failed": 0,
+      "errors": 0,
+      "junit_seconds": 570.978,
+      "started_at": "2026-11-05T01:28:24.037281+03:00"
+    },
+    "api-final": {
+      "passed": 524,
+      "skipped": 3,
+      "failed": 0,
+      "errors": 0,
+      "junit_seconds": 36.467,
+      "started_at": "2026-11-05T01:38:28.683197+03:00"
+    }
+  },
+  "late_change": "После полного ours ограничена выдача сводки в панель. Полная ведомость остаётся в candidate.json; окончательный код проверен всем API-набором и мостиком (api-final). Это не второй полный ours.",
+  "initial_checks": [
+    "Новая тестовая фикстура сначала ошибочно формировала ответ транспорта: исправлена; 25 PASS / 1 FAIL, затем 51 PASS. Существующие тесты не изменялись.",
+    "Первый совместный запуск дал 70 PASS / 4 ERROR: локальные тестовые серверы не могли открыть порт в ограниченном сеансе. Повтор с разрешёнными локальными серверами: focused 74 PASS. Код/пределы тестов ради этого не менялись."
+  ],
+  "ruff": "passed",
+  "diff_check": "passed",
+  "relative_links_checked": 301,
+  "api_calls": 0,
+  "api_cost_usd": "0",
+  "chat_usage": "not_measured",
+  "provider_responses": "offline_fixtures_only",
+  "archive": "/Users/helloworld10011/symphony-projects/.backups/s4-62-candidate-20261105-013952",
+  "proof": {
+    "candidate": {
+      "version": 1,
+      "status": "awaiting_full_checks",
+      "identifier": "TEST-1",
+      "checks": {
+        "static": "passed",
+        "full": "not_run"
+      },
+      "issues": [],
+      "accepted": false,
+      "delivered": false,
+      "base_commit": "6d47ec24e7ad2647d94a27d738c2db0788cf15a1",
+      "revision": "6b55c61b9af4988d7a842b2e35f4726094edd672668fef1e73891fc4c5fdcba2",
+      "files": [
+        {
+          "path": "src/main.py",
+          "before": {
+            "sha256": "32252fda54eb5a20cc7791e0d7537b866fcf7319bb9cda6c46fb896ce60343e1",
+            "bytes": 19,
+            "mode": 420
+          },
+          "after": {
+            "sha256": "0a775022744f64c352863f165f2e125898419999bc57c83204772036d0ef6b2e",
+            "bytes": 12,
+            "mode": 420
+          }
+        },
+        {
+          "path": "tests/test_new.py",
+          "before": null,
+          "after": {
+            "sha256": "4b54fc14cbdcd5da3b8aa049b1cbfd1e602e4602fe111361fc9f51dbed20f0ed",
+            "bytes": 44,
+            "mode": 420
+          }
+        }
+      ],
+      "repository": "/private/tmp/s4-62-candidate-final-proof-20261105/test_real_candidate_keeps_base0/board/.ours-state/api-team/TEST-1/candidate.git",
+      "commit": "25641f0f2a4cb66dc3e1232ba73b6bf86c77bff3",
+      "tree": "b88675542e22218877d3e084cd2d97d2329bae17",
+      "rules": {
+        "project.toml": "47cacd6c0de0b4e7b5286265cb2b568070a13c4af5736b0866c1e4c39d739a7f",
+        "setup.sh": null,
+        "test.sh": "d5d5994f15c56f9f8a269eff5d57ec414b671307577fc83f9fa787f554d5812f",
+        "check.py": "7dffb33a657732291a9932fbfced6a55800750a2dc3a6409cb3a0e1f1a70ccc3",
+        "project_config.py": "103e7ed4c6c585f28148579155289b92157e970cbc56b1760b2235b24f10f5f5"
+      }
+    },
+    "candidate_json_sha256": "e814c85bd414f4bb63841c5dbe22b3a2834237b5b349cc1071b98a3ed60d8af7",
+    "bundle_sha256": "ef22736d5bcd76591d7c6a1b99c79f0701394dffbd9497ee7643e8733e62412d",
+    "note": "После сборки тест намеренно меняет рабочий файл; сохранённый Git-кандидат и bundle остаются исходным доказательством."
+  },
+  "source_sha256": {
+    "ours/hooks/api_board.py": "44ffc17f12098d00ddabe2cedff3efdebf069dd15f1647d0cf5e997e53d4c5c1",
+    "ours/hooks/api_candidate.py": "ba270b6340cd06b8c5af55bc41ae774cac068e1dca2fd9b9904fddff7e188dc0",
+    "ours/tests/test_api_candidate.py": "374ef866833021d34d1107fbd47584a826eef9f40001f1ebbe4a2cc300b68b2d"
+  },
+  "limits": [
+    "Не создаются hook/pass, рабочая ветка symphony/<ID>, deliver/<ID> и приёмка Done.",
+    "Базовые объекты рабочего candidate.git читаются через alternates исходного репозитория; fixture bundle содержит полную историю.",
+    "Сетевая изоляция пока несовместима с полными тестами, использующими localhost; обхода на Mac без изоляции нет.",
+    "Прежние ограничения S4-62: локальные управляющие маршруты, одно назначение без платного продолжения, нет постоянного project-render API-профиля."
+  ],
+  "implementation_commit": "1bada5f7ebe70b8f9de137ac71eea56bc184c114"
+}

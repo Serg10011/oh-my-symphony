@@ -21,7 +21,7 @@ def input_with_breakpoints(history, calls, part_id):
     boundaries = {max(eligible)}
     for call in calls:
         index = call.get("history_items", 0) - 2
-        if (call.get("request_version", 1) == 2 and call.get("part_id") == part_id
+        if (call.get("request_version", 1) in (2, 3) and call.get("part_id") == part_id
                 and index in eligible):
             boundaries.add(index)
     # Explicit-only mode writes no transient resource footer. Retain previous

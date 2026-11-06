@@ -2220,6 +2220,11 @@ def test_run_diagnostics_loopback_guard() -> None:
 
 def test_schedule_reason_taxonomy_covers_every_authoritative_code() -> None:
     required = {
+        "api_verify_waiting",
+        "api_verify_queued",
+        "api_verify_running",
+        "api_verify_result",
+        "api_verify_pending",
         "not_evaluated",
         "ready",
         "dispatched",

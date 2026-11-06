@@ -6,6 +6,7 @@ import heapq
 from datetime import date, datetime
 from typing import Any
 
+from ..api_team import VERIFY_STATES
 from ..issue import Issue
 from ..orchestrator import Orchestrator
 from ..orchestrator.scheduler import (
@@ -50,6 +51,7 @@ def _issue_card(
 
 
 _PUBLIC_SCHEDULE_REASONS = {
+    **{code: detail for code, (_, detail) in VERIFY_STATES.items()},
     "not_evaluated": "scheduler evaluation is pending",
     "ready": "eligible for dispatch",
     "dispatched": "agent run started",

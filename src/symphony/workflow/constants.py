@@ -101,7 +101,7 @@ DEFAULT_AGENT_KIND = "codex"
 # `agent.profiles` — plain-CLI backends declared as data. Only `text` (stdout
 # is the final assistant message) is implemented; stream protocols keep their
 # own backend modules.
-SUPPORTED_PROFILE_FORMATS = ("text",)
+SUPPORTED_PROFILE_FORMATS = ("text", "api-team-v1")
 # Where a profile's continuation flag goes: appended to the command, or
 # inserted before a trailing `"$(cat)"` positional prompt argument.
 SUPPORTED_PROFILE_CONTINUATION_POSITIONS = ("append", "before_prompt_arg")

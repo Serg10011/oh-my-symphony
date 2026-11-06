@@ -1,0 +1,62 @@
+name: Symphony Linux check
+run-name: &trial_sha '307beaf7b4c1c2e133167eb9a6f8fa503013ae60'
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/browser-api-pipeline]
+    paths:
+      - .github/workflows/symphony-cloud-check.yml
+      - ours/ci/linux/**
+
+# Both input revisions are fetched anonymously from the public fork.
+permissions: {}
+
+jobs:
+  verify:
+    if: github.repository == 'Serg10011/oh-my-symphony' && github.ref == 'refs/heads/codex/browser-api-pipeline' && toJSON(github.event.repository.private) == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    env:
+      # Keep the historical base and the published fix immutable for this trial.
+      BASE_SHA: e2b1b5921f0032202c3c3af13da3425e69ea6cda
+      TRIAL_SHA: *trial_sha
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Prepare public revisions and trusted test tools
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          git init -q --bare sources.git
+          git -C sources.git fetch -q --no-tags --depth=1 https://github.com/Serg10011/oh-my-symphony.git \
+            "$BASE_SHA:refs/heads/base" "$TRIAL_SHA:refs/heads/trial" "$GITHUB_SHA"
+          git -C sources.git diff --exit-code base trial -- uv.lock pyproject.toml
+          git -C sources.git archive "$GITHUB_SHA" ours/ci/linux | tar -xf -
+          git -C sources.git show base:uv.lock > ours/ci/linux/uv.lock
+          git -C sources.git show base:ours/hooks/summarize.py > ours/ci/linux/summarize.py
+          git -C sources.git show-ref --heads
+          python3 ours/ci/linux/locked-requirements.py ours/ci/linux/uv.lock > ours/ci/linux/requirements.txt
+          docker build --tag symphony-check:local ours/ci/linux
+          docker image inspect --format 'TEST_IMAGE={{.Id}}' symphony-check:local
+
+      - name: Verify private loopback and denied outbound access
+        id: isolation
+        run: bash "$RUNNER_TEMP/ours/ci/linux/host.sh" probe
+
+      - name: Run installed base suite
+        run: bash "$RUNNER_TEMP/ours/ci/linux/host.sh" base
+
+      - name: Run development suite
+        if: "(!cancelled()) && steps.isolation.outcome == 'success'"
+        run: bash "$RUNNER_TEMP/ours/ci/linux/host.sh" trial
+
+      - name: Release test container
+        if: always()
+        run: |
+          if docker container inspect symphony-check >/dev/null 2>&1; then
+            docker rm -f symphony-check
+          fi
+          if docker container inspect symphony-check >/dev/null 2>&1; then exit 1; fi
+          echo "No test container remains on the runner."

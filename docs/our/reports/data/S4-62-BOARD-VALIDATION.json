@@ -1,0 +1,175 @@
+{
+  "task": "S4-62",
+  "recorded_at": "2026-11-05T01:03:52.502081+03:00",
+  "scope": "Второй блок: управление API-командой в существующей карточке; обязательные проверки, доставка и постоянные настройки ещё не подключены.",
+  "branch": "codex/browser-api-pipeline",
+  "parent_commit": "81d704c09ed960c7d1e77a3865d59e0adbda9476",
+  "implementation_commit": "d7e73422796bff317a5bc9d5f5db9fd54cd11621",
+  "installed_base_commit": "e2b1b5921f0032202c3c3af13da3425e69ea6cda",
+  "pr": "https://github.com/Serg10011/oh-my-symphony/pull/106",
+  "status": "prepared_draft_not_merged_not_installed",
+  "architect_assignment": {
+    "model": "Astra",
+    "effort": "max",
+    "source": "Согласованное назначение S4-62 сохраняется",
+    "chat_usage_measured": false
+  },
+  "archive": "/Users/helloworld10011/symphony-projects/.backups/s4-62-board-20261105-010112",
+  "archive_manifest": "manifest.json",
+  "checks": {
+    "full_core": {
+      "tests": 4293,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 144,
+      "passed": 4149,
+      "seconds_junit": 542.16,
+      "console_summary": "4149 passed, 144 skipped in 542.31s (0:09:02)",
+      "junit_sha256": "65fdf2b8469b1bdd7bf613ae01c7c78c84b9ebc2270881fd8ca25008b1cde02c",
+      "artifact": "core-final"
+    },
+    "full_ours_before_withdrawal_fix": {
+      "tests": 2175,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 3,
+      "passed": 2172,
+      "seconds_junit": 723.944,
+      "console_summary": "2172 passed, 3 skipped in 732.98s (0:12:12)",
+      "junit_sha256": "50e264494c2af96bdb462d142ab71ca63e6c6f3647d2cf525cec1d99d907c736",
+      "artifact": "ours"
+    },
+    "api_after_withdrawal_fix": {
+      "tests": 498,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 3,
+      "passed": 495,
+      "seconds_junit": 42.396,
+      "console_summary": "495 passed, 3 skipped in 42.41s",
+      "junit_sha256": "1cb875c1bd6dea9fbca80ee59d51f457c68bd1e285de932643298e16bd261f6f",
+      "artifact": "api-final"
+    },
+    "core_fix_regressions": {
+      "tests": 54,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 54,
+      "seconds_junit": 10.62,
+      "console_summary": "54 passed in 18.74s",
+      "junit_sha256": "4b3f21f7a079592cb286188880161ad0ac854f5b23a1dec55c4dca97fda4f058",
+      "artifact": "core-fixes"
+    },
+    "browser": {
+      "tests": 2,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 2,
+      "seconds_junit": 3.765,
+      "console_summary": "2 passed in 4.71s",
+      "junit_sha256": "ddf24a5f8de16b8dbd25a98fe75b40fc6ab973789eb8f47aeec7e8a73b9cf7b7",
+      "artifact": "browser-final"
+    },
+    "native_mac": {
+      "tests": 3,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 3,
+      "seconds_junit": 2.837,
+      "console_summary": "3 passed in 2.85s",
+      "junit_sha256": "2e7d8990117c797e1495bf49ac06ceffa162887abf1897b1856955c8b00ba8be",
+      "artifact": "native"
+    },
+    "saved_controller_proof": {
+      "tests": 1,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "passed": 1,
+      "seconds_junit": 0.827,
+      "console_summary": "1 passed in 0.83s",
+      "junit_sha256": "bf990a843468888aed8bc996d19b01be8a93d8ea22dc2c0249dec042167b7ee8",
+      "artifact": "proof"
+    },
+    "ruff": "PASS",
+    "diff_check": "PASS",
+    "relative_links_checked": 300
+  },
+  "check_order": "Полный ours завершён на версии до последней защиты от архивирования/изменения карточки. После неё выполнен весь API-набор и проверки мостика (495 PASS/3 SKIP). Затем исправлены типы потоков ядра, ожидаемый список форматов и отображение статуса карточки; полный core, браузер и адресные проверки выполнены повторно. Документы и метаданные дополнялись после проверок.",
+  "earlier_full_core": {
+    "tests": 4293,
+    "failures": 3,
+    "errors": 0,
+    "skipped": 144,
+    "passed": 4146,
+    "seconds_junit": 626.506,
+    "console_summary": "3 failed, 4146 passed, 144 skipped in 626.70s (0:10:26)",
+    "junit_sha256": "32fc691a1bbff7659d9fc0d0c9314c0661bf7839996632ff1c69757b1c22c167",
+    "artifact": "core"
+  },
+  "earlier_full_core_findings": [
+    "Существующий тест ожидал только format=text; обновлена ровно ожидаемая строка для нового api-team-v1. Требование валидации сохранено.",
+    "Проверка типов выявила четыре обращения к Optional-потокам внутри замыкания; потоки захвачены в локальные проверенные переменные.",
+    "PM N6 зафиксировал задержку 0.115 с при пороге 0.07 с во время параллельных полных прогонов. Сам тест и его предел не менялись; отдельный и повторный полный прогоны прошли. Причина нагрузки не доказывалась отдельным экспериментом."
+  ],
+  "fixture_only": {
+    "real_api_calls": 0,
+    "api_cost_usd": "0",
+    "provider_usage_is_simulated": true,
+    "saved_controller_calls": 2,
+    "saved_controller_roles": [
+      "lead"
+    ],
+    "separate_team_test": "test_team_produces_current_files_and_costs_but_never_claims_acceptance: 5 имитированных ответов ведущего и Luna",
+    "session_sha256": "b0da83f50d80de23fc0d9f231e76014eee273abb0d8bd57836f38da85761d184"
+  },
+  "source_sha256": {
+    "ours/hooks/api_board.py": "b25f512301124dcdac1edce2f4a08c49a91426f3048e76390f325a31ac45d3c6",
+    "ours/hooks/api_sandbox.py": "65eda7fa940107d3fd53f7efa5b91973a731f3c1db1b74ccec3fe600d6c792a2",
+    "ours/hooks/api_session.py": "5e0c19c6059cacc6c65452f81e9e664ed8777663b80e8823f8f8377acc69defa",
+    "ours/hooks/api_workspace.py": "e0946ec8814dca9ae0350e9455183ca8778c01bac81ef4ecb17fec97998ae51f",
+    "ours/tests/test_api_board.py": "8a75cd89cf197d77ff8e1f8faa171a37b0c3ab733cc20bb6ba753891d2a2d745",
+    "src/symphony/api_team.py": "74415a51d88fbd751e757ff54aa922cc363b7feee1d9bda176ea362cfb8e1376",
+    "src/symphony/backends/__init__.py": "86c3314a1abed2a5d9bdbf7b40510f1c7c010fda5e586df05c8a5fccf0055854",
+    "src/symphony/orchestrator/dispatch.py": "ba6020db57c34fca22d1f0c728e2be552264dbc5f14381289308eea8f534e0b5",
+    "src/symphony/orchestrator/entries.py": "af3cf298d29d495d2682f3bde628fe22e743f7c49544026e2670701ad483ddc6",
+    "src/symphony/orchestrator/executors.py": "fa1a7d7785fb320f365b063a59b874d1c49f9a5b52d2e9dc80d8b4b7d41d287f",
+    "src/symphony/orchestrator/run_leases.py": "9b4170dd589df21a72055dc669c7582ff279c588037f9f20c6ebd7bf35fde98f",
+    "src/symphony/orchestrator/worker_exit.py": "103b8fa25daa32834794a388bff13b7a1938e8ddd29355a373ee0f5ee774c655",
+    "src/symphony/web/static/api-team.js": "3536314839b6ea7189b33acde77395f43a24bd59db0be6416e0b19ab3bf9205a",
+    "src/symphony/web/static/app.js": "5d0c3d527e616bfd4b2601188658b29fd3adfda265eade7f3292d1dc6e2a8dc6",
+    "src/symphony/web/static/index.html": "3411d291f5d1fc2e55dc7068bfdbf37ced9d45d346275c7f73f0513870475b27",
+    "src/symphony/web/static/style.css": "54e080dd6f7bb6ae8e9acea27443e12803c93487458b4a5ce6967cc4444a9a77",
+    "src/symphony/webapi/__init__.py": "d7208dc038209e2fab24d8a697ef0cdc29b332843b4145cab274a5795d31d294",
+    "src/symphony/webapi/api_team_routes.py": "84db61aa48bd7cbde2d9e08224c8d5b91a026b9f32a4334ede0f071a3f2c7504",
+    "src/symphony/webapi/issue_routes.py": "cf944f789198a82935364b1f113153317fd745b237e4dae33fbfc5981195f32a",
+    "src/symphony/workflow/builder.py": "4db36eead47e702a1f6d8cb388d5ae441f3280160c26d572c04a015b2aca59c0",
+    "src/symphony/workflow/constants.py": "986a1ee4c284f6d03e84ea3ebd0966b195cbfa0c69ae5f501eaf041ca84b88ac",
+    "tests/test_agent_profiles.py": "59ef8adab47a524844188c5f3236e1da7a81e6192c6decddf2423e317bcf71ce",
+    "tests/test_api_team.py": "1a50c07c5c00ac3d92f9341da79ddda0b3aaf25f60e1e555cd41ebe5cf309c2a",
+    "tests/test_api_team_browser.py": "e80ab0ec49f29439ccba99b1e89ee88efbd21c390e0eef6e385aeb7f8525ed24"
+  },
+  "limitations": [
+    "Локальные маршруты управления; удалённый API-запуск не включён.",
+    "Один подтверждённый запуск на карточку, без платного повтора/продолжения изменяемой сессии.",
+    "Проверка и передача результата в ветку .deliver/.merge ещё не подключены; API-результат не принимается автоматически.",
+    "Профиль и настройки пока не формируются project-render; общего редактора моделей нет.",
+    "Нативная среда macOS без сети/локальных серверов; ограничения фоновых процессов первого блока сохраняются.",
+    "Расходы API находятся в панели и журнале; общая статистика CLI их не суммирует."
+  ],
+  "legacy_evidence": [
+    "OMS-9 / S4-22",
+    "OMS-10 / E4",
+    "S4-25: подтверждение Human Review → Done уже существует",
+    "TASK-S4-26 / последующая .deliver"
+  ],
+  "unchanged": [
+    "Служебная копия e2b1b5921f",
+    "Настройки и работающие службы Anthropic",
+    "Настоящие ключи и платные API-журналы",
+    "Архив первого блока S4-62"
+  ]
+}

@@ -280,7 +280,10 @@ def build_backend(init: BackendInit) -> AgentBackend:
         from .prime_agent import PrimeAgentBackend
 
         return cast(AgentBackend, PrimeAgentBackend(init))
-    if init.cfg.agent_profile(kind) is not None:
+    profile = init.cfg.agent_profile(kind)
+    if profile is not None:
+        if profile.format == "api-team-v1":
+            raise ConfigValidationError("API teams require the confirmed whole-ticket executor")
         # `agent.profiles` entry: plain-text CLI described entirely by data.
         from .plain_cli import PlainCliBackend
 

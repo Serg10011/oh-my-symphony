@@ -1,0 +1,264 @@
+{
+  "task": "S4-62",
+  "iteration": 6,
+  "date": "2026-11-05",
+  "assignment": "gpt-6.1-sol/max",
+  "pull_request": 106,
+  "scope": "Два исправления на публичном коммите. Новый кандидат карточки этим прогоном не проверяется.",
+  "code_commit": "b862b2802c3ace67330046bf49e5a2e5087450c5",
+  "checked_tree": "6b966a2eda8546afb8577f628db569647e875774",
+  "candidate_all_suites_passed": true,
+  "base_previous_process_failure_reproduced": true,
+  "base_additional_failure": {
+    "test": "tests/test_chat.py::test_failed_mode_rebuild_moves_session_to_explicit_resume",
+    "previous_record": "docs/our/reports/REPORT-05.md",
+    "previous_record_date": "2026-10-24",
+    "unchanged_chat_source_and_test": true,
+    "passed_in_fixed_revision": true,
+    "cause_not_reinvestigated": true
+  },
+  "whole_workflow_conclusion": "failure",
+  "whole_workflow_note": "Общий запуск красный из-за неизменённой базы. Исправленный коммит прошёл все три набора. Ошибки базы не скрывались.",
+  "same_image_for_base_and_fixed_revision": true,
+  "run": {
+    "repo": "Serg10011/oh-my-symphony",
+    "private": false,
+    "run": 42028195681,
+    "attempt": 1,
+    "url": "https://github.com/Serg10011/oh-my-symphony/actions/runs/42028195681",
+    "status": "completed",
+    "conclusion": "failure",
+    "workflow_commit": "22bdec0fc7a07250ccb0bfb5df4498bd36f4e49c",
+    "job": 127247620558,
+    "labels": [
+      "ubuntu-24.04"
+    ],
+    "started_at": "2026-11-05T12:33:52Z",
+    "completed_at": "2026-11-05T12:56:39Z",
+    "seconds": 1367,
+    "artifacts": 0,
+    "steps": [
+      {
+        "name": "Set up job",
+        "conclusion": "success",
+        "seconds": 0
+      },
+      {
+        "name": "Prepare public revisions and trusted test tools",
+        "conclusion": "success",
+        "seconds": 31
+      },
+      {
+        "name": "Verify private loopback and denied outbound access",
+        "conclusion": "success",
+        "seconds": 1
+      },
+      {
+        "name": "Run installed base suite",
+        "conclusion": "failure",
+        "seconds": 664
+      },
+      {
+        "name": "Run development suite",
+        "conclusion": "success",
+        "seconds": 668
+      },
+      {
+        "name": "Release test container",
+        "conclusion": "success",
+        "seconds": 0
+      },
+      {
+        "name": "Complete job",
+        "conclusion": "success",
+        "seconds": 0
+      }
+    ],
+    "job_log_sha256": "0d98ba5e7a1d145f1b543e7e9f692df82097b44cf07f4fe8911b79d3038eb17a",
+    "isolation": {
+      "credentials_visible": false,
+      "effective_capabilities": 0,
+      "host_canary": "ENETUNREACH",
+      "interfaces": [
+        "lo"
+      ],
+      "internet": "ENETUNREACH",
+      "no_new_privileges": true,
+      "own_http": true,
+      "runner_marker_visible": false,
+      "uid": 10001
+    },
+    "bridge_control": true,
+    "container_removed": true,
+    "image_id": "sha256:9587ae3fd335ed5217e676276d1ff3ab0b067b259790a7064ff878066507cf97",
+    "versions": [
+      "Python 3.14.10",
+      "v24.22.2"
+    ],
+    "suites": {
+      "base": {
+        "main": {
+          "exit": 1,
+          "passed": 4117,
+          "skipped": 139,
+          "failed": 1
+        },
+        "timing": {
+          "exit": 0,
+          "passed": 11,
+          "skipped": 1,
+          "failed": 0
+        },
+        "ours": {
+          "exit": 1,
+          "passed": 2101,
+          "skipped": 0,
+          "failed": 1
+        },
+        "total": {
+          "passed": 6229,
+          "skipped": 140,
+          "failed": 2
+        }
+      },
+      "trial": {
+        "main": {
+          "exit": 0,
+          "passed": 4139,
+          "skipped": 141,
+          "failed": 0
+        },
+        "timing": {
+          "exit": 0,
+          "passed": 11,
+          "skipped": 1,
+          "failed": 0
+        },
+        "ours": {
+          "exit": 0,
+          "passed": 2208,
+          "skipped": 3,
+          "failed": 0
+        },
+        "total": {
+          "passed": 6358,
+          "skipped": 145,
+          "failed": 0
+        }
+      }
+    },
+    "inputs": {
+      "base": {
+        "commit": "e2b1b5921f0032202c3c3af13da3425e69ea6cda",
+        "tree": "f3883b88deddbc698b7cd4dc55a5193af2886ce3"
+      },
+      "trial": {
+        "commit": "b862b2802c3ace67330046bf49e5a2e5087450c5",
+        "tree": "6b966a2eda8546afb8577f628db569647e875774"
+      }
+    },
+    "failures": {
+      "base": [
+        "tests/test_chat.py::test_failed_mode_rebuild_moves_session_to_explicit_resume",
+        "ours/tests/test_project_update.py::test_running_manual_script_is_detected"
+      ]
+    }
+  },
+  "previous_run": {
+    "url": "https://github.com/Serg10011/oh-my-symphony/actions/runs/42022919348",
+    "code_commit": "543d4bfaf29058fd852f5baca8927743954b8a59",
+    "suites": {
+      "base": {
+        "main": {
+          "exit": 0,
+          "passed": 4118,
+          "skipped": 139,
+          "failed": 0
+        },
+        "timing": {
+          "exit": 0,
+          "passed": 11,
+          "skipped": 1,
+          "failed": 0
+        },
+        "ours": {
+          "exit": 1,
+          "passed": 2101,
+          "skipped": 0,
+          "failed": 1
+        },
+        "total": {
+          "passed": 6230,
+          "skipped": 140,
+          "failed": 1
+        }
+      },
+      "trial": {
+        "main": {
+          "exit": 0,
+          "passed": 4139,
+          "skipped": 141,
+          "failed": 0
+        },
+        "timing": {
+          "exit": 0,
+          "passed": 11,
+          "skipped": 1,
+          "failed": 0
+        },
+        "ours": {
+          "exit": 1,
+          "passed": 2204,
+          "skipped": 3,
+          "failed": 2
+        },
+        "total": {
+          "passed": 6354,
+          "skipped": 145,
+          "failed": 2
+        }
+      }
+    },
+    "failures": {
+      "base": [
+        "ours/tests/test_project_update.py::test_running_manual_script_is_detected"
+      ],
+      "trial": [
+        "ours/tests/test_api_board.py::test_core_bridge_and_real_controller_exchange_without_provider_access",
+        "ours/tests/test_project_update.py::test_running_manual_script_is_detected"
+      ]
+    },
+    "manifest_sha256": "0f9c84b8db71d4412afa6718c9a792d8e561efad7c8c84de15ec36e86f70bedd"
+  },
+  "archive": "/Volumes/ssd/Проекты/oh-my-symphony/archives/s4-62-cloud-fixes-20261105/run-42028195681-attempt-1",
+  "archive_manifest_sha256": "08828e7a4c3662159bad93eea8b181578092de03303b7f9b8e45d1341149760a",
+  "reproduction_archive": "/Volumes/ssd/Проекты/oh-my-symphony/archives/s4-62-cloud-fixes-20261105/reproduction",
+  "reproduction_manifest_sha256": "d16638c5e432730021d7dab59134fda557b0f301da35dd3c9b30c5045f6c170a",
+  "local_checks": {
+    "ruff_ours": "PASS",
+    "diff": "PASS",
+    "macos_wide_ps_and_own_pid": "PASS",
+    "macos_full_suite_run": false
+  },
+  "changes": [
+    "Два w-флага сохраняют длинные пути в выводе ps.",
+    "Два сценария длинного пути при COLUMNS=40/80.",
+    "Подмена платформы явно перенесена в тестовый дочерний процесс; рабочая защита не меняется."
+  ],
+  "cost": {
+    "standard_public_github_compute_usd_by_terms": 0,
+    "provider_api_requests": 0,
+    "provider_api_usd": 0,
+    "invoice_reviewed": false,
+    "terms": "https://docs.github.com/en/actions/concepts/billing-and-usage"
+  },
+  "limits": {
+    "service_updated": false,
+    "merged": false,
+    "paid_card_run": false,
+    "board_connected_to_cloud_checks": false,
+    "linux_does_not_validate_native_macos": true,
+    "browser_e2e_and_native_sandbox_opt_in": true,
+    "existing_oms_test_deselected": "tests/test_pm_ui_node.py::test_pm_ui_node_regressions"
+  }
+}

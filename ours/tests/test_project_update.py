@@ -342,6 +342,26 @@ def test_running_manual_script_is_detected(world):
         proc.wait(timeout=5)
 
 
+@pytest.mark.parametrize("columns", [40, 80])
+def test_long_running_script_blocks_update_with_narrow_process_output(world, monkeypatch, columns):
+    name = "bin/" + "long-runner-" + "x" * 96 + ".sh"
+    sleeper = put(world.board / name, "#!/bin/bash\nsleep 30\n")
+    assert len(str(sleeper)) > columns
+    before = tree(world.board)
+    monkeypatch.setenv("COLUMNS", str(columns))
+    proc = subprocess.Popen(["/bin/bash", str(sleeper)], start_new_session=True)
+    try:
+        with pytest.raises(pu.UpdateError, match="процесс"):
+            # Check the same precondition used before any update writes.
+            pu.ensure_stopped(world.board, world.project, {name})
+        assert tree(world.board) == before
+        assert not (world.board / pu.STATE).exists()
+    finally:
+        import signal
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=5)
+
+
 def test_concurrent_updater_is_refused(world, stopped):
     with pu.mutation_lock(world.board, world.project, {"test.sh"}, False):
         with pytest.raises(pu.UpdateError, match="другая команда"):

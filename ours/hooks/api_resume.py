@@ -50,6 +50,11 @@ def _verify_request(state, call, history):
 
 
 def _boundary(state):
+    # Read-only replay proofs do not establish exactly-once writes or commands.
+    # Keep the existing recovery contract unchanged until a mutable checkpoint
+    # protocol is implemented and separately approved.
+    if "execution" in state["spec"]:
+        raise session.SessionError("execution_resume_not_supported")
     if (state["status"] != "stopped" or state.get("stop_reason") not in {"api_error", "invalid_tool_batch"}
             or not state["calls"] or state.get("result") is not None):
         raise session.SessionError("resume_not_supported")

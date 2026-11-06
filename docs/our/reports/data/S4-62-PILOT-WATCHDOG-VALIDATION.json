@@ -1,0 +1,97 @@
+{
+  "task": "S4-62",
+  "iteration": 9,
+  "date": "2026-11-05",
+  "pull_request": 106,
+  "architect_assignment": "gpt-6-astra/max",
+  "pilot": {
+    "card": "PILOT-1",
+    "source": "dc55406c354ec2e003cc24bb1936c32f25782288",
+    "paid_attempts": 1,
+    "role_assignments": {
+      "lead": {
+        "model": "deepseek-flash",
+        "effort": "high",
+        "attempts": 19,
+        "received": 18,
+        "unknown_requests": [
+          19
+        ]
+      },
+      "worker": {
+        "model": "gpt-6-luna",
+        "effort": "max",
+        "attempts": 0,
+        "received": 0,
+        "unknown_requests": []
+      }
+    },
+    "result": "stopped",
+    "watchdog_ms": 305909,
+    "controller_reason_on_old_version": "operator_stopped",
+    "operator_requested_stop": false,
+    "compared_files": 35,
+    "changed_files": 0,
+    "published": false,
+    "accepted": false,
+    "paid_retries": 0,
+    "recovery_boundary": "execution_resume_not_supported",
+    "private_archive": "archives/s4-62-oms-cost-card-20261105"
+  },
+  "fix": {
+    "first_revision": "524a41321e67431493106223ed2808b294ab4010",
+    "checked_revision": "f67487f01267b038e4c3c254300844ad964da41e",
+    "checks_on_mac": 73,
+    "browser_included": 3,
+    "pyright_errors": 0,
+    "offline_wall_clock_seconds": {
+      "active_completed": 312.7,
+      "idle_stopped": 301.6
+    },
+    "wall_clock_profile_stall_timeout_ms": 300000,
+    "paid_calls_in_regressions": 0,
+    "future_trial_timeouts_ms": {
+      "stall_timeout_ms": 2100000,
+      "turn_timeout_ms": 7200000
+    },
+    "future_trial_installed": false
+  },
+  "linux": {
+    "first": {
+      "url": "https://github.com/Serg10011/oh-my-symphony/actions/runs/42079874081/attempts/1",
+      "trial": {
+        "passed": 6418,
+        "skipped": 146,
+        "failed": 1
+      },
+      "failed_tests": [
+        "tests/test_pyright_wrapper.py::test_installed_console_script_runs_project_type_check"
+      ]
+    },
+    "final": {
+      "url": "https://github.com/Serg10011/oh-my-symphony/actions/runs/42082753365/attempts/1",
+      "workflow": "c436fe31cd75320a17fe8842924bbd969dcb688b",
+      "base": {
+        "passed": 6230,
+        "skipped": 140,
+        "failed": 1
+      },
+      "trial": {
+        "passed": 6419,
+        "skipped": 146,
+        "failed": 0
+      },
+      "failed_tests": {
+        "base": [
+          "ours/tests/test_project_update.py::test_running_manual_script_is_detected"
+        ],
+        "trial": []
+      },
+      "status_of_development_step": "success",
+      "comparison_status": "failure",
+      "container_removed": true
+    }
+  },
+  "installed": false,
+  "production_revision": "e2b1b5921f0032202c3c3af13da3425e69ea6cda"
+}

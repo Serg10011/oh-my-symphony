@@ -6,10 +6,14 @@ workspaces, enforcing global concurrency, publishing snapshots, and
 applying terminal policy. What it delegates through this Protocol is only
 the shape of the work *inside* one ticket run.
 
-`LegacyStageExecutor` is the one implementation — stage prompts,
+`LegacyStageExecutor` preserves the original implementation — stage prompts,
 agent-authored board transitions, the multi-turn loop in
 `core._run_agent_attempt`. It delegates rather than duplicating, so the
 seam moves no legacy code and cannot regress it.
+
+The opt-in `ApiTeamExecutor` in `symphony.api_team` instead runs one explicitly
+confirmed session through a trusted host command. It never enters the legacy
+stage retry or automatic completion path.
 
 Selection happens once per dispatch, before the worker task is created, so
 a run's execution mode is fixed for its whole lifetime.

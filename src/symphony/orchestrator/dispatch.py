@@ -143,6 +143,8 @@ async def _on_tick(self: Orchestrator) -> None:
         await self._notify_observers()
         return
 
+    from ..api_team import schedule_cloud_checks
+    schedule_cloud_checks(self, cfg)
     await self._auto_normalize_legacy_human_review_done(cfg)
     # Validate terminal FIX outcomes before fetching active candidates. A
     # source whose dependency only looks Done must never dispatch first.
@@ -684,6 +686,10 @@ def _eligibility_ownership_decision(
             "issue already has a claim",
         )
     if issue.id in self._paused_issue_ids:
+        from ..api_team import VERIFY_STATES, verification_wait
+        stage = verification_wait(cfg, issue, self._pause_reasons.get(issue.id))
+        if stage:
+            return _EligibilityDecision(_EligibilityDisposition.WAIT_SLOT, stage, VERIFY_STATES[stage][1])
         return _EligibilityDecision(
             _EligibilityDisposition.WAIT_SLOT,
             "paused",
@@ -716,6 +722,11 @@ def _eligibility_contract_decision(
             "inactive",
             f"inactive state: {issue.state}",
         )
+    from ..api_team import confirmed_in_queue, uses_board_queue
+    if (uses_board_queue(cfg, issue.agent_kind or cfg.agent.kind)
+            and not confirmed_in_queue(cfg, issue.identifier)):
+        return _EligibilityDecision(_EligibilityDisposition.REJECT, "api_not_queued",
+                                    "API assignment is not confirmed and queued")
     if not (issue.id and issue.identifier and issue.title and issue.state):
         return _EligibilityDecision(
             _EligibilityDisposition.REJECT,
@@ -1321,8 +1332,11 @@ def _dispatch_env_for(
 # dispatch (§16.4)
 # ------------------------------------------------------------------
 
-def _executor_for(self: Orchestrator, cfg: ServiceConfig) -> TicketExecutor:
+def _executor_for(self: Orchestrator, cfg: ServiceConfig, agent_kind: str | None = None) -> TicketExecutor:
     """Pick the execution strategy for one dispatch."""
+    from ..api_team import ApiTeamExecutor, api_profile
+    if api_profile(cfg, agent_kind) is not None:
+        return ApiTeamExecutor(self)
     return LegacyStageExecutor(self)
 
 
@@ -1532,7 +1546,8 @@ def _dispatch(
     # Execution mode is chosen once, here, and fixed for the run's
     # lifetime. Deciding later would let a mid-run config reload switch
     # a ticket between the stage loop and a DAG.
-    executor = self._executor_for(cfg)
+    executor = self._executor_for(cfg, agent_kind)
+    entry.execution_mode = getattr(executor, "mode", "legacy_stage_loop")
     run_context = TicketRunContext(
         issue=issue,
         attempt=attempt,

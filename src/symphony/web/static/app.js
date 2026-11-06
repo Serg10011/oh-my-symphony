@@ -180,7 +180,12 @@
   }
 
   const api = {
-    getBoard: () => apiRequest('/board'),
+    getBoard: async () => window.SymphonyApiModels.decorate(await apiRequest('/board'), (kind, ids) => {
+      const params = new URLSearchParams(ids.map(id => ['id', id]));
+      return apiRequest('/api-teams/' + encodeURIComponent(kind) + '?' + params, { signal: AbortSignal.timeout(4500) });
+    }),
+    saveTeam: (kind, team) => apiRequest('/api-teams/' + encodeURIComponent(kind),
+      { method: 'POST', body: JSON.stringify({ team }) }),
     getRequests: () => apiRequest('/requests'),
     getRequestSchedule: (kind, id) => {
       const params = new URLSearchParams({ kind, id });
@@ -191,6 +196,8 @@
     openProject: (id) => apiRequest(`/projects/${encodeURIComponent(id)}/open`, { method: 'POST', body: '{}' }),
     createIssue: (payload) => apiRequest('/issues', { method: 'POST', body: JSON.stringify(payload) }),
     getIssue: (id) => apiRequest(`/issues/${encodeURIComponent(id)}`),
+    apiTeam: (id, action, payload = {}) => apiRequest(`/issues/${encodeURIComponent(id)}/api-team${action ? '/' + action : ''}`,
+      action ? { method: 'POST', body: JSON.stringify(payload) } : {}),
     patchIssue: (id, fields) => apiRequest(`/issues/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(fields) }),
     deleteIssue: (id) => apiRequest(`/issues/${encodeURIComponent(id)}`, { method: 'DELETE' }),
     getWorkflow: () => apiRequest('/workflow'),
@@ -895,10 +902,11 @@
     return el('select', { class: 'select' }, columns.map((c) => el('option', { value: c.name, selected: c.name === current }, c.name)));
   }
 
-  function buildAgentSelect(current) {
+  function buildAgentSelect(current, identifier) {
     const kinds = (state.board && state.board.board.agent_kinds) || [];
     const options = [el('option', { value: '', selected: !current }, t('board.defaultAgent'))];
-    for (const kind of kinds) options.push(el('option', { value: kind, selected: kind === current }, kind));
+    for (const kind of kinds) options.push(el('option', { value: kind, selected: kind === current },
+      window.SymphonyApiModels.kindLabel(state.board, kind, kind === current ? identifier : null)));
     return el('select', { class: 'select' }, options);
   }
 
@@ -1594,6 +1602,11 @@
       historical_release_verifier: t('schedule.reasonHistoricalVerifier'),
       claimed: t('schedule.reasonClaim'),
       paused: t('schedule.reasonPaused'),
+      api_verify_waiting: t('schedule.verifyWaiting'),
+      api_verify_queued: t('schedule.verifyQueued'),
+      api_verify_running: t('schedule.verifyRunning'),
+      api_verify_result: t('schedule.verifyResult'),
+      api_verify_pending: t('schedule.verifyPending'),
       budget_exhausted: t('schedule.reasonBudgetExhausted'),
       finalizing: t('schedule.reasonFinalizing'),
       inactive: t('schedule.reasonInactive'),
@@ -1955,7 +1968,8 @@
       badges.appendChild(el('span', { class: `badge-priority ${meta.className}` }, `${meta.short} ${meta.label}`));
     }
     for (const label of issue.labels) badges.appendChild(el('span', { class: 'chip-label' }, label));
-    if (issue.agent_kind) badges.appendChild(el('span', { class: 'chip-agent' }, issue.agent_kind));
+    if (issue.agent_kind) badges.appendChild(el('span', { class: 'chip-agent' },
+      window.SymphonyApiModels.kindLabel(state.board, issue.agent_kind, issue.identifier)));
     else if (issue.last_agent_kind) {
       // Stage-routed board: no pin is written, so show who actually ran it.
       badges.appendChild(el('span', {
@@ -1995,7 +2009,8 @@
         },
       }, t('issue.openRca')));
     }
-    if (liveEntry) card.appendChild(buildLiveRow(liveEntry));
+    if (liveEntry) card.appendChild((state.board?.board?.api_team_kinds || []).includes(issue.agent_kind)
+      ? el('div', { class: 'card-live' }, 'API-команда работает · расходы в карточке') : buildLiveRow(liveEntry));
     return card;
   }
 
@@ -2211,11 +2226,11 @@
       );
     });
 
-    const agentSelect = buildAgentSelect(detail.agent_kind);
+    const agentSelect = buildAgentSelect(detail.agent_kind, detail.identifier);
     agentSelect.addEventListener('change', () => commitField(
       detail.identifier, 'agent_kind', agentSelect.value,
       () => { agentSelect.value = detail.agent_kind || ''; },
-      () => { detail.agent_kind = agentSelect.value; },
+      () => { detail.agent_kind = agentSelect.value; openDrawer(detail.identifier); },
     ));
 
     const labelsInput = el('input', { class: 'input', type: 'text', value: detail.labels.join(', ') });
@@ -2292,7 +2307,24 @@
     container.appendChild(header);
     container.appendChild(titleInput);
     container.appendChild(fieldsGrid);
-    container.appendChild(buildExecutionSection(detail));
+    const isApiTeam = (state.board?.board?.api_team_kinds || []).includes(detail.agent_kind);
+    if (!isApiTeam) container.appendChild(buildExecutionSection(detail));
+    if (isApiTeam) container.appendChild(window.SymphonyApiTeam.mount({
+      el, identifier: detail.identifier, request: api.apiTeam,
+      isActive: () => state.drawerIssue === detail.identifier,
+      onProfiles: profiles => {
+        const option = Array.from(agentSelect.options).find(o => o.value === detail.agent_kind);
+        if (option && profiles.lead) option.textContent = window.SymphonyApiModels.confirmedLabel(detail.agent_kind, profiles);
+      },
+      onTransition: async () => {
+        await refreshBoard();
+        const current = state.board?.issues?.find(card => card.identifier === detail.identifier);
+        if (current && state.drawerIssue === detail.identifier) {
+          detail.state = current.state;
+          stateSelect.value = current.state;
+        }
+      },
+    }));
     if (detail.attention) {
       container.appendChild(el('div', { class: `drawer-attention attention-${detail.attention.kind || 'info'}` }, [
         el('strong', null, detail.attention.label || t('board.attention')),
@@ -2315,7 +2347,7 @@
         },
       }, t('issue.openRca')));
     }
-    if (detail.live) container.appendChild(buildLiveSection(detail));
+    if (detail.live && !isApiTeam) container.appendChild(buildLiveSection(detail));
     container.appendChild(buildRunHistorySection(detail));
     container.appendChild(buildArtifactsSection(detail));
     container.appendChild(buildDescriptionSection(detail));
@@ -5173,7 +5205,8 @@
     const kinds = (state.board && state.board.board.agent_kinds) || wf.agent_kinds || [];
     const defaultLabel = t('settings.workflowDefault', { kind: (wf.agent && wf.agent.kind) || t('board.defaultAgent') });
     const options = [el('option', { value: '', selected: !current }, defaultLabel)];
-    for (const kind of kinds) options.push(el('option', { value: kind, selected: kind === current }, kind));
+    for (const kind of kinds) options.push(el('option', { value: kind, selected: kind === current },
+      window.SymphonyApiModels.kindLabel(state.board, kind)));
     return options;
   }
 
@@ -5410,6 +5443,9 @@
       body.appendChild(buildBoardInfoCard(wf));
       body.appendChild(buildInterfaceCard());
       body.appendChild(buildRefreshCard());
+      for (const [kind, data] of Object.entries(board.teamDirectory || {})) {
+        if (data) body.appendChild(window.SymphonyApiModels.settings(el, kind, data, api.saveTeam));
+      }
       body.appendChild(settingsSectionHeading(t('settings.workflowSetup'), t('settings.workflowSetupDescription')));
       body.appendChild(buildLanePresetCard(lanePresets, wf));
       body.appendChild(buildBranchPolicyCard(wf));

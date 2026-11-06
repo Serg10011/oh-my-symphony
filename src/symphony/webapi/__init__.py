@@ -161,6 +161,8 @@ def register_web_routes(app: web.Application, orchestrator: Orchestrator) -> Non
     )
     app.middlewares.append(_api_guard)
     _register_issue_routes(app, ctx, orchestrator)
+    from .api_team_routes import register_api_team_routes
+    register_api_team_routes(app, ctx, orchestrator)
     _register_workflow_routes(app, ctx, orchestrator)
     _register_git_routes(app, ctx, orchestrator)
     _register_chat_routes(app, ctx, orchestrator)

@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "date": "2026-11-06",
+  "task": "S4-62",
+  "status": "prepared_partial_release",
+  "approval": {"scope": "development_of_first_release_block", "reply": "Го"},
+  "architect": {"model": "gpt-6.1-sol", "effort": "max"},
+  "recommended_review_model": {"model": "gpt-6-astra", "effort": "max", "switch_confirmed": false},
+  "source_candidate": "307beaf7b4c1c2e133167eb9a6f8fa503013ae60",
+  "source_integration": "f847358a54ab8e10ce96fd0eeec5f8d2e8ca1c6b",
+  "implementation": "4da927541523a51b93971730ca4ff0411b0d8bea",
+  "environment": {"os": "macOS", "python": "3.14.5"},
+  "checks": [
+    {"suite": "api_board_render_final", "passed": 18, "failed": 0},
+    {"suite": "initial_render_and_legacy_boards", "passed": 105, "failed": 1,
+      "failure": "ours/tests/test_project_kit.py::test_rendered_workflow_is_accepted_by_the_core",
+      "cause": "unchanged_baseline_asserts_unquoted_path_but_checkout_path_contains_cyrillic"},
+    {"suite": "billing_isolation_levels_project_update", "passed": 243, "failed": 0},
+    {"suite": "costs_and_verification_taxonomy", "passed": 27, "failed": 0},
+    {"suite": "browser_spending_and_existing_drawer", "passed": 6, "failed": 0},
+    {"suite": "ruff_ours_src_tests", "status": "passed"}
+  ],
+  "check_suites_overlap": true,
+  "baseline_comparison": {
+    "reference": "f847358a54ab8e10ce96fd0eeec5f8d2e8ca1c6b:ours/hooks/project_config.py",
+    "method": "render_original_and_current_modules_with_same_file_location_and_unopted_project",
+    "cli_workflow_byte_identical": true,
+    "gate_command_identical": true,
+    "old_unquoted_assertion_satisfied_by_original": false
+  },
+  "full_release_checks_run": false,
+  "new_provider_requests": 0,
+  "new_provider_cost_usd": 0,
+  "paid_candidate_replayed": false,
+  "working_board_configurations_modified": false,
+  "services_restarted": false,
+  "pr": 106,
+  "merged": false,
+  "installed": false,
+  "remaining_in_block": ["acceptance_and_delivery_of_exact_checked_api_candidate", "final_release_checks_and_human_acceptance"]
+}
