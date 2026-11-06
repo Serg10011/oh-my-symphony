@@ -25,6 +25,14 @@ from .logging import get_logger
 from .workflow import AgentProfileConfig, ServiceConfig
 
 FORMAT = "api-team-v1"
+FINISHED_HOLD = "API-запуск завершён; автоматического повтора нет"
+VERIFY_STATES = {
+    "api_verify_waiting": ("Ожидает проверки", "Подтверждённого запуска проверки этой версии пока нет."),
+    "api_verify_queued": ("Проверка в очереди", "GitHub поставил проверку этой версии в очередь."),
+    "api_verify_running": ("Проверяется", "GitHub выполняет проверку этой версии."),
+    "api_verify_result": ("Ожидает результата", "Конвейер сверяет результат проверки этой версии."),
+    "api_verify_pending": ("Ожидает проверки", "Предыдущая проверка не подтверждена; доска ждёт другую попытку."),
+}
 MAX_REPLY_BYTES = 8 * 1024 * 1024
 # A negotiated run may prefix its JSON reply with ASCII record separators,
 # one per durable journal checkpoint. No model text travels in these frames.
@@ -75,25 +83,52 @@ def normal_review_lane(states) -> str | None:
     return next((s for s in states if s.casefold() in {"human review", "приёмка", "приемка"}), None)
 
 
-def confirmed_in_queue(cfg: ServiceConfig, identifier: str) -> bool:
-    """Cheap, read-only eligibility check; the runner still checks the full binding under lock."""
+def _read_assignment(cfg: ServiceConfig, identifier: str) -> dict | None:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", identifier):
-        return False
+        return None
     path = cfg.workflow_path.resolve().parent / ".ours-state" / "api-team" / identifier / "assignment.json"
     try:
         if path.resolve(strict=True) != path:
-            return False
+            return None
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as stream:
             info = os.fstat(fd)
             if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600
                     or info.st_uid != os.getuid() or info.st_size > 1024 * 1024):
-                return False
+                return None
             data = json.loads(stream.read(1024 * 1024 + 1))
-            return (isinstance(data, dict) and data.get("identifier") == identifier
-                    and data.get("status") == "queued" and bool(data.get("confirmed_at")))
+            return data if isinstance(data, dict) and data.get("identifier") == identifier else None
     except (OSError, ValueError, RecursionError, RuntimeError):
-        return False
+        return None
+
+
+def confirmed_in_queue(cfg: ServiceConfig, identifier: str) -> bool:
+    """The runner still checks the full binding under lock before spending."""
+    data = _read_assignment(cfg, identifier)
+    return bool(data and data.get("status") == "queued" and data.get("confirmed_at"))
+
+
+def verification_wait(cfg, issue, pause_reason: str | None) -> str | None:
+    """Describe the free check of a finished API run; never grant dispatch or acceptance."""
+    if (pause_reason != FINISHED_HOLD or cfg is None or issue.state.casefold() not in {"verify", "проверка"}
+            or not uses_board_queue(cfg, issue.agent_kind)):
+        return None
+    data = _read_assignment(cfg, issue.identifier)
+    if (not data or data.get("status") != "result" or data.get("check_lane") != issue.state
+            or not isinstance(candidate := data.get("candidate"), dict)
+            or candidate.get("status") != "awaiting_full_checks"):
+        return None
+    seen = data.get("cloud_seen")
+    phase = seen.get("phase") if isinstance(seen, dict) else None
+    if phase == "queued":
+        return "api_verify_queued"
+    if phase == "running":
+        return "api_verify_running"
+    if phase in ("finished", "waiting", "verified"):
+        return "api_verify_result"
+    if phase in ("interrupted", "unverified"):
+        return "api_verify_pending"
+    return "api_verify_waiting"
 
 
 def board_context(cfg: ServiceConfig, kind: str, identifier: str) -> dict[str, Any]:

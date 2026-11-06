@@ -120,6 +120,7 @@
         workflowLink.href = `https://github.com/Serg10011/oh-my-symphony/actions/runs/${receipt.run}/attempts/${receipt.attempt}`;
       } else if (check) {
         const phases = {
+          queued: 'GitHub поставил проверку в очередь.',
           running: 'GitHub выполняет проверку.',
           waiting: 'Ждём ответ GitHub. Конвейер повторит чтение автоматически.',
           interrupted: 'Проверка прервана. Конвейер увидит следующую попытку автоматически.',

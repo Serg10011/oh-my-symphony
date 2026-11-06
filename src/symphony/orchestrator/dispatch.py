@@ -686,6 +686,10 @@ def _eligibility_ownership_decision(
             "issue already has a claim",
         )
     if issue.id in self._paused_issue_ids:
+        from ..api_team import VERIFY_STATES, verification_wait
+        stage = verification_wait(cfg, issue, self._pause_reasons.get(issue.id))
+        if stage:
+            return _EligibilityDecision(_EligibilityDisposition.WAIT_SLOT, stage, VERIFY_STATES[stage][1])
         return _EligibilityDecision(
             _EligibilityDisposition.WAIT_SLOT,
             "paused",

@@ -211,7 +211,8 @@ def discover(wanted, oldest, scan):
                 number, order, attempt = (run[k] for k in ("id", "run_number", "run_attempt"))
                 _require(all(type(n) is int and n > 0 for n in (number, order, attempt)))
                 ready = run["status"] == "completed"
-                phase = ("finished" if run["conclusion"] in ("success", "failure") else "interrupted") if ready else "running"
+                phase = (("finished" if run["conclusion"] in ("success", "failure") else "interrupted")
+                         if ready else ("running" if run["status"] == "in_progress" else "queued"))
                 hint = {"run": number, "order": order, "attempt": attempt, "phase": phase, "created": created}
                 if commit not in found or (order, attempt) > (found[commit]["order"], found[commit]["attempt"]):
                     found[commit] = hint

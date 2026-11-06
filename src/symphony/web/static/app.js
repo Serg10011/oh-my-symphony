@@ -1589,6 +1589,7 @@
 
   function scheduleReasonLabel(decision) {
     if (!decision) return t('schedule.notEvaluated');
+    if (decision.code?.startsWith('api_verify_')) return decision.reason;
     const labels = {
       not_evaluated: t('schedule.reasonNotEvaluated'),
       ready: t('schedule.reasonReady'),

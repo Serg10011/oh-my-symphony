@@ -598,6 +598,10 @@ def issue_attention(self: Orchestrator, issue: Issue) -> dict[str, str | None] |
             "error",
         )
     if issue.id in self._paused_issue_ids:
+        from ..api_team import VERIFY_STATES, verification_wait
+        stage = verification_wait(self._workflow_state.current(), issue, self._pause_reasons.get(issue.id))
+        if stage:
+            return _attention_signal(stage, *VERIFY_STATES[stage], severity="info")
         return _attention_signal(
             "paused",
             "Paused",

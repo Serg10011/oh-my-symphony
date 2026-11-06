@@ -965,6 +965,12 @@ a { color: inherit; }
   color: #7c2d12;
 }
 
+:is(.chip-attention, .drawer-attention)[class*="attention-api_verify_"] {
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  border-color: var(--border);
+}
+
 .drawer-run-history {
   display: grid;
   gap: 0.5926rem;
