@@ -2365,3 +2365,6 @@ a { color: inherit; }
 .api-team-spend[hidden] { display: none; }
 .api-team-spend .api-team-assignment { margin: 8px 0 4px; }
 .api-team-spend .form-hint { margin: 4px 0 0; }
+.api-team-spend-incomplete { border-color: var(--warning); }
+.api-team-spend dd[data-incomplete="true"] { font-weight: 600; }
+.api-team-spend .form-hint[data-incomplete="true"] { color: var(--danger); }
