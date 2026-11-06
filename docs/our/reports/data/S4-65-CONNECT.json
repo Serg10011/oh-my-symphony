@@ -68,5 +68,95 @@
     "browser.xml": "d6975a9f5e250f824c331269de94e9617e0d63fcabb3816c1d6f2ea1c6b62f79"
   },
   "cloud_run": 42298808278,
-  "cloud_url": "https://github.com/Serg10011/oh-my-symphony/actions/runs/42298808278"
+  "cloud_url": "https://github.com/Serg10011/oh-my-symphony/actions/runs/42298808278",
+  "linux": {
+    "run": 42298808278,
+    "attempt": 1,
+    "revisions": {
+      "base": {
+        "commit": "e2b1b5921f0032202c3c3af13da3425e69ea6cda",
+        "tree": "f3883b88deddbc698b7cd4dc55a5193af2886ce3"
+      },
+      "trial": {
+        "commit": "0aefa67abfde32c5d561d6daa32c3105503b697d",
+        "tree": "3a2db575ffa0e653cc597737eb2073ec00bfbe9f"
+      }
+    },
+    "counts": {
+      "base": {
+        "main": {
+          "exit": 1,
+          "passed": 4117,
+          "skipped": 139,
+          "failed": 1
+        },
+        "timing": {
+          "exit": 0,
+          "passed": 11,
+          "skipped": 1,
+          "failed": 0
+        },
+        "ours": {
+          "exit": 1,
+          "passed": 2101,
+          "skipped": 0,
+          "failed": 1
+        },
+        "total": {
+          "passed": 6229,
+          "skipped": 140,
+          "failed": 2
+        }
+      },
+      "trial": {
+        "main": {
+          "exit": 0,
+          "passed": 4176,
+          "skipped": 146,
+          "failed": 0
+        },
+        "timing": {
+          "exit": 0,
+          "passed": 11,
+          "skipped": 1,
+          "failed": 0
+        },
+        "ours": {
+          "exit": 0,
+          "passed": 2341,
+          "skipped": 6,
+          "failed": 0
+        },
+        "total": {
+          "passed": 6528,
+          "skipped": 153,
+          "failed": 0
+        }
+      }
+    },
+    "failing_tests": {
+      "base": [
+        "tests/test_chat.py::test_failed_mode_rebuild_moves_session_to_explicit_resume",
+        "ours/tests/test_project_update.py::test_running_manual_script_is_detected"
+      ],
+      "trial": []
+    },
+    "outcome": "failure",
+    "duration_seconds": 1410,
+    "receipt": {
+      "run": 42298808278,
+      "attempt": 1,
+      "job": 128170913838,
+      "completed_at": "2026-11-06T22:05:07Z",
+      "workflow_commit": "7c9f056d88d37d30fa24c34c7e2e9099d8cd28c0",
+      "commit": "0aefa67abfde32c5d561d6daa32c3105503b697d",
+      "tree": "3a2db575ffa0e653cc597737eb2073ec00bfbe9f",
+      "base_commit": "c6167facbfd0a0d4214844d9b2d7dc0b6b1ed282",
+      "comparison": "failure",
+      "status": "passed"
+    },
+    "log_sha256": "f4ceae425392600dc33347b7a12cf7cfe2971b2d8c0b100e0469b34814f237ce",
+    "container_removed": true,
+    "ssd_evidence": "archives/s4-65-connect-0aefa67-20261107"
+  }
 }

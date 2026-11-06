@@ -80,4 +80,4 @@ high или Sol 6.1 medium, «Продуктивность» используе�
 истории выпуска №106, подготовленной в [PR №107](https://github.com/Serg10011/oh-my-symphony/pull/107).
 Сквозная проверка выполнена в отдельном Git-проекте через настоящий браузер.
 Фактическое применение к рабочей системе требует отдельного решения Сергея.
-[REPORT-57](../reports/REPORT-57.md).
+[REPORT-57](../reports/REPORT-57.md) · [PR №108](https://github.com/Serg10011/oh-my-symphony/pull/108).
