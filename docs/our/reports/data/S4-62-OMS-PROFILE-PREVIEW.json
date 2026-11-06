@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "task": "S4-62",
+  "state": "mixed_profile_verified_on_copy",
+  "date": "2026-11-06",
+  "installed_release": "4a75da3847af61d3591cd2428c1cc473a95c5bc1",
+  "production_port": 9972,
+  "legacy_default": "claude",
+  "lanes": {
+    "Done": 9,
+    "Archive": 4
+  },
+  "completed_recorded_runs": 21,
+  "unfinished_recorded_runs": 0,
+  "scope": [
+    "ours/README.md"
+  ],
+  "scope_is_shared_by_board": true,
+  "settings_sha256": "e5ccb517b2a39a045a2b381b128948cfa9b8c3c385891c784e1494713abfe8fe",
+  "lead": [
+    "deepseek-flash",
+    "high"
+  ],
+  "worker": [
+    "gpt-6-luna",
+    "max"
+  ],
+  "spending_cap": null,
+  "verified_on_copy": [
+    "project-render_twice",
+    "semantic_workflow_comparison",
+    "symphony_doctor",
+    "legacy_card_excluded",
+    "team_directory_http",
+    "prepared_only_assignment_http",
+    "chromium_model_selection_and_payment_gate"
+  ],
+  "preview_doctor_exit": 0,
+  "synthetic_ticket_only": true,
+  "preview_provider_calls": 0,
+  "preview_cost_usd": 0,
+  "live_board_changed_during_preview": false,
+  "proposed_first_task": "Уточнить в ours/README.md, как оператору выбрать API-команду для карточки OMS и проверить назначение до оплаты.",
+  "checks_path": "checks/s4-62-oms-profile-ie33umt3",
+  "archive": "archives/s4-62-oms-profile-20261106"
+}
