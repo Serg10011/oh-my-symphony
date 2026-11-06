@@ -16,6 +16,13 @@
   };
   const number = value => Number.isFinite(value) ? value.toLocaleString('ru-RU') : 'не указан';
   const model = value => value ? `${value.model} · усилие ${value.effort}` : 'не назначен';
+  // The detailed report text already carries the amounts. The summary that
+  // reads them lives in api-team-costs.js so the card and the report cannot
+  // drift apart into two different price calculations.
+  function spendSummary(text, session, profiles) {
+    const costs = root.SymphonyApiTeamCosts;
+    return costs ? costs.summary(text, session, profiles) : null;
+  }
 
   function mount({ el, identifier, request, isActive, onTransition, onProfiles, schedule = setInterval, unschedule = clearInterval }) {
     let token = null, busy = false, timer = null, lastStatus = null;
@@ -23,6 +30,17 @@
     let nextCheckRead = 0;
     const status = el('p', { 'aria-live': 'polite' }, 'Загружаю назначение…');
     const error = el('p', { class: 'api-team-error', role: 'alert' });
+    const spendLead = el('dd');
+    const spendWorker = el('dd');
+    const spendTotal = el('dd');
+    const spendList = el('dl', { class: 'api-team-assignment' }, [
+      el('dt', {}, 'Ведущий'), spendLead, el('dt', {}, 'Исполнитель'), spendWorker,
+      el('dt', {}, 'Итого'), spendTotal,
+    ]);
+    const spendNote = el('p', { class: 'form-hint' });
+    const spend = el('div', { class: 'api-team-spend', role: 'group', 'aria-label': 'Расход команды' },
+      [el('strong', {}, 'Расход команды'), spendList, spendNote]);
+    spend.hidden = true;
     const assignment = el('div');
     const route = el('p', { class: 'form-hint' });
     route.hidden = true;
@@ -52,7 +70,7 @@
     [prepare, confirm, stop, review, reportDetails, resultDetails].forEach(node => { node.hidden = true; });
     const actions = el('div', { class: 'api-team-actions' }, [prepare, confirm, stop, refresh, review]);
     const section = el('section', { class: 'api-team-panel', 'aria-label': 'API-команда' }, [
-      el('div', { class: 'section-heading' }, 'API-команда'), status, route, error, selector, assignment, actions,
+      el('div', { class: 'section-heading' }, 'API-команда'), status, route, error, selector, spend, assignment, actions,
       el('p', { class: 'form-hint' }, 'Сначала проверь назначение. Только отдельное подтверждение ставит платную работу в очередь. После остановки автоматического повтора нет.'),
       el('p', { class: 'form-hint' }, 'После проверки файлов решение о приёмке принимаешь ты.'),
       cloud, resultDetails, reportDetails, files,
@@ -130,6 +148,22 @@
           ? `Версия ${check.commit.slice(0, 12)}. ${phases[check.phase] || 'Когда будет готов прогон GitHub, результат появится здесь автоматически.'}`
           : 'Карточка, файлы, база или настройки изменились. Прежняя проверка утратила силу.');
         workflowLink.removeAttribute('href');
+      }
+      const spendData = spendSummary(data.report_text, data.session, data.profiles);
+      spend.hidden = !spendData;
+      if (spendData) {
+        const markSpend = (node, incomplete) => {
+          node.dataset.incomplete = incomplete ? 'true' : 'false';
+        };
+        setText(spendLead, spendData.lead.value);
+        setText(spendWorker, spendData.worker.value);
+        setText(spendTotal, spendData.total.value);
+        setText(spendNote, spendData.note);
+        markSpend(spendLead, spendData.lead.incomplete);
+        markSpend(spendWorker, spendData.worker.incomplete);
+        markSpend(spendTotal, spendData.total.incomplete);
+        markSpend(spendNote, spendData.total.incomplete);
+        spend.classList.toggle('api-team-spend-incomplete', spendData.total.incomplete);
       }
       reportDetails.hidden = !data.report_text;
       resultDetails.hidden = !data.session?.result;
@@ -218,5 +252,5 @@
     }, 5000);
     return section;
   }
-  root.SymphonyApiTeam = { mount };
+  root.SymphonyApiTeam = { mount, spendSummary };
 })(globalThis);
