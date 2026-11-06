@@ -1,0 +1,72 @@
+{
+  "version": 1,
+  "date": "2026-11-07",
+  "implementation": "0aefa67abfde32c5d561d6daa32c3105503b697d",
+  "test_board": {
+    "project": "example",
+    "base": "main",
+    "prefix": "EXAMPLE",
+    "team": {
+      "lead_profile": "deepseek-lead",
+      "worker_profile": "luna-worker"
+    },
+    "mode": "economy",
+    "lead_effort": "high",
+    "paths": [
+      "README.md"
+    ],
+    "verification": "manual",
+    "route": "single-api",
+    "stages": [
+      "Todo",
+      "In Progress",
+      "Verify",
+      "Human Review",
+      "needs_human",
+      "Done",
+      "Blocked",
+      "Archive"
+    ],
+    "payment": "explicit_per_card"
+  },
+  "test_card": {
+    "id": "EXAMPLE-1",
+    "state": "Todo",
+    "mode": "economy",
+    "profiles": [
+      "deepseek-lead",
+      "luna-worker"
+    ],
+    "provider_calls": 0
+  },
+  "repeated_connection_same_board": true,
+  "overview_same_endpoint": true,
+  "doctor": "Итог: проект готов; FAIL: 0, WARN: 1",
+  "local_targeted": {
+    "tests": 224,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "local_chromium_and_node": {
+    "tests": 4,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "scratch_services_stopped": true,
+  "provider_calls": 0,
+  "provider_cost_usd": 0,
+  "ssd_evidence": "checks/s4-65-accept-final-jw772kdr",
+  "evidence_sha256": {
+    "ready.json": "c1e9d90e28aa9d69c5bdce3a713a70fbd47067cbd57db7e1c01a1094844927ae",
+    "card.json": "54b569e83514de869b010474ba5e09be1a7eed4762c687669335980c8b00a6b2",
+    "doctor.log": "6f903dd9605746b3b74eca0563db4cb08440731287ae60dfb05a7ff821088cf4",
+    "prepared.png": "d76794a095b05dcd60dc6ab99e7592fc57211114cbf3c522002f8137b2b8fab0",
+    "settings.png": "dad3e1c9281caa77d168f1f91078274a52737ad52d5c38f3e8120d24318b6c98",
+    "targeted.xml": "2dfb5126b10dd8f40843777b766e955c577b86f7a30db3b94e5b36dc0b8ab5e5",
+    "browser.xml": "d6975a9f5e250f824c331269de94e9617e0d63fcabb3816c1d6f2ea1c6b62f79"
+  },
+  "cloud_run": 42298808278,
+  "cloud_url": "https://github.com/Serg10011/oh-my-symphony/actions/runs/42298808278"
+}
