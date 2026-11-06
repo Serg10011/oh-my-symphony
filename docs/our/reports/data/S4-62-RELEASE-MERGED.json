@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "date": "2026-11-06",
+  "task": "S4-62",
+  "pr": 106,
+  "pr_url": "https://github.com/Serg10011/oh-my-symphony/pull/106",
+  "owner_approval_for_code": "Разрешаю код.",
+  "merged": true,
+  "merged_at": "2026-11-06T16:22:39Z",
+  "base_before_merge": "e2b1b5921f0032202c3c3af13da3425e69ea6cda",
+  "accepted_head": "b7e1b2df2d7b91a4577299d0526026f9d4f9b4f5",
+  "merge_commit": "4a75da3847af61d3591cd2428c1cc473a95c5bc1",
+  "merge_tree": "31148666108c6d28f0bb94857d76c077bc960f44",
+  "tree_matches_accepted_head": true,
+  "tested_code": "500d4a339b9cab2bf9b5c3408b3f25ac490ed040",
+  "validation_record": "S4-62-RELEASE-VALIDATION.json",
+  "deployment_at_merge_checkpoint": {
+    "state": "awaiting_explicit_install_approval",
+    "updater_started": false,
+    "working_checkouts": {
+      "fork": "e2b1b5921f0032202c3c3af13da3425e69ea6cda",
+      "oms": "e2b1b5921f0032202c3c3af13da3425e69ea6cda"
+    },
+    "applied_markers": {
+      "fork": "e2b1b5921f0032202c3c3af13da3425e69ea6cda",
+      "oms": "e2b1b5921f0032202c3c3af13da3425e69ea6cda"
+    },
+    "oms_baseline": "e2b1b5921f0032202c3c3af13da3425e69ea6cda",
+    "oms_loaded": false,
+    "eve_loaded": false,
+    "new_provider_calls": 0
+  }
+}
