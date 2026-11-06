@@ -1589,7 +1589,6 @@
 
   function scheduleReasonLabel(decision) {
     if (!decision) return t('schedule.notEvaluated');
-    if (decision.code?.startsWith('api_verify_')) return decision.reason;
     const labels = {
       not_evaluated: t('schedule.reasonNotEvaluated'),
       ready: t('schedule.reasonReady'),
@@ -1603,6 +1602,11 @@
       historical_release_verifier: t('schedule.reasonHistoricalVerifier'),
       claimed: t('schedule.reasonClaim'),
       paused: t('schedule.reasonPaused'),
+      api_verify_waiting: t('schedule.verifyWaiting'),
+      api_verify_queued: t('schedule.verifyQueued'),
+      api_verify_running: t('schedule.verifyRunning'),
+      api_verify_result: t('schedule.verifyResult'),
+      api_verify_pending: t('schedule.verifyPending'),
       budget_exhausted: t('schedule.reasonBudgetExhausted'),
       finalizing: t('schedule.reasonFinalizing'),
       inactive: t('schedule.reasonInactive'),
