@@ -1,0 +1,121 @@
+{
+  "version": 1,
+  "task": "S4-62",
+  "pr": 106,
+  "merge_commit": "4a75da3847af61d3591cd2428c1cc473a95c5bc1",
+  "previous": "e2b1b5921f0032202c3c3af13da3425e69ea6cda",
+  "tested_code": "500d4a339b9cab2bf9b5c3408b3f25ac490ed040",
+  "accepted_head": "b7e1b2df2d7b91a4577299d0526026f9d4f9b4f5",
+  "installed": true,
+  "scope": [
+    "oms"
+  ],
+  "approval_for_install": "Усьанавливай",
+  "verified_at": "2026-11-06T19:35:09.612926+00:00",
+  "attempts": [
+    {
+      "number": 1,
+      "result": "interrupted_by_mac_reboot",
+      "started_at": "2026-11-06T18:27:16.556346+00:00",
+      "boot_at": "2026-11-06T18:41:53+00:00",
+      "exit_code": null,
+      "finished_suites": [
+        "main.xml",
+        "timing.xml"
+      ]
+    },
+    {
+      "number": 2,
+      "result": "applied",
+      "exit_code": 0,
+      "start": "2026-11-06T19:19:18.374131+00:00",
+      "finish": "2026-11-06T19:32:20.185432+00:00"
+    }
+  ],
+  "baseline": {
+    "base_branch": "our-main",
+    "base_sha": "4a75da3847af61d3591cd2428c1cc473a95c5bc1",
+    "passed": 6495,
+    "skipped": 155,
+    "failed": 0,
+    "setup_s": 8.4,
+    "tests_s": 766.8,
+    "measured_at": "2026-11-06T19:32:18Z"
+  },
+  "junit": {
+    "main": {
+      "tests": 4316,
+      "skipped": 148,
+      "failures": 0,
+      "errors": 0,
+      "passed": 4168
+    },
+    "timing": {
+      "tests": 12,
+      "skipped": 1,
+      "failures": 0,
+      "errors": 0,
+      "passed": 11
+    },
+    "ours": {
+      "tests": 2322,
+      "skipped": 6,
+      "failures": 0,
+      "errors": 0,
+      "passed": 2316
+    }
+  },
+  "project_doctor": {
+    "fail": 0,
+    "warn": 1
+  },
+  "verification": {
+    "interrupted_run_separate": true,
+    "standard_oms_update_completed": true,
+    "accepted_tree": true,
+    "fork_checked_out": true,
+    "fork_applied": true,
+    "oms_checked_out": true,
+    "oms_applied": true,
+    "baseline_new_and_passing": true,
+    "baseline_history": true,
+    "runtime_files": true,
+    "installed_imports": true,
+    "only_measured_timeouts": true,
+    "rendered_workflow": true,
+    "rendered_agent_settings": true,
+    "project_prompts": true,
+    "existing_oms_profile": true,
+    "eve_files_unchanged": true,
+    "oms_only_generated_files_changed": true,
+    "cards_and_artifacts_unchanged": true,
+    "service_states": true,
+    "recovery_trial_released": true,
+    "baseline_equals_junit": true,
+    "project_doctor": true
+  },
+  "changed_oms_files": [
+    ".ours-state/baseline.json",
+    ".ours-state/baselines.json",
+    "WORKFLOW.md",
+    "claude-settings.json",
+    "project.toml"
+  ],
+  "before_history_count": 31,
+  "after_history_count": 32,
+  "files_compared": {
+    "oms": 136,
+    "eve": 25
+  },
+  "services_loaded": {
+    "oms": false,
+    "eve": false
+  },
+  "paid_model_calls": 0,
+  "oms_api_profile_enabled": false,
+  "archive": "archives/s4-62-install-4a75da3-20261106",
+  "post_merge_log": "attempt-2/post-merge.log",
+  "log_sha256": "b187f1e6b1b03228a497619eda5c88587edf16361c8bd15d6dd64de588a093a7",
+  "merge_record": "S4-62-RELEASE-MERGED.json",
+  "release_checks": "S4-62-RELEASE-VALIDATION.json"
+}
