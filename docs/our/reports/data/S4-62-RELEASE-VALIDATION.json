@@ -1,0 +1,169 @@
+{
+  "version": 1,
+  "task": "S4-62",
+  "date": "2026-11-06",
+  "state": "release_verified_awaiting_owner_acceptance",
+  "pr": {
+    "number": 106,
+    "base": "our-main",
+    "branch": "codex/browser-api-pipeline"
+  },
+  "implementation": "500d4a339b9cab2bf9b5c3408b3f25ac490ed040",
+  "tree": "6944fb82c3a76ed6091a37514b2ab27c654699b3",
+  "parent": "12301bec1116bf34e1b059609995a3d62afc8a95",
+  "architects": [
+    {
+      "part": "profile_and_costs",
+      "model": "gpt-6.1-sol",
+      "effort": "max"
+    },
+    {
+      "part": "acceptance_and_delivery",
+      "model": "gpt-6-astra",
+      "effort": "max"
+    }
+  ],
+  "github": {
+    "run": 42246653438,
+    "attempt": 1,
+    "job": 127990515000,
+    "url": "https://github.com/Serg10011/oh-my-symphony/actions/runs/42246653438",
+    "check_branch": "codex/api-check/500d4a339b9cab2bf9b5c3408b3f25ac490ed040",
+    "marker": "5f615fc9e168a01521b6f2c4006a7fea1706710d",
+    "workflow_recipe_sha256": "c625651b8d2bfdfbaaee1128632a7e73f1e40da867a8f18d6145a724b4e7be9e",
+    "tools_tree": "75538fbd39a5f1abbda09a2fa3c6257843dfa717",
+    "duration_seconds": 1167,
+    "run_conclusion": "failure",
+    "revisions": {
+      "base": {
+        "commit": "e2b1b5921f0032202c3c3af13da3425e69ea6cda",
+        "tree": "f3883b88deddbc698b7cd4dc55a5193af2886ce3"
+      },
+      "trial": {
+        "commit": "500d4a339b9cab2bf9b5c3408b3f25ac490ed040",
+        "tree": "6944fb82c3a76ed6091a37514b2ab27c654699b3"
+      }
+    },
+    "counts": {
+      "base": {
+        "main": {
+          "exit": 1,
+          "passed": 4117,
+          "skipped": 139,
+          "failed": 1
+        },
+        "timing": {
+          "exit": 0,
+          "passed": 11,
+          "skipped": 1,
+          "failed": 0
+        },
+        "ours": {
+          "exit": 1,
+          "passed": 2101,
+          "skipped": 0,
+          "failed": 1
+        },
+        "total": {
+          "passed": 6229,
+          "skipped": 140,
+          "failed": 2
+        }
+      },
+      "trial": {
+        "main": {
+          "exit": 0,
+          "passed": 4170,
+          "skipped": 146,
+          "failed": 0
+        },
+        "timing": {
+          "exit": 0,
+          "passed": 11,
+          "skipped": 1,
+          "failed": 0
+        },
+        "ours": {
+          "exit": 0,
+          "passed": 2316,
+          "skipped": 6,
+          "failed": 0
+        },
+        "total": {
+          "passed": 6497,
+          "skipped": 153,
+          "failed": 0
+        }
+      }
+    },
+    "failing_tests": {
+      "base": [
+        "tests/test_chat.py::test_failed_mode_rebuild_moves_session_to_explicit_resume",
+        "ours/tests/test_project_update.py::test_running_manual_script_is_detected"
+      ],
+      "trial": []
+    },
+    "steps": {
+      "Set up job": "success",
+      "Prepare public revisions and trusted test tools": "success",
+      "Verify private loopback and denied outbound access": "success",
+      "Run installed base suite": "failure",
+      "Run development suite": "success",
+      "Release test container": "success",
+      "Complete job": "success"
+    },
+    "controller_saw_active_run": true,
+    "controller_receipt": {
+      "run": 42246653438,
+      "attempt": 1,
+      "job": 127990515000,
+      "completed_at": "2026-11-06T16:09:10Z",
+      "workflow_commit": "5f615fc9e168a01521b6f2c4006a7fea1706710d",
+      "commit": "500d4a339b9cab2bf9b5c3408b3f25ac490ed040",
+      "tree": "6944fb82c3a76ed6091a37514b2ab27c654699b3",
+      "base_commit": "12301bec1116bf34e1b059609995a3d62afc8a95",
+      "comparison": "failure",
+      "status": "passed"
+    },
+    "test_container_removed": true
+  },
+  "archive": {
+    "directory": "archives/s4-62-release-500d4a3-20261106",
+    "log_sha256": "61cade0ae197e7517fd00eef3c756365ee349bb0495fe390cd053224f6188042",
+    "checksums": "SHA256SUMS"
+  },
+  "local": {
+    "ruff": {
+      "directories": [
+        "ours",
+        "src",
+        "tests"
+      ],
+      "status": "passed"
+    },
+    "delivery_and_legacy_passed": 123,
+    "new_delivery_cases_included": 22,
+    "related_overlapping_passed": 254,
+    "chromium_passed": 8,
+    "new_delivery_browser_cases_included": 2,
+    "locally_run_cloud_exclusion": {
+      "test": "tests/test_pm_ui_node.py::test_pm_ui_node_regressions",
+      "passed": 1
+    },
+    "mac_preexisting_assertion": "ours/tests/test_project_kit.py::test_rendered_workflow_is_accepted_by_the_core",
+    "partial_release_record": "S4-62-RELEASE-PART-1.json",
+    "suites_overlap": true
+  },
+  "boundaries": {
+    "source_pilot_candidate": "307beaf7b4c1c2e133167eb9a6f8fa503013ae60",
+    "source_pilot_run": 42192178731,
+    "source_pilot_candidate_and_paid_journal_match_archive": true,
+    "test_remote_for_card_pr": "simulated",
+    "github_release_check": "real_public_read_and_check_ref",
+    "new_model_requests": 0,
+    "new_model_cost_usd": 0,
+    "merged": false,
+    "installed": false,
+    "oms_api_profile_configured": false
+  }
+}
