@@ -87,6 +87,7 @@ class TrackerConfig:
     network_timeout_seconds: float = 30.0
     # Internal file-tracker context, derived from WORKFLOW.md, not a YAML option.
     run_history_path: Path | None = None
+    id_prefix: str = "TASK"
 
 
 @dataclass(frozen=True)
@@ -341,6 +342,9 @@ class AgentConfig:
     # Level applied to tickets without a `level:` frontmatter key; must be a
     # key of `ServiceConfig.levels`. Empty = no default (behaviour unchanged).
     default_level: str = ""
+    # Pin only newly created board cards. Earlier tickets retain their dispatch rules.
+    new_issue_kind: str = ""
+    allowed_kinds: tuple[str, ...] = ()
 
     def stage_contracts_enabled(self, active_states: "tuple[str, ...]") -> bool:
         """Resolve `agent.stage_contracts` against the board's lanes."""
@@ -787,6 +791,9 @@ class ServiceConfig:
             return self.prompt_template
         parts = [self.prompts.base_template, stage_template]
         return "\n\n".join(part for part in parts if part)
+
+    def board_agent_kinds(self) -> set[str]:
+        return set(self.agent.allowed_kinds) or selectable_agent_kinds(self.agent.profiles)
 
     def agent_profile(self, kind: str) -> AgentProfileConfig | None:
         """Return the plain-CLI profile for *kind*, or None for other kinds.

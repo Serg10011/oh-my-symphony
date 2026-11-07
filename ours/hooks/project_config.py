@@ -200,7 +200,7 @@ _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
         "max_subtask_level": (str, False),
     },
     "delivery": {"repo": (str, False), "base": (str, False)},
-    "api_team": {"settings_file": (str, False), "default": (bool, False),
+    "api_team": {"settings_file": (str, False), "default": (bool, False), "new_cards": (bool, False),
                  "turn_timeout_ms": (int, False), "stall_timeout_ms": (int, False)},
     "service": {"model": (str, False)},
     "billing": {"mode": (str, False), "api_key_file": (str, False)},
@@ -1385,7 +1385,7 @@ def template_values(board: Path, project: dict) -> dict[str, object]:
     return values
 
 
-def render_workflow(board: Path, project: dict, template: Path = TEMPLATE) -> str:
+def render_workflow(board: Path, project: dict, template: Path = TEMPLATE, *, settings_dir: Path | None = None) -> str:
     values = template_values(board, project)
 
     def substitute(match: re.Match[str]) -> str:
@@ -1409,7 +1409,7 @@ def render_workflow(board: Path, project: dict, template: Path = TEMPLATE) -> st
         import api_session
 
         try:
-            return api_board_config.render(text, board.resolve(), project, OURS_DIR / "hooks")
+            return api_board_config.render(text, board.resolve(), project, OURS_DIR / "hooks", settings_dir=settings_dir)
         except (api_session.SessionError, OSError, ValueError, KeyError) as exc:
             raise ProjectError("project.toml: [api_team]: настройки API-команды не приняты; "
                                "проверь JSON-файл, модели, пути и ограничения") from exc

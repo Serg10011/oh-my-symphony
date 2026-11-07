@@ -502,11 +502,19 @@ def main(argv: list[str] | None = None) -> int:
     if repo_ok:
         check_rule_files(report, project)
     check_key_env(report, board)
-    scripts_ok = check_scripts(report, board)
-
     if project.get("api_team", {}).get("default"):
-        report.add("SKIP", "API-команда: полный прогон выполняется отдельно в облаке; setup.sh и test.sh на хосте не запускаются")
-    elif tools_ok and repo_ok and scripts_ok and report.fails == 0:
+        import api_board_config
+        import api_session
+        try:
+            settings = api_board_config.load_settings(board / project["api_team"]["settings_file"])
+        except (OSError, api_session.SessionError):
+            report.add("FAIL", "настройки API-команды недоступны или неверны")
+        else:
+            if settings.get("route") == "single-api" and not settings.get("cloud_check"):
+                report.add("SKIP", "API-команда: проверку результата проводит оператор; локальные скрипты не запускаются")
+            else:
+                report.add("SKIP", "API-команда: полный прогон выполняется отдельно в облаке; setup.sh и test.sh на хосте не запускаются")
+    elif check_scripts(report, board) and tools_ok and repo_ok and report.fails == 0:
         baseline = trial(report, board, project)
         if baseline is not None:
             pc.ensure_state_dir(board)

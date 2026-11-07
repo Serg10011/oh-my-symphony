@@ -213,6 +213,7 @@
         const limits = data.limits || {}, project = data.project || {};
         const rows = [
           ['Ведущий', model(data.profiles.lead)], ['Исполнитель', model(data.profiles.worker)],
+          ...(data.mode ? [['Режим', data.mode === 'economy' ? 'Экономия' : 'Продуктивность']] : []),
           ['Денежный потолок', data.budget ? `${data.budget.max_usd} USD` : 'без отдельного денежного потолка'],
           ['Аварийный предел запросов', number(limits.max_calls)],
           ['Токенов на ответ / на все ответы', `${number(limits.output_tokens_per_call)} / ${number(limits.output_tokens_total)}`],

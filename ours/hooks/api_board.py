@@ -134,10 +134,23 @@ class Board:
         pinned = front.get("agent_kind") or (front.get("agent") or {}).get("kind")
         if pinned != self.context["agent_kind"]:
             raise BoardError("api_card_agent_changed")
-        roles = self.teams.default() if team is None else models.pair(team)
-        options = {**raw["session"], **roles}
-        if roles["lead_profile"] != raw["session"].get("lead_profile", "deepseek-lead"):
-            options.pop("lead_effort", None)
+        pinned_defaults = front.get("api_defaults")
+        if pinned_defaults is not None:
+            if not isinstance(pinned_defaults, dict) or pinned_defaults.get("policy") != models.policy_digest(raw):
+                raise BoardError("api_assignment_changed")
+            roles = models.pair(pinned_defaults.get("team"))
+            saved_mode = pinned_defaults.get("mode")
+            if saved_mode not in (None, "economy", "productivity"):
+                raise BoardError("api_assignment_changed")
+            if saved_mode is None:
+                raw.pop("mode", None)
+            else:
+                raw["mode"] = saved_mode
+        else:
+            roles = self.teams.default()
+        if team is not None:
+            roles = models.pair(team)
+        options = board_config.session_options(raw, roles)
         spec = session.validate_spec({**options, "task": str(front.get("title", "")) + "\n\n" + body,
                                       "project": {"root": str(self.repo), "paths": raw["paths"],
                                                   "commit": self._base_commit()},
@@ -153,6 +166,8 @@ class Board:
                    "workflow_sha256": hashlib.sha256(self.workflow.read_bytes()).hexdigest(), "rules": rules}
         proposal = {"binding": _digest(binding), "card_digest": binding["card"], "spec": spec,
                     "profiles": binding["profiles"], "project_digest": snapshot["digest"], "rules": rules}
+        if "mode" in raw:
+            proposal["mode"] = raw["mode"]
         if "cloud_check" in raw:
             proposal.update(cloud_profile=cloud.PROFILE,
                             check_config=_digest([raw, binding["workflow_sha256"]]),
@@ -221,6 +236,12 @@ class Board:
     def show(self) -> dict:
         value = self._load()
         if value is None:
+            if self.tracker.find_path(self.identifier):
+                frozen = self.card()[0].get("api_defaults")
+                if isinstance(frozen, dict):
+                    return {"version": 1, "status": "unassigned", "identifier": self.identifier,
+                            "mode": frozen.get("mode"), "team_picker": {"default": models.pair(frozen.get("team")),
+                                                                        "override": None, **models.catalog()}}
             return {"version": 1, "status": "unassigned", "identifier": self.identifier,
                     "team_picker": {"default": self.teams.default(), "override": None, **models.catalog()}}
         if value["status"] == "running":
@@ -257,10 +278,14 @@ class Board:
                   "reason": value.get("reason"), "run_id": value.get("run_id"),
                   "stop_requested": self.stop_path.exists(), "accepted": False, "delivered": False,
                   "delivery_status": "not_configured"}
+        if "mode" in value:
+            result["mode"] = value["mode"]
         if "board_stages" in value:
             result["board_stages"] = value["board_stages"]
         if value["status"] == "prepared":
-            result["team_picker"] = {"default": self.teams.default(), "override": value.get("team_override"),
+            frozen = self.card()[0].get("api_defaults")
+            default = models.pair(frozen["team"]) if isinstance(frozen, dict) else self.teams.default()
+            result["team_picker"] = {"default": default, "override": value.get("team_override"),
                                      **models.catalog()}
         if self.session_path.exists():
             state = session._load(self.session_path)

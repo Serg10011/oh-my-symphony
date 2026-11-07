@@ -1192,6 +1192,7 @@ class FileBoardTracker:
         planning_ref: PlanningRef | None = None,
         level: str | None = None,
         creation_key: str | None = None,
+        api_defaults: dict[str, Any] | None = None,
     ) -> tuple[str, Path]:
         """Validate the board graph and create the ticket under one lock.
 
@@ -1233,8 +1234,15 @@ class FileBoardTracker:
                     planning_ref=planning_ref,
                     level=level,
                 )
-                fingerprint = creation_fingerprint(front, description) if creation_key else ''
                 existing = self.find_path(resolved)
+                if api_defaults is not None:
+                    # A keyed replay compares the defaults in its original ticket, even
+                    # when the operator has since selected a different pair for new work.
+                    if existing and creation_key and not existing.is_symlink():
+                        api_defaults = parse_ticket_file(existing)[0].get("api_defaults")
+                    if api_defaults is not None:
+                        front["api_defaults"] = api_defaults
+                fingerprint = creation_fingerprint(front, description) if creation_key else ''
                 if existing is not None and creation_key:
                     receipt = ledger.matching_creation(resolved, creation_key, fingerprint)
                     if receipt and not existing.is_symlink():

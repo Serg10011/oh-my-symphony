@@ -1,6 +1,8 @@
 """Board defaults and public model names. No key lookup, task dispatch or execution."""
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -8,6 +10,23 @@ import stat
 
 import api_executor as api
 import api_session as session
+from symphony.errors import SymphonyError
+from symphony.trackers.file import parse_ticket_file
+
+
+def project_binding(context):
+    fields = ("workflow", "board_root", "repo", "base_branch")
+    if any(not isinstance(context.get(key), str) for key in fields):
+        return None
+    return hashlib.sha256(json.dumps([context[key] for key in fields]).encode()).hexdigest()
+
+
+def policy_digest(settings):
+    # Grants and budgets must still match at preparation. Team and mode are pinned per card.
+    options = {k: v for k, v in settings["session"].items() if k not in ("lead_profile", "worker_profile")}
+    policy = {k: v for k, v in settings.items() if k != "mode"}
+    policy["session"] = options
+    return hashlib.sha256(json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def pair(value):
@@ -45,6 +64,8 @@ class Teams:
     def __init__(self, settings, context):
         self.settings = Path(settings).resolve(strict=True)
         self.base = Path(context["workflow"]).resolve(strict=True).parent / ".ours-state"
+        self.cards = Path(context.get("board_root", self.base.parent / "kanban"))
+        self.binding = project_binding(context)
         self.kind = context["agent_kind"]
         if not isinstance(self.kind, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", self.kind):
             raise session.SessionError("invalid_composition")
@@ -79,6 +100,11 @@ class Teams:
             p = self.base / "api-team" / key / "assignment.json"
             try:
                 if not p.exists():
+                    card = self.cards / (key + ".md")
+                    if card.is_file() and not card.is_symlink():
+                        frozen = parse_ticket_file(card)[0].get("api_defaults")
+                        if frozen is not None:
+                            assigned[key] = pair(frozen["team"])
                     continue
                 assigned[key] = None  # Never substitute a new default for unreadable history.
                 _checked_dir(self.base)
@@ -89,6 +115,10 @@ class Teams:
                 item = session._decode(session._read_state(p))
                 if item["identifier"] == key:
                     assigned[key] = from_spec(item["spec"])
-            except (OSError, ValueError, KeyError, TypeError, session.SessionError):
+            except (OSError, ValueError, KeyError, TypeError, session.SessionError, SymphonyError):
                 continue
-        return {"default": self.default(), "assignments": assigned, **catalog()}
+        default = self.default()
+        raw = session._decode(self.settings.read_bytes())
+        frozen = {"team": default, "mode": raw.get("mode"), "policy": policy_digest(raw)}
+        return {"default": default, "creation_defaults": frozen, "project_binding": self.binding,
+                "assignments": assigned, **catalog()}

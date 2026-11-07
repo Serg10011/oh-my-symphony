@@ -11,7 +11,6 @@ from ..trackers.validate import IDENTIFIER_RE as _IDENTIFIER_RE
 from ..trackers.validate import IDENTIFIER_RULE as _IDENTIFIER_RULE
 from ..workflow import (
     ServiceConfig,
-    selectable_agent_kinds,
     validated_ci_modes,
 )
 from ..workflow.levels import LEVEL_NAME_RE
@@ -192,7 +191,7 @@ def _check_agent_kind(raw: Any, cfg: ServiceConfig) -> str:
     if not isinstance(raw, str):
         raise WorkflowMutationError("agent_kind must be a string")
     kind = raw.strip().lower()
-    kinds = selectable_agent_kinds(cfg.agent.profiles)
+    kinds = cfg.board_agent_kinds()
     if kind and kind not in kinds:
         raise WorkflowMutationError(
             f"unknown agent_kind {kind!r}; supported: {sorted(kinds)}"

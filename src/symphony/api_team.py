@@ -98,6 +98,21 @@ def uses_board_queue(cfg: ServiceConfig, kind: str | None) -> bool:
     return profile is not None and supports_team_settings(profile.command)
 
 
+async def defaults_for_new_card(cfg, kind, prefix, identifier):
+    """Freeze operator defaults during creation through either the board API or the CLI."""
+    if not cfg.agent.new_issue_kind or not uses_board_queue(cfg, kind):
+        return None
+    expected = cfg.tracker.id_prefix
+    if (prefix and (not isinstance(prefix, str) or prefix.strip().upper() != expected)
+            or identifier and (not isinstance(identifier, str) or not identifier.startswith(expected + "-"))):
+        raise SymphonyError(f"Для API-карточки этой доски нужен префикс {expected}")
+    listing = await invoke(cfg, kind, "", "team-options", payload={"identifiers": []})
+    frozen = listing.get("creation_defaults")
+    if not isinstance(frozen, dict):
+        raise SymphonyError("Настройки проекта для новой карточки недоступны")
+    return frozen
+
+
 def normal_review_lane(states) -> str | None:
     return next((s for s in states if s.casefold() in {"human review", "приёмка", "приемка"}), None)
 
