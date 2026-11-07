@@ -1,0 +1,78 @@
+{
+  "version": 1,
+  "task": "S4-66",
+  "recorded_at": "2026-11-07T21:26:35.725479+00:00",
+  "branch": "codex/api-team-roles",
+  "source_base": "2780d7a950e4c616ad87f5761dc2e0fabce18c84",
+  "installed_base": "85aa05a898387dedad292449f76b45c1ed82458c",
+  "authorization": "User agreed to implementation-first worker roles and optional solo completion for small tasks on 2026-11-08",
+  "assignment": "current Codex architect, max; no additional agents",
+  "tested_files": {
+    "ours/hooks/api_session.py": "399c43df11fbb08a3dc969f3a62e79e2c03a91201147a2dfdc1d914be998ca85",
+    "ours/tests/test_api_team_roles.py": "b609e88d5d489bae8ec0a4befbe7f39969d299fca796038a6ad04664c7c7ee01"
+  },
+  "started_at": "2026-11-07T21:12:08.315446+00:00",
+  "finished_at": "2026-11-07T21:23:05.967259+00:00",
+  "checks": {
+    "ruff_ours": "passed",
+    "pytest_ours": {
+      "total": 2407,
+      "passed": 2399,
+      "skipped": 7,
+      "failures": 1,
+      "errors": 0
+    },
+    "new_targeted_tests": {
+      "passed": 14,
+      "failures": 0
+    },
+    "environment_recheck": {
+      "checks": [
+        {
+          "name": "baseline-original-python",
+          "exit_code": 1
+        },
+        {
+          "name": "candidate-ascii-python",
+          "exit_code": 1
+        },
+        {
+          "name": "candidate-base-python",
+          "exit_code": 0
+        }
+      ],
+      "issue": "Existing launchd generator rejects a non-ASCII sys.executable path. It also fails on the unchanged baseline; a directory alias resolves to the original path. The targeted test passes with the same base Python and installed packages at an ASCII executable path.",
+      "code_changed": false,
+      "verified_python": "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3.14",
+      "packages": "/Volumes/ssd/Проекты/oh-my-symphony/work/development/oh-my-symphony/.venv/lib/python3.14/site-packages",
+      "dependencies_installed": false
+    },
+    "resolved_full_run_failure": "test_launchd_plist_content_and_idempotence",
+    "targeted_recheck_passed": 1,
+    "fresh_full_run_after_environment_recheck": false,
+    "git_diff_check": "passed",
+    "local_documentation_links": "passed"
+  },
+  "compatibility": {
+    "identifier": "OMS-11",
+    "original_requests_rebuilt_with_identical_hashes": 60,
+    "journal_sha256": "b69f9d86031f7c32f8ea6bd05c87f63dac2466ff463cf9cdea85c33c69579c1e",
+    "journal_unchanged": true,
+    "old_cost_estimate_usd": "0.185030"
+  },
+  "new_paid_requests": 0,
+  "new_api_cost_usd": "0",
+  "provider_keys_read": false,
+  "runtime_updated": false,
+  "merged": false,
+  "live_model_behavior_tested": false,
+  "artifacts": "/Volumes/ssd/Проекты/oh-my-symphony/checks/s4-66-api-team-roles-20261108",
+  "test_copy_original_location": "/Volumes/ssd/symphony-checks-s466-roles-rgkm0oml",
+  "limitations": [
+    "Instructions influence model choices but do not force delegation",
+    "No measured economic comparison",
+    "Full run had one existing environment failure; only that test was repeated successfully with the same Python and packages at an ASCII executable path",
+    "Release and installation require separate acceptance",
+    "Installed API code change invalidates previous board permission binding"
+  ]
+}
