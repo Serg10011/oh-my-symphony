@@ -760,7 +760,10 @@ def exclude_text(id_prefix: str) -> str:
 def default_workspace_root(project: dict) -> Path:
     """Where the service puts the working copies of this project (`workspace.root`
     of the rendered WORKFLOW.md)."""
-    return Path.home() / "symphony_workspaces" / project["project"]["name"]
+    # A per-Mac registration can point to an external disk. Render its real
+    # location consistently with the host's post-merge normalization, including
+    # when the project's workspace directory has not been created yet.
+    return (Path.home() / "symphony_workspaces" / project["project"]["name"]).resolve()
 
 
 _SHA_RE = re.compile(r"[0-9a-f]{40}([0-9a-f]{24})?")
