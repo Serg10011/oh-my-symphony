@@ -1,0 +1,254 @@
+{
+  "version": 1,
+  "recorded_at": "2026-11-07T18:51:54.661532+00:00",
+  "task": "S4-65",
+  "identifier": "OMS-11",
+  "run_id": "9b387b20e7c046a4ace8e15dac3bf0b7",
+  "status": "result",
+  "board_stages": [
+    "Todo",
+    "In Progress",
+    "Verify"
+  ],
+  "started_at": "2026-11-07T18:32:10.122128+00:00",
+  "finished_at": "2026-11-07T18:46:39.881163+00:00",
+  "elapsed_seconds": 869.759,
+  "authorization": {
+    "owner_confirmed": true,
+    "board_permission_status": "active",
+    "scope": "new_explicitly_submitted_matching_cards_until_revoked_or_terms_change",
+    "mode": "economy",
+    "paths": [
+      "ours/README.md",
+      "docs/our/reports/REPORT-54.md"
+    ],
+    "task_write_scope": [
+      "ours/README.md"
+    ],
+    "separate_money_ceiling": null,
+    "paid_retry_authorized": false,
+    "publication_authorized": false
+  },
+  "assignment": {
+    "lead": {
+      "model": "deepseek-flash",
+      "effort": "high",
+      "actual_work": "read, edit, delegate_fact_check, integrate_corrections"
+    },
+    "worker": {
+      "model": "gpt-6-luna",
+      "effort": "max",
+      "actual_work": "fact_check_without_edits"
+    },
+    "architect": "current Codex chat, max; final review and history, outside this API cost"
+  },
+  "candidate": {
+    "status": "awaiting_full_checks",
+    "base_commit": "85aa05a898387dedad292449f76b45c1ed82458c",
+    "revision": "dd6e1df4bed2c1802c89e7e6ebbf4003827d5e0f4dc8183a5602a756839a1c80",
+    "commit": "faffca5e46b61cc24ef12dc443a7011a70bea03f",
+    "tree": "9526540663aa1ec3202fda7420b7efd8a2e73c10",
+    "checks": {
+      "static": "passed",
+      "full": "not_run"
+    },
+    "accepted": false,
+    "delivered": false,
+    "files": [
+      {
+        "path": "ours/README.md",
+        "before": {
+          "sha256": "f290e3410ed02113b5249a33a269372d56602d41ecd862cc7678d994544becff",
+          "bytes": 190428,
+          "mode": 420
+        },
+        "after": {
+          "sha256": "9d9b03976fa7d8c0add3197d663da5545271307984d1c5cbf2cdeeb7460a1fde",
+          "bytes": 201240,
+          "mode": 420
+        }
+      }
+    ]
+  },
+  "review": {
+    "only_readme_changed": true,
+    "report_54_unchanged": true,
+    "diff_check_passed": true,
+    "local_section_links_checked": true,
+    "markdown_fences_balanced": true,
+    "proposed_correction": "Document default=false plus new_cards=true for actual mixed OMS mode",
+    "correction_applied_to_candidate": false,
+    "full_checks": "not_run",
+    "acceptance": "not_requested_or_granted",
+    "delivery": "not_published",
+    "no_runtime_changes": true
+  },
+  "cost": {
+    "estimated_total_usd": "0.185030",
+    "estimate_complete": true,
+    "estimated_known_usd": "0.185030",
+    "estimated_requests": 60,
+    "estimate_kind": "conservative_catalog_estimate",
+    "requests_without_estimate": 0,
+    "cache_write_unknown_calls": 41,
+    "provider_billed_total_usd": null,
+    "provider_invoice_verified": false,
+    "cost_scope": "generation_requests_of_this_session_only; provider_invoice_not_verified",
+    "tariff": {
+      "version": "2026-11-03-standard-peak-v2",
+      "verified_on": "2026-11-03",
+      "valid_until": "2026-11-10",
+      "source": "builtin_catalog"
+    },
+    "unpriced_models": [],
+    "assumptions": [
+      "local_catalog_used_for_session_without_budget",
+      "cache_tokens_are_included_in_input_tokens",
+      "reasoning_tokens_are_included_in_output_tokens",
+      "catalog_peak_prices_cache_write_rate_and_regional_factor_are_conservative",
+      "unknown_usage_is_not_estimated",
+      "provider_invoice_not_verified",
+      "unknown_cache_writes_priced_at_catalog_write_rate"
+    ]
+  },
+  "by_model": {
+    "deepseek-flash": {
+      "input_tokens": 3164365,
+      "output_tokens": 48797,
+      "cached_input_tokens": 3034368,
+      "cache_write_input_tokens": null,
+      "reasoning_tokens": 24736,
+      "total_tokens": 3213162,
+      "calls": 41,
+      "unknown_usage_calls": 0,
+      "input_includes_cached": true,
+      "output_includes_reasoning": true,
+      "model": "deepseek-flash",
+      "estimated_usd": "0.115782",
+      "estimated_known_usd": "0.115782",
+      "estimated_requests": 41,
+      "estimate_complete": true,
+      "priced": true,
+      "rates_per_million_tokens": {
+        "input": "0.30",
+        "cached": "0.006",
+        "write": "0.30",
+        "output": "1.20"
+      },
+      "long_context_surcharge": false,
+      "regional_factor": "1"
+    },
+    "gpt-6-luna": {
+      "input_tokens": 904373,
+      "output_tokens": 58009,
+      "cached_input_tokens": 799676,
+      "cache_write_input_tokens": 103158,
+      "reasoning_tokens": 55458,
+      "total_tokens": 962382,
+      "calls": 19,
+      "unknown_usage_calls": 0,
+      "input_includes_cached": true,
+      "output_includes_reasoning": true,
+      "model": "gpt-6-luna",
+      "estimated_usd": "0.069248",
+      "estimated_known_usd": "0.069248",
+      "estimated_requests": 19,
+      "estimate_complete": true,
+      "priced": true,
+      "rates_per_million_tokens": {
+        "input": "0.10",
+        "cached": "0.01",
+        "write": "0.25",
+        "output": "0.50"
+      },
+      "long_context_surcharge": true,
+      "regional_factor": "1.1"
+    }
+  },
+  "totals": {
+    "input_tokens": 4068738,
+    "output_tokens": 106806,
+    "cached_input_tokens": 3834044,
+    "cache_write_input_tokens": null,
+    "reasoning_tokens": 80194,
+    "total_tokens": 4175544,
+    "calls": 60,
+    "unknown_usage_calls": 0,
+    "input_includes_cached": true,
+    "output_includes_reasoning": true
+  },
+  "tool_counts": {
+    "deepseek-lead": {
+      "list_project_files": 2,
+      "search_project_files": 2,
+      "read_project_file": 2,
+      "run_project_command": 52,
+      "delegate_luna": 1,
+      "project_changes": 2
+    },
+    "luna-worker": {
+      "project_changes": 1,
+      "search_project_files": 7,
+      "run_project_command": 18,
+      "read_project_file": 5
+    }
+  },
+  "tool_errors": [
+    {
+      "call_id": "call_00_17GH2j00pW2l4uKN7MRw9905",
+      "error": "sandbox_command_too_large"
+    }
+  ],
+  "recovery": "one oversized local command rejected; lead continued same attempt without operator/model restart",
+  "preservation": {
+    "boards": {
+      "oms": {
+        "old_card_count": 13,
+        "old_cards_unchanged": true,
+        "old_run_count": 21,
+        "old_runs_unchanged": true,
+        "current_run_count": 22,
+        "new_run_count": 1,
+        "unfinished_runs": 0,
+        "new_runs": [
+          {
+            "run_id": "9b387b20e7c046a4ace8e15dac3bf0b7",
+            "identifier": "OMS-11",
+            "status": "api_team_finished",
+            "completed_at": "2026-11-07T18:46:40.403776+00:00"
+          }
+        ]
+      },
+      "eve": {
+        "old_card_count": 0,
+        "old_cards_unchanged": true,
+        "old_run_count": 0,
+        "old_runs_unchanged": true,
+        "current_run_count": 0,
+        "new_run_count": 0,
+        "unfinished_runs": 0,
+        "new_runs": [],
+        "configuration_unchanged": true
+      }
+    },
+    "source_repositories": {
+      "oh-my-symphony": {
+        "commit": "85aa05a898387dedad292449f76b45c1ed82458c",
+        "clean": true
+      },
+      "oms-pipeline": {
+        "commit": "85aa05a898387dedad292449f76b45c1ed82458c",
+        "clean": true
+      }
+    },
+    "eve_listener_off": true
+  },
+  "artifacts": "/Volumes/ssd/Проекты/oh-my-symphony/checks/s4-65-oms-first-task-20261107/result",
+  "original_session": "/Volumes/ssd/Проекты/oh-my-symphony/work/symphony-projects/oms/.ours-state/api-team/OMS-11/session.json",
+  "limitations": [
+    "No provider invoice verification",
+    "Caching measured within this session; cross-task reuse not proved",
+    "Publication, full checks, acceptance and installation remain separate",
+    "Model result retained unchanged; operator correction is a separate proposed patch"
+  ]
+}
