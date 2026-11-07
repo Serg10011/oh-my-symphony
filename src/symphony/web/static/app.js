@@ -186,6 +186,8 @@
     }),
     saveTeam: (kind, team) => apiRequest('/api-teams/' + encodeURIComponent(kind),
       { method: 'POST', body: JSON.stringify({ team }) }),
+    teamPermission: (kind, action, payload = {}) => apiRequest('/api-teams/' + encodeURIComponent(kind) + '/permission' + (action ? '/' + action : ''),
+      action ? { method: 'POST', body: JSON.stringify(payload) } : {}),
     getRequests: () => apiRequest('/requests'),
     getRequestSchedule: (kind, id) => {
       const params = new URLSearchParams({ kind, id });
@@ -5446,7 +5448,15 @@
       body.appendChild(buildInterfaceCard());
       body.appendChild(buildRefreshCard());
       for (const [kind, data] of Object.entries(board.teamDirectory || {})) {
-        if (data) body.appendChild(window.SymphonyApiModels.settings(el, kind, data, api.saveTeam));
+        if (data) {
+          const permission = window.SymphonyApiPermission.mount({ el, kind, request: api.teamPermission });
+          body.appendChild(window.SymphonyApiModels.settings(el, kind, data, async (k, team) => {
+            const saved = await api.saveTeam(k, team);
+            permission.reload();
+            return saved;
+          }));
+          body.appendChild(permission.element);
+        }
       }
       body.appendChild(settingsSectionHeading(t('settings.workflowSetup'), t('settings.workflowSetupDescription')));
       body.appendChild(buildLanePresetCard(lanePresets, wf));

@@ -27,6 +27,7 @@ import api_project
 import api_session
 import project_config as pc
 from symphony import service
+from symphony.api_team import PUBLIC_ERRORS
 
 
 class ConnectError(Exception):
@@ -36,6 +37,7 @@ class ConnectError(Exception):
 GUIDE = "https://github.com/Serg10011/oh-my-symphony/blob/our-main/docs/our/PROJECT-ARCHITECT.md"
 SCHEMA = {"project", "repo", "base", "team", "mode", "paths", "verification"}
 MAX_REQUEST = 32 * 1024
+MAX_REPLY = 8 * 1024 * 1024
 REASONS = {
     "invalid_json": "Пришли корректный JSON без повторяющихся полей.",
     "invalid_request": "Запрос подключения должен быть объектом JSON.",
@@ -72,14 +74,15 @@ REASONS = {
     "connector_unavailable": "Служба подключения недоступна на указанном локальном порту.",
     "unverified_connector_reply": "Служба не подтвердила подлинность ответа для этого проекта.",
 }
+REASONS.update({key: value for key, value in PUBLIC_ERRORS.items() if key.startswith("api_permission_")})
 
 
 def refusal(reason):
     return {"status": "refused", "reason": reason, "message": REASONS.get(reason, "Уточни условие подключения у оператора.")}
 
 
-def decode(data):
-    if len(data) > MAX_REQUEST:
+def decode(data, *, limit=MAX_REQUEST):
+    if len(data) > limit:
         raise ConnectError("request_too_large")
     try:
         value = api_session._decode(data)
@@ -246,7 +249,7 @@ def signature(token, direction, challenge, body):
     return hmac.new(token.encode(), message, hashlib.sha256).hexdigest()
 
 
-def authenticate(raw, root, challenge, proof, body):
+def authenticate(raw, root, challenge, proof, body, *, direction="request"):
     if (not re.fullmatch(r"[0-9]{10}-[0-9a-f]{32}", challenge) or abs(time.time() - int(challenge[:10])) > 120
             or not re.fullmatch(r"[0-9a-f]{64}", proof)):
         raise ConnectError("unauthorized")
@@ -257,9 +260,56 @@ def authenticate(raw, root, challenge, proof, body):
     except (FileNotFoundError, ConnectError) as exc:
         raise ConnectError("unauthorized") from exc
     if (not hmac.compare_digest(grant["token_hash"], hashlib.sha256(token.encode()).hexdigest())
-            or not hmac.compare_digest(signature(token, "request", challenge, body), proof)):
+            or not hmac.compare_digest(signature(token, direction, challenge, body), proof)):
         raise ConnectError("unauthorized")
     return grant, token
+
+
+def task(raw, root, grant, *, submit=False):
+    """Authenticated project handoff; never grants board spending permission."""
+    from api_board import Board, BoardError
+    from symphony import api_team
+    from symphony.workflow import WorkflowState
+
+    expected = {"project", "identifier"} | ({"authorization_id", "card_digest"} if submit else set())
+    if set(raw) != expected or raw["project"] != grant["request"]["project"]:
+        raise ConnectError("invalid_fields")
+    identifier = raw["identifier"]
+    if not isinstance(identifier, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", identifier):
+        raise ConnectError("invalid_fields")
+    board = root / project_name(raw["project"])
+    if not board.is_dir():
+        raise ConnectError("board_not_reachable")
+    if inspect_repo(grant["request"], root) != grant["repository_identity"]:
+        raise ConnectError("repository_changed")
+    if board.is_symlink() or any((board / p).is_symlink() for p in (pc.STATE_DIR, pc.BOARD_DIR, pc.PROJECT_FILE, "WORKFLOW.md")):
+        raise ConnectError("board_conflict")
+    cfg = pc.load_project(board)
+    identity, options = cfg["project"], cfg["api_team"]
+    if (identity["name"] != raw["project"] or identity["repo"] != grant["request"]["repo"]
+            or identity["base_branch"] != grant["request"]["base"] or not options
+            or not (options["default"] or options.get("new_cards"))
+            or (board / "WORKFLOW.md").read_text() != pc.render_workflow(board, cfg)):
+        raise ConnectError("board_configuration_differs")
+    marker = board / pc.STATE_DIR / "connection.json"
+    managed = marker.exists()
+    if managed and json.loads(read_private(marker)) != {"approval_id": grant["approval_id"]}:
+        raise ConnectError("board_conflict")
+    # The connection credential identifies the project. The separately
+    # approved current board permission governs task models, paths and spend.
+    verify_instance(board / "WORKFLOW.md", cfg["project"]["port"], managed)
+    if not identifier.startswith(cfg["project"]["id_prefix"] + "-"):
+        raise ConnectError("invalid_fields")
+    parsed, error = WorkflowState(board / "WORKFLOW.md").reload()
+    if error or parsed is None:
+        raise ConnectError("board_configuration_differs")
+    context = api_team.board_context(parsed, "api-team", identifier)
+    try:
+        runner = Board(board / cfg["api_team"]["settings_file"], context)
+        runner.card()
+        return runner.submit({k: raw[k] for k in ("authorization_id", "card_digest")}) if submit else runner.show()
+    except (BoardError, api_session.SessionError) as exc:
+        raise ConnectError(str(exc)) from None
 
 
 def choose_address(root, name, repo):

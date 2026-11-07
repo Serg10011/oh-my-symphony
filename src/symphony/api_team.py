@@ -39,6 +39,15 @@ MAX_REPLY_BYTES = 8 * 1024 * 1024
 CHECKPOINT_ENV = "SYMPHONY_API_TEAM_CHECKPOINTS"
 CHECKPOINT = b"\x1e"
 PUBLIC_ERRORS = {
+    "api_permission_required": "Для передачи задачи нужно действующее разрешение доски",
+    "api_permission_changed": "Условия доски изменились. Владелец должен проверить и подтвердить их заново",
+    "api_permission_revoked": "Работа API-команды остановлена: разрешение доски отозвано или изменилось",
+    "api_permission_card_not_eligible": "Эта карточка создана до действующего разрешения. Для неё нужен отдельный запуск",
+    "api_permission_task_changed": "Карточка или её назначение изменились. Прочитай актуальную версию перед передачей",
+    "api_permission_confirmation_invalid": "Подтверждение разрешения недействительно. Сначала посмотри условия доски",
+    "api_permission_incomplete": "Сохранение разрешения прервалось. Проверь условия доски заново",
+    "api_permission_invalid": "Не удалось прочитать разрешение доски. Требуется проверка оператором",
+    "api_permission_storage_unsafe": "Права папки разрешений не подходят для платной работы",
     "invalid_composition": "Такое сочетание ведущего и исполнителя не поддерживается",
     "api_assignment_changed": "Задача или настройки изменились. Посмотри назначение заново перед подтверждением",
     "api_confirmation_expired": "Время подтверждения истекло. Посмотри назначение заново",
@@ -183,7 +192,8 @@ async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
                  payload: dict | None = None, run_id: str | None = None, heartbeat=None,
                  on_checkpoint: Callable[[], None] | None = None) -> dict:
     if action not in {"prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run",
-                      "team-options", "set-team-default", "publish-check", "accept"}:
+                      "team-options", "set-team-default", "publish-check", "accept", "submit",
+                      "permission-show", "permission-prepare", "permission-authorize", "permission-revoke"}:
         raise SymphonyError("Неизвестное действие API-команды")
     profile = api_profile(cfg, kind)
     context = board_context(cfg, kind, identifier)
@@ -239,6 +249,8 @@ async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
         timeout = 120
     elif action in {"publish-check", "accept"}:
         timeout = 900
+    elif action == "permission-authorize":
+        timeout = 300  # Two owner-controlled Keychain prompts; no provider call.
     try:
         async with asyncio.timeout(timeout):
             while not task.done():

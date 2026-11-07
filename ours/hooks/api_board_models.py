@@ -62,6 +62,7 @@ def _checked_dir(path):
 
 class Teams:
     def __init__(self, settings, context):
+        self.context = context
         self.settings = Path(settings).resolve(strict=True)
         self.base = Path(context["workflow"]).resolve(strict=True).parent / ".ours-state"
         self.cards = Path(context.get("board_root", self.base.parent / "kanban"))
@@ -120,5 +121,12 @@ class Teams:
         default = self.default()
         raw = session._decode(self.settings.read_bytes())
         frozen = {"team": default, "mode": raw.get("mode"), "policy": policy_digest(raw)}
+        # Existing boards remain per-card until the owner explicitly approves
+        # a board permission. Only cards created under that permission inherit it.
+        from api_board_permission import Permission
+
+        permission = Permission(self.settings, self.context).show()
+        if permission["status"] == "active":
+            frozen["authorization_id"] = permission["id"]
         return {"default": default, "creation_defaults": frozen, "project_binding": self.binding,
-                "assignments": assigned, **catalog()}
+                "assignments": assigned, "execution_permission": permission, **catalog()}

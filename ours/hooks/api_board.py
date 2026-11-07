@@ -2,12 +2,13 @@
 
 The browser supplies a confirmation token, review cursor or public run number. Project
 permissions, provider profiles and execution settings come from trusted local
-configuration. No action other than run reads credentials or calls a provider.
+configuration. Board authorization checks credential access; only run calls providers.
 """
 
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import datetime
 import hashlib
 import hmac
@@ -25,6 +26,7 @@ import time
 import api_executor as api
 import api_board_config as board_config
 import api_board_models as models
+import api_board_permission as permission_api
 import api_candidate as candidate
 import api_cloud_check as cloud
 import api_delivery as delivery
@@ -100,6 +102,7 @@ class Board:
         self.session_path = self.root / "session.json"
         self.stop_path = self.root / "stop-requested"
         self.teams = models.Teams(self.settings, self.context)
+        self.permission = permission_api.Permission(self.settings, self.context)
         self.review_lane = normal_review_lane(context["terminal_states"])
 
     def _can_prepare_from(self, current):
@@ -208,7 +211,7 @@ class Board:
             raise BoardError("invalid_api_confirmation")
         with session._lock(self.path):
             value = self._load()
-            if value is None or not hmac.compare_digest(value["token_sha256"], _digest(token)):
+            if value is None or not hmac.compare_digest(value.get("token_sha256", ""), _digest(token)):
                 raise BoardError("invalid_api_confirmation")
             if value["status"] != "prepared":
                 # Lost HTTP reply: the same confirmation is idempotent and does
@@ -218,6 +221,11 @@ class Board:
                 raise BoardError("api_confirmation_expired")
             if self.proposal(value.get("team_override"))["binding"] != value["binding"]:
                 raise BoardError("api_assignment_changed")
+
+            revision = self.permission.revision()
+            value["permission_revision"] = revision
+            if not self.permission.allows(value):
+                raise BoardError("api_permission_revoked")
 
             def mutate(front, body):
                 if (self.card_digest(front, body) != value["card_digest"]
@@ -230,8 +238,48 @@ class Board:
                 front["state"] = self.context["active_states"][0]
                 front["updated_at"] = session._now()
                 return front, body
-            self.tracker._mutate_ticket(self.identifier, mutate)
+            with self.permission.admit(value):
+                self.tracker._mutate_ticket(self.identifier, mutate)
         return self.show()
+
+    def submit(self, expected):
+        with session._lock(self.path):
+            previous = self._load()
+            if previous and previous["status"] != "prepared":
+                # A repeated delivery acknowledges the original attempt only.
+                # It cannot re-arm a revoked, failed, running or finished task.
+                if previous.get("submission") != expected:
+                    raise BoardError("api_permission_task_changed")
+                return self.show()
+            with session._lock(self.permission.path):
+                authorization = self.permission.validate_submission(self, expected)
+                proposal = self.proposal()
+                value = {"version": 1, "identifier": self.identifier, "status": "queued",
+                         "created_at": session._now(), "confirmed_at": session._now(),
+                         "permission_revision": authorization["revision"], "authorization": authorization,
+                         "submission": expected, "board_stages": [self.context["active_states"][0]], **proposal}
+                def mutate(front, body):
+                    if (self.card_digest(front, body) != expected["card_digest"]
+                            or front.get("state") != self.context["active_states"][0]):
+                        raise BoardError("api_permission_task_changed")
+                    self._save(value)
+                    front["updated_at"] = session._now()
+                    return front, body
+                self.tracker._mutate_ticket(self.identifier, mutate)
+        return self.show()
+
+    def permission_view(self):
+        permission = self.permission.show()
+        result = {"execution_permission": permission}
+        if permission["status"] == "active":
+            front, body = self.card()
+            frozen = front.get("api_defaults")
+            if isinstance(frozen, dict) and frozen.get("authorization_id") == permission["id"]:
+                result["submission"] = {"authorization_id": permission["id"],
+                                        "card_digest": self.card_digest(front, body)}
+            else:
+                result["submission_refusal"] = "api_permission_card_not_eligible"
+        return result
 
     def show(self) -> dict:
         value = self._load()
@@ -239,10 +287,10 @@ class Board:
             if self.tracker.find_path(self.identifier):
                 frozen = self.card()[0].get("api_defaults")
                 if isinstance(frozen, dict):
-                    return {"version": 1, "status": "unassigned", "identifier": self.identifier,
+                    return {"version": 1, "status": "unassigned", "identifier": self.identifier, **self.permission_view(),
                             "mode": frozen.get("mode"), "team_picker": {"default": models.pair(frozen.get("team")),
                                                                         "override": None, **models.catalog()}}
-            return {"version": 1, "status": "unassigned", "identifier": self.identifier,
+            return {"version": 1, "status": "unassigned", "identifier": self.identifier, **self.permission_view(),
                     "team_picker": {"default": self.teams.default(), "override": None, **models.catalog()}}
         if value["status"] == "running":
             # The lifetime lock survives HTTP disconnects but is released by
@@ -271,6 +319,7 @@ class Board:
             release = {"stage": "blocked", "reason": code}
         spec = value["spec"]
         result = {"version": 1, "identifier": self.identifier, "status": value["status"],
+                  **self.permission_view(),
                   "profiles": value["profiles"], "task": spec["task"], "limits": spec["limits"],
                   "budget": spec.get("budget"), "project": spec["project"],
                   "execution": spec["execution"],
@@ -278,6 +327,8 @@ class Board:
                   "reason": value.get("reason"), "run_id": value.get("run_id"),
                   "stop_requested": self.stop_path.exists(), "accepted": False, "delivered": False,
                   "delivery_status": "not_configured"}
+        if value.get("authorization"):
+            result["authorization"] = value["authorization"]
         if "mode" in value:
             result["mode"] = value["mode"]
         if "board_stages" in value:
@@ -550,6 +601,11 @@ class Board:
                 self._save(value)
                 self._hold(value, "Назначение изменилось после подтверждения. Платный запуск не выполнен.")
                 return self.show()
+            if not self.permission.allows(value):
+                value.update(status="stopped", reason="api_permission_revoked", finished_at=session._now())
+                self._save(value)
+                self._hold(value, "Разрешение доски отозвано или изменилось. Платный запуск не выполнен.")
+                return self.show()
             value.update(status="running", run_id=run_id, started_at=session._now())
             self._save(value)
         try:
@@ -560,18 +616,28 @@ class Board:
                 if self.stop_path.exists() or bool(cancelled and cancelled()):
                     return True
                 try:
+                    if not self.permission.allows(value):
+                        return True
                     front, body = self.card()
                     return (front.get("state") not in self.context["active_states"]
                             or self.card_digest(front, body) != value["card_digest"])
-                except (BoardError, SymphonyError, OSError, ValueError):
+                except (BoardError, SymphonyError, session.SessionError, project.ProjectError,
+                        candidate.CandidateError, OSError, ValueError, KeyError):
                     # Removed/malformed cards withdraw permission; do not send
                     # another request while their identity cannot be checked.
                     return True
             if should_stop():
                 raise Interrupted()
+            @contextmanager
+            def admit_request():
+                with self.permission.admit(value):
+                    if should_stop():
+                        raise Interrupted()
+                    yield
             # run invokes the loader only after its local isolation preflight.
             outcome = session.run(self.session_path, transport=transport, cancelled=should_stop,
-                                  credential_loader=credentials or keychain_credentials, on_checkpoint=on_checkpoint)
+                                  credential_loader=credentials or keychain_credentials, on_checkpoint=on_checkpoint,
+                                  request_guard=admit_request)
             value.update(status="result" if outcome["status"] == "dialogue_complete" else "stopped",
                          reason=outcome["stop_reason"])
             if outcome["status"] == "dialogue_complete":
@@ -588,6 +654,11 @@ class Board:
             if self.session_path.exists():
                 session.interrupt(self.session_path, "board_execution_failed")
             value.update(status="stopped", reason="board_execution_failed")
+        try:
+            if value.get("status") == "stopped" and not self.permission.allows(value):
+                value["reason"] = "api_permission_revoked"
+        except (session.SessionError, project.ProjectError, candidate.CandidateError, OSError, ValueError, KeyError):
+            value["reason"] = "api_permission_revoked"
         with session._lock(self.path):
             if value["status"] == "result" and self.review_lane and value.get("candidate", {}).get("status") == "awaiting_full_checks":
                 lane = next((s for s in self.context["active_states"] if s.casefold() in {"verify", "проверка"}), None)
@@ -697,7 +768,8 @@ def keychain_credentials(spec):
 def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--settings", required=True)
-    parser.add_argument("--action", required=True, choices=["prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run", "team-options", "set-team-default", "publish-check", "accept"])
+    parser.add_argument("--action", required=True, choices=["prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run", "team-options", "set-team-default", "publish-check", "accept", "submit",
+        "permission-show", "permission-prepare", "permission-authorize", "permission-revoke"])
     args = parser.parse_args(argv)
     def interrupted(*_):
         raise Interrupted("board_process_interrupted")
@@ -712,6 +784,18 @@ def cli(argv=None):
         payload = message.get("payload", {})
         if not isinstance(payload, dict):
             raise BoardError("invalid_board_payload")
+        if args.action.startswith("permission-"):
+            if message.get("run_id") is not None or message["context"]["identifier"] != "":
+                raise BoardError("invalid_board_payload")
+            permission = permission_api.Permission(Path(args.settings), message["context"])
+            if args.action == "permission-authorize" and set(payload) == {"confirmation_token"}:
+                result = permission.authorize(payload["confirmation_token"], keychain_credentials)
+            elif args.action in {"permission-show", "permission-prepare", "permission-revoke"} and not payload:
+                result = getattr(permission, args.action.removeprefix("permission-"))()
+            else:
+                raise BoardError("invalid_board_payload")
+            print(json.dumps(result, ensure_ascii=False))
+            return 0
         if args.action in {"team-options", "set-team-default"}:
             if message.get("run_id") is not None or message["context"]["identifier"] != "":
                 raise BoardError("invalid_board_payload")
@@ -738,6 +822,10 @@ def cli(argv=None):
             if set(payload) != {"confirmation_token"}:
                 raise BoardError("invalid_board_payload")
             result = board.confirm(payload["confirmation_token"])
+        elif args.action == "submit":
+            if set(payload) != {"authorization_id", "card_digest"} or message.get("run_id") is not None:
+                raise BoardError("invalid_board_payload")
+            result = board.submit(payload)
         elif args.action == "review":
             if set(payload) - {"offset", "version"}:
                 raise BoardError("invalid_board_payload")
