@@ -1,0 +1,170 @@
+{
+  "version": 1,
+  "date": "2026-11-07",
+  "task": "S4-65, второй блок",
+  "status": "prepared_and_checked",
+  "authorization": {
+    "response": "Го",
+    "scope": "разработка блока и бесплатные проверки",
+    "merge": false,
+    "install": false,
+    "paid_calls": false
+  },
+  "actor": {
+    "tool": "Codex",
+    "role": "архитектор конвейера",
+    "effort": "max",
+    "delegated_developers": 0,
+    "model_switch_confirmed": false
+  },
+  "implementation": "79183604528e83514d59ed8802a8f87075620bce",
+  "tree": "9dc871effc5b5568790914897cce828294e31aee",
+  "parent": "18a58094ad83188708901af562feb788b5cbeb77",
+  "pr": {
+    "number": 109,
+    "url": "https://github.com/Serg10011/oh-my-symphony/pull/109",
+    "base": "our-main"
+  },
+  "local_checks": [
+    {
+      "scope": "permission, submission, board, budget, session, connection",
+      "passed": 193,
+      "failed": 0,
+      "seconds": 19.27
+    },
+    {
+      "scope": "permission HTTP, permission Chromium, existing model selector Chromium",
+      "passed": 3,
+      "failed": 0,
+      "seconds": 10.44
+    },
+    {
+      "scope": "existing model settings, API queue, spend and verification status",
+      "passed": 59,
+      "failed": 0,
+      "seconds": 7.59
+    },
+    {
+      "scope": "ruff ours src tests",
+      "status": "passed"
+    },
+    {
+      "scope": "JavaScript syntax",
+      "status": "passed"
+    },
+    {
+      "scope": "local Markdown links",
+      "checked": 462,
+      "missing": 0
+    }
+  ],
+  "provider_calls": 0,
+  "provider_cost_usd": 0,
+  "actual_credentials_read": false,
+  "installed_revisions": {
+    "oh-my-symphony": "0d8b961781a1f072381a1a0491f9c5b4bcece8a6",
+    "oms-pipeline": "0d8b961781a1f072381a1a0491f9c5b4bcece8a6"
+  },
+  "retained_checks": "checks/s4-65-authorization-20261107",
+  "ssd_evidence": "archives/s4-65-authorization-7918360-20261107",
+  "evidence_sha256": {
+    "browser/card-submitted.png": "e7cddb0e55d6e347b35e76e2c4cdb7ca267170970b2f2657be18dc173d231ebf",
+    "browser/models-card.png": "761bf041edc012286fa5984fe9529dc7b7a00edd6d89e767df01789a10598411",
+    "browser/models-settings.png": "437c061e975318f79a98a52c4b87fd4c39309ac97fcf13337ceea9e57d62a9a7",
+    "browser/permission-active.png": "ffc5b784b8427fd405dd0c5f36a85175e0718fc0c2add8a4b0c495c9d7ad8e3f",
+    "browser/permission-revoked.png": "fe3f4d47ab20b914ac59f4fe55003266acd88ae406f45e630012842a19c94993",
+    "cloud.json": "508a0203f559bc63ee83a39cba77123d162f4b5e0b8c6b1615d5144a4d916c39",
+    "full.log": "de6a3a77988f5e36cc0c9482d8307fe978da2d46a4cd5be72b3fade458af0ce5",
+    "local-checks.json": "6fd01a08de4c7b564b9f2d4e89d26859219eb464a4af3e92193af0d2e877a4a6",
+    "run.json": "68e9c0b373fe6815731f021a005e1fdf821abacc684180ad2382e38154e61f17"
+  },
+  "linux": {
+    "run": 42342341885,
+    "url": "https://github.com/Serg10011/oh-my-symphony/actions/runs/42342341885",
+    "revisions": {
+      "base": {
+        "commit": "e2b1b5921f0032202c3c3af13da3425e69ea6cda",
+        "tree": "f3883b88deddbc698b7cd4dc55a5193af2886ce3"
+      },
+      "trial": {
+        "commit": "79183604528e83514d59ed8802a8f87075620bce",
+        "tree": "9dc871effc5b5568790914897cce828294e31aee"
+      }
+    },
+    "counts": {
+      "base": {
+        "main": {
+          "exit": 0,
+          "passed": 4118,
+          "skipped": 139,
+          "failed": 0
+        },
+        "timing": {
+          "exit": 0,
+          "passed": 11,
+          "skipped": 1,
+          "failed": 0
+        },
+        "ours": {
+          "exit": 1,
+          "passed": 2101,
+          "skipped": 0,
+          "failed": 1
+        },
+        "total": {
+          "passed": 6230,
+          "skipped": 140,
+          "failed": 1
+        }
+      },
+      "trial": {
+        "main": {
+          "exit": 0,
+          "passed": 4176,
+          "skipped": 146,
+          "failed": 0
+        },
+        "timing": {
+          "exit": 0,
+          "passed": 11,
+          "skipped": 1,
+          "failed": 0
+        },
+        "ours": {
+          "exit": 0,
+          "passed": 2378,
+          "skipped": 7,
+          "failed": 0
+        },
+        "total": {
+          "passed": 6565,
+          "skipped": 154,
+          "failed": 0
+        }
+      }
+    },
+    "failing_tests": {
+      "base": [
+        "ours/tests/test_project_update.py::test_running_manual_script_is_detected"
+      ],
+      "trial": []
+    },
+    "outcome": "failure",
+    "duration_seconds": 1157,
+    "receipt": {
+      "run": 42342341885,
+      "attempt": 1,
+      "job": 128312557779,
+      "completed_at": "2026-11-07T05:40:08Z",
+      "workflow_commit": "66f260c7a910c59ee472d79a2fd6aaf678e721f7",
+      "commit": "79183604528e83514d59ed8802a8f87075620bce",
+      "tree": "9dc871effc5b5568790914897cce828294e31aee",
+      "base_commit": "18a58094ad83188708901af562feb788b5cbeb77",
+      "comparison": "failure",
+      "status": "passed"
+    },
+    "log_sha256": "de6a3a77988f5e36cc0c9482d8307fe978da2d46a4cd5be72b3fade458af0ce5",
+    "container_removed": true,
+    "ssd_evidence": "archives/s4-65-authorization-7918360-20261107"
+  }
+}

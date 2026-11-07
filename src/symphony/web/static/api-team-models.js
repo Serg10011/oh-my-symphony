@@ -88,5 +88,5 @@
   function confirmedLabel(kind, profiles) {
     return kind + ' — ' + [profiles.lead?.model, profiles.worker?.model].filter(Boolean).map(name).join(' + ');
   }
-  root.SymphonyApiModels = { decorate, invalidate, kindLabel, confirmedLabel, picker, settings };
+  root.SymphonyApiModels = { name, decorate, invalidate, kindLabel, confirmedLabel, picker, settings };
 })(globalThis);

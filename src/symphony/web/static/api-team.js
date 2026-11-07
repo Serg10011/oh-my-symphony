@@ -11,6 +11,7 @@
     board_process_interrupted: 'Служба прервала процесс команды. Подробности сохранены в журнале службы.',
     board_execution_failed: 'Процесс команды прерван. Автоматического платного повтора нет.',
     api_assignment_changed: 'Задача или настройки изменились после подтверждения; платный запуск отменён.',
+    api_permission_revoked: 'Разрешение доски отозвано или изменилось. Новые обращения к моделям остановлены.',
     execution_preflight_failed: 'Проверка изоляции не прошла; модели не запускались.',
     workspace_command_outside_scope: 'Команда записала файл вне разрешённых путей. Её изменения отклонены.',
   };
@@ -28,6 +29,7 @@
     let token = null, busy = false, timer = null, lastStatus = null;
     let selection = null, pickerKey = '', releaseChoice = null, lastLane = null;
     let nextCheckRead = 0;
+    let submission = null;
     const status = el('p', { 'aria-live': 'polite' }, 'Загружаю назначение…');
     const error = el('p', { class: 'api-team-error', role: 'alert' });
     const spendLead = el('dd');
@@ -59,6 +61,7 @@
     };
     const prepare = button('Посмотреть назначение', () => act('prepare', pickerKey ? { team: selection } : {}));
     const confirm = button('Подтвердить платный запуск', () => act('confirm', { confirmation_token: token }));
+    const submit = button('Передать в работу', () => { if (submission) act('submit', submission); });
     const stop = button('Остановить', () => act('stop'));
     const refresh = button('Обновить', () => load());
     const review = button('Посмотреть изменения файлов', () => loadReview(0));
@@ -78,11 +81,12 @@
     const cloud = el('div', { role: 'group', 'aria-label': 'Проверка файлов на Linux' },
       [el('strong', {}, 'Проверка файлов на Linux'), cloudStatus, workflowLink]);
     cloud.hidden = true;
-    [prepare, confirm, stop, review, reportDetails, resultDetails].forEach(node => { node.hidden = true; });
-    const actions = el('div', { class: 'api-team-actions' }, [prepare, confirm, stop, refresh, review]);
+    [prepare, confirm, submit, stop, review, reportDetails, resultDetails].forEach(node => { node.hidden = true; });
+    const actions = el('div', { class: 'api-team-actions' }, [prepare, confirm, submit, stop, refresh, review]);
+    const launchHint = el('p', { class: 'form-hint' });
     const section = el('section', { class: 'api-team-panel', 'aria-label': 'API-команда' }, [
       el('div', { class: 'section-heading' }, 'API-команда'), status, route, error, selector, spend, assignment, actions,
-      el('p', { class: 'form-hint' }, 'Сначала проверь назначение. Только отдельное подтверждение ставит платную работу в очередь. После остановки автоматического повтора нет.'),
+      launchHint,
       el('p', { class: 'form-hint' }, 'После проверки файлов решение о приёмке принимаешь ты.'),
       cloud, releaseBox, resultDetails, reportDetails, files,
     ]);
@@ -100,6 +104,16 @@
       route.hidden = !data.board_stages?.length;
       if (!route.hidden) setText(route, 'Пройденные колонки: ' + data.board_stages.join(' → '));
       status.textContent = statuses[data.status] || 'Неизвестное состояние команды';
+      submission = data.submission || null;
+      const permitted = data.execution_permission?.status === 'active';
+      launchHint.textContent = permitted && submission
+        ? 'Действует разрешение доски. Передай готовую задачу в работу; дополнительного подтверждения оплаты не требуется.'
+        : data.submission_refusal ? 'Карточка создана до действующего разрешения доски. Для неё требуется отдельное подтверждение.'
+          : ['revoked','changed','invalid'].includes(data.execution_permission?.status)
+            ? 'Разрешение доски отозвано или требует проверки. Новые обращения к моделям остановлены.'
+            : 'Сначала проверь назначение. Отдельное подтверждение ставит платную работу в очередь. После остановки автоматического повтора нет.';
+      if (permitted && data.authorization) launchHint.textContent = 'Задача передана по разрешению доски. Фактическое назначение и расходы сохранены в истории.';
+      if (permitted && submission && ['unassigned','prepared'].includes(data.status)) status.textContent = 'Ожидает передачи в работу';
       if (data.status === 'result' && data.candidate?.status === 'blocked')
         status.textContent = 'Нужна помощь: проверка отклонила файлы команды.';
       if (data.status === 'result' && data.candidate?.status === 'no_changes')
@@ -139,6 +153,8 @@
       if (data.status !== 'prepared') token = null;
       prepare.hidden = !['unassigned', 'prepared'].includes(data.status);
       confirm.hidden = data.status !== 'prepared' || !token;
+      submit.hidden = !permitted || !submission || !['unassigned','prepared'].includes(data.status) || Boolean(selection);
+      if (!submit.hidden) confirm.hidden = true;
       const choices = data.team_picker;
       selector.hidden = !choices || !['unassigned','prepared'].includes(data.status);
       if (!selector.hidden && window.SymphonyApiModels) {
@@ -147,7 +163,10 @@
           pickerKey = key; selection = choices.override;
           const flag = el('input', { type: 'checkbox', 'aria-label': 'Другая команда для этой карточки' });
           flag.checked = Boolean(selection);
-          const invalidate = () => { token = null; confirm.hidden = true; };
+          const invalidate = () => {
+            token = null; confirm.hidden = true;
+            submit.hidden = !permitted || !submission || Boolean(selection);
+          };
           const make = current => window.SymphonyApiModels.picker(el, choices, current, pair => {
             selection = pair; invalidate();
           });
@@ -160,6 +179,7 @@
             if (!flag.checked) { selection = null; inputs = make(choices.default); selector.replaceChildren(checkbox, inputs.row); }
             else selection = inputs.value();
             inputs.disable(!flag.checked);
+            submit.hidden = !permitted || !submission || Boolean(selection);
           });
         }
       } else { pickerKey = ''; selection = null; }

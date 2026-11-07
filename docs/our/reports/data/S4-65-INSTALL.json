@@ -1,0 +1,122 @@
+{
+  "task": "S4-65",
+  "status": "installed",
+  "recorded_at": "2026-11-07T03:49:05.909554+00:00",
+  "authorization": {
+    "user": "Сергей",
+    "scope": "слияние и установка PR №108",
+    "response": "го"
+  },
+  "actor": {
+    "role": "архитектор конвейера",
+    "tool": "Codex",
+    "effort": "max",
+    "delegated_developers": 0
+  },
+  "release": {
+    "pr": 108,
+    "url": "https://github.com/Serg10011/oh-my-symphony/pull/108",
+    "approved_head": "bbf5ae704304e55176f156a7ea0fd535921d28d1",
+    "tested_code": "0aefa67abfde32c5d561d6daa32c3105503b697d",
+    "merge": "0d8b961781a1f072381a1a0491f9c5b4bcece8a6",
+    "merged_at": "2026-11-07T03:19:58Z",
+    "tree_matches_approved": true,
+    "included_history_pr": 107
+  },
+  "installation_attempts": [
+    {
+      "started_at": "2026-11-07T03:21:29.879506+00:00",
+      "finished_at": "2026-11-07T03:32:13.068477+00:00",
+      "returncode": 1,
+      "passed": 6349,
+      "skipped": 155,
+      "failed": 177,
+      "temporary_path": "SSD, кириллица",
+      "log": "apply.log"
+    },
+    {
+      "started_at": "2026-11-07T03:33:35.344078+00:00",
+      "finished_at": "2026-11-07T03:45:44.341190+00:00",
+      "returncode": 0,
+      "passed": 6526,
+      "skipped": 155,
+      "failed": 0,
+      "temporary_path": "тот же SSD, латиница",
+      "log": "attempt-2/apply.log"
+    }
+  ],
+  "code_or_test_changes_between_attempts": false,
+  "applied_repositories": {
+    "oh-my-symphony": {
+      "head": "0d8b961781a1f072381a1a0491f9c5b4bcece8a6",
+      "branch": "our-main",
+      "clean": true,
+      "applied": true
+    },
+    "oms-pipeline": {
+      "head": "0d8b961781a1f072381a1a0491f9c5b4bcece8a6",
+      "branch": "our-main",
+      "clean": true,
+      "applied": true
+    }
+  },
+  "baseline": {
+    "base_branch": "our-main",
+    "base_sha": "0d8b961781a1f072381a1a0491f9c5b4bcece8a6",
+    "passed": 6526,
+    "skipped": 155,
+    "failed": 0,
+    "setup_s": 7.3,
+    "tests_s": 717.3,
+    "measured_at": "2026-11-07T03:45:43Z"
+  },
+  "board_preservation": {
+    "oms_cards": 13,
+    "oms_cards_unchanged": true,
+    "oms_configuration_changes": "только автоматически рассчитанные таймауты",
+    "eve_cards": 0,
+    "eve_configuration_unchanged": true,
+    "oms_started": false,
+    "eve_started": false
+  },
+  "timeouts": {
+    "before": {
+      "tests_s": 1560,
+      "gate_ms": 1620000,
+      "hooks_ms": 1620000
+    },
+    "after": {
+      "tests_s": 1440,
+      "gate_ms": 1500000,
+      "hooks_ms": 1500000
+    }
+  },
+  "connector": {
+    "started_at": "2026-11-07T03:46:55.044573+00:00",
+    "source_commit": "0d8b961781a1f072381a1a0491f9c5b4bcece8a6",
+    "listen": "127.0.0.1:8792",
+    "unauthenticated_request": 403,
+    "new_project_grants": 0,
+    "new_boards": 0,
+    "new_provider_calls": 0,
+    "automatic_login_start": false
+  },
+  "cost": {
+    "provider_requests": 0,
+    "usd": "0"
+  },
+  "artifacts": {
+    "archive": "archives/s4-65-install-20261107",
+    "temporary_data": "checks/s4-65-install-20261107/ascii-temporaries",
+    "host_guide": "work/host/NEW-MAC.md",
+    "runtime_log": "work/logs/project-connect.log",
+    "same_volume_relocation": true
+  },
+  "remaining_limits": [
+    "платный запуск подтверждается отдельно для каждой карточки",
+    "полную проверку обычного проекта организует его оператор",
+    "нет автоматического запуска службы подключения после перезагрузки",
+    "новые параметры режима, полномочий и проверки требуют решения оператора"
+  ],
+  "history_branch": "codex/s4-65-install-history"
+}

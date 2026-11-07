@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 import fcntl
@@ -90,6 +90,7 @@ RESOURCE_PREFIX = "Runtime resources: "
 REPORT_KIND = "api_session_spend"
 _CANCELLATION = ContextVar("api_session_cancellation", default=None)
 _CHECKPOINT = ContextVar("api_session_checkpoint", default=None)
+_REQUEST_GUARD = ContextVar("api_session_request_guard", default=None)
 USAGE_KEYS = ("input_tokens", "output_tokens", "cached_input_tokens",
               "cache_write_input_tokens", "reasoning_tokens")
 
@@ -1028,11 +1029,14 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport)
     reservation = None
     if "budget" in spec:
         probe = {"profile": profile, "request_sha256": hashlib.sha256(encoded).hexdigest(), "status": "in_flight"}
-        state["preflights"].append(probe)
-        _save(path, state)
+        guard = _REQUEST_GUARD.get()
+        with guard() if guard else nullcontext():
+            state["preflights"].append(probe)
+            _save(path, state)
         try:
             measured = api.measure_input(profile, request, environ=environ, transport=transport)
             probe.update(status="measured", result=measured)
+            _save(path, state)
             reservation = budget.quote(state, api.profile_for(profile).model,
                                        measured["input_tokens_upper_bound"], cap, measured["basis"])
         except Exception as exc:
@@ -1052,8 +1056,10 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport)
         call["resume_of"] = resumes[-1].get("source_call_index", resumes[-1]["uncertain_call_index"])
     if reservation is not None:
         call["budget_reservation"] = reservation
-    state["calls"].append(call)
-    _save(path, state)
+    guard = _REQUEST_GUARD.get()
+    with guard() if guard else nullcontext():
+        state["calls"].append(call)
+        _save(path, state)
     try:
         response = api.execute(profile, request, environ=environ, transport=transport)
     except Exception as exc:
@@ -1270,13 +1276,15 @@ def _lead_loop(path, state, *, environ, transport):
 
 
 def run(path, *, environ=None, transport=None, require_budget=False, cancelled=None,
-        credential_loader=None, on_checkpoint=None) -> dict:
+        credential_loader=None, on_checkpoint=None, request_guard=None) -> dict:
     token = _CANCELLATION.set(cancelled)
     checkpoint_token = _CHECKPOINT.set(on_checkpoint)
+    guard_token = _REQUEST_GUARD.set(request_guard)
     try:
         return _run(path, environ=environ, transport=transport, require_budget=require_budget,
                     credential_loader=credential_loader)
     finally:
+        _REQUEST_GUARD.reset(guard_token)
         _CHECKPOINT.reset(checkpoint_token)
         _CANCELLATION.reset(token)
 
