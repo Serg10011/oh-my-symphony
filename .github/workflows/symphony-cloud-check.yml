@@ -1,20 +1,17 @@
 name: Symphony Linux check
-run-name: &trial_sha '307beaf7b4c1c2e133167eb9a6f8fa503013ae60'
+run-name: &trial_sha '04fbc461e6b28398158f7dbdc845d351b9002717'
 
 on:
   workflow_dispatch:
   push:
-    branches: [codex/browser-api-pipeline]
-    paths:
-      - .github/workflows/symphony-cloud-check.yml
-      - ours/ci/linux/**
+    branches: ['codex/api-check/**']
 
 # Both input revisions are fetched anonymously from the public fork.
 permissions: {}
 
 jobs:
   verify:
-    if: github.repository == 'Serg10011/oh-my-symphony' && github.ref == 'refs/heads/codex/browser-api-pipeline' && toJSON(github.event.repository.private) == 'false'
+    if: github.repository == 'Serg10011/oh-my-symphony' && startsWith(github.ref, 'refs/heads/codex/api-check/') && toJSON(github.event.repository.private) == 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 55
     env:
