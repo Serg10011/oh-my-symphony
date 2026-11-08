@@ -243,5 +243,81 @@
     "merged": false,
     "installed": false,
     "artifacts": "/Volumes/ssd/Проекты/oh-my-symphony/checks/s4-66-release-20261108"
+  },
+  "installation_2026_11_08": {
+    "authorization": "разрешаю принять и слить, и установить :)",
+    "installed_commit": "07e6f67f51da4a70c6e05432002de5206b687c7c",
+    "finished_at": "2026-11-08T10:08:00.832282+00:00",
+    "accepted": true,
+    "merged": true,
+    "installed": true,
+    "candidate_pr": 112,
+    "candidate_merge": "f7c8a3c999e322d04448e40acd3b366a029a0ffc",
+    "release_pr": 111,
+    "release_merge": "07e6f67f51da4a70c6e05432002de5206b687c7c",
+    "tree_equals_approved_release": true,
+    "baseline": {
+      "base_branch": "our-main",
+      "base_sha": "07e6f67f51da4a70c6e05432002de5206b687c7c",
+      "passed": 6585,
+      "skipped": 156,
+      "failed": 0,
+      "setup_s": 7.5,
+      "tests_s": 746.7,
+      "measured_at": "2026-11-08T10:07:58Z"
+    },
+    "preservation": {
+      "boards": {
+        "oms": {
+          "cards": 14,
+          "changed_cards": [
+            "OMS-11.md"
+          ],
+          "configuration_unchanged": false,
+          "changed_config": [
+            "claude-settings.json",
+            "WORKFLOW.md",
+            "project.toml"
+          ],
+          "only_measured_test_timeouts_changed": true,
+          "live_progress_summary_regenerated": true,
+          "runs": 22,
+          "runs_unchanged": true,
+          "unfinished_runs": 0
+        },
+        "eve": {
+          "cards": 0,
+          "changed_cards": [],
+          "configuration_unchanged": true,
+          "changed_config": [],
+          "only_measured_test_timeouts_changed": false,
+          "live_progress_summary_regenerated": false,
+          "runs": 0,
+          "runs_unchanged": true,
+          "unfinished_runs": 0
+        }
+      },
+      "connections_unchanged": true,
+      "paid_session_unchanged": true,
+      "paid_session_sha256": "b69f9d86031f7c32f8ea6bd05c87f63dac2466ff463cf9cdea85c33c69579c1e"
+    },
+    "runtime_counts": {
+      "running": 0,
+      "retrying": 0
+    },
+    "board_lane": "Human Review",
+    "card_done": false,
+    "completion_limitation": "API delivery is accepted and merged; final Done action still requires the unsupported legacy workspace",
+    "board_permission": {
+      "status": "changed",
+      "reason": "api_permission_changed"
+    },
+    "permission_renewed": false,
+    "new_model_requests": 0,
+    "new_api_cost_usd": "0",
+    "live_role_economy_measured": false,
+    "artifacts": "/Volumes/ssd/Проекты/oh-my-symphony/archives/s4-66-install-20261108",
+    "history_branch": "codex/s466-installed",
+    "history_updates_applied": false
   }
 }
