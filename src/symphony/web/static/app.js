@@ -186,6 +186,8 @@
     }),
     saveTeam: (kind, team) => apiRequest('/api-teams/' + encodeURIComponent(kind),
       { method: 'POST', body: JSON.stringify({ team }) }),
+    teamWorkSettings: (kind, action, payload) => apiRequest('/api-teams/' + encodeURIComponent(kind) + '/settings/' + action,
+      { method: 'POST', body: JSON.stringify(payload) }),
     teamPermission: (kind, action, payload = {}) => apiRequest('/api-teams/' + encodeURIComponent(kind) + '/permission' + (action ? '/' + action : ''),
       action ? { method: 'POST', body: JSON.stringify(payload) } : {}),
     getRequests: () => apiRequest('/requests'),
@@ -5370,12 +5372,18 @@
     ]);
   }
 
-  function buildBoardInfoCard(wf) {
+  function buildBoardInfoCard(wf, board) {
+    const base = wf.agent?.kind;
+    const newKind = board?.board.new_issue_kind || base;
+    const apiDefault = board?.board.api_team_model_kinds?.includes(newKind);
+    const agents = apiDefault ? [kv('Новые карточки', 'API-команда · ' + newKind)] :
+      [kv(t('settings.defaultAgent'), base || '—')];
+    if (apiDefault && base && base !== newKind) agents.push(kv('Базовый профиль прежнего маршрута', base));
     return el('div', { class: 'card-panel settings-card settings-card--utility' }, [
       settingsCardHeader(t('settings.boardInfo'), t('settings.boardInfoDescription')),
       el('div', { class: 'kv-grid' }, [
         kv(t('settings.workflowPath'), wf.workflow_path),
-        kv(t('settings.defaultAgent'), (wf.agent && wf.agent.kind) || '—'),
+        ...agents,
         kv(t('settings.trackerKind'), state.board ? state.board.board.tracker_kind : '—'),
         kv(t('settings.pollingInterval'), t('settings.milliseconds', { n: wf.polling_interval_ms })),
       ]),
@@ -5432,10 +5440,11 @@
     page.appendChild(body);
     container.appendChild(page);
     try {
+      window.SymphonyApiModels.invalidate();
       const [wf, branchesResp, board] = await Promise.all([
         api.getWorkflow(),
         api.getBranches(),
-        state.board ? Promise.resolve(state.board) : api.getBoard(),
+        api.getBoard(),
       ]);
       const ciStatus = await api.getContinuousImprovementStatus();
       const lanePresets = await api.getLanePresets();
@@ -5444,7 +5453,7 @@
       if (!state.board) state.board = board;
       clearNode(body);
       body.appendChild(settingsSectionHeading(t('settings.workspace'), t('settings.workspaceDescription')));
-      body.appendChild(buildBoardInfoCard(wf));
+      body.appendChild(buildBoardInfoCard(wf, board));
       body.appendChild(buildInterfaceCard());
       body.appendChild(buildRefreshCard());
       for (const [kind, data] of Object.entries(board.teamDirectory || {})) {
@@ -5454,6 +5463,13 @@
             const saved = await api.saveTeam(k, team);
             permission.reload();
             return saved;
+          }, async (k, action, payload) => {
+            const result = await api.teamWorkSettings(k, action, payload);
+            if (action === 'save') {
+              window.SymphonyApiModels.invalidate(k);
+              permission.reload();
+            }
+            return result;
           }));
           body.appendChild(permission.element);
         }

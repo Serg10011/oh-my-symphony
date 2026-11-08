@@ -39,6 +39,15 @@ MAX_REPLY_BYTES = 8 * 1024 * 1024
 CHECKPOINT_ENV = "SYMPHONY_API_TEAM_CHECKPOINTS"
 CHECKPOINT = b"\x1e"
 PUBLIC_ERRORS = {
+    "api_board_settings_busy": "Дождись завершения переданных API-задач и сохрани настройки снова.",
+    "api_board_settings_changed": "Условия доски изменились. Проверь изменения ещё раз.",
+    "invalid_api_board_mode": "Выбери режим работы доски.",
+    "invalid_api_work_settings": "Не удалось прочитать сохранённые условия работы доски.",
+    "invalid_project_spec": "Укажи от 1 до 32 путей внутри репозитория.",
+    "invalid_project_path": "Укажи пути от корня репозитория. Запись с «..» и абсолютные пути недоступны.",
+    "project_scope_denied": "Один из путей закрыт правилами доступа.",
+    "no_project_files": "В указанных путях нет доступных файлов базовой ветки.",
+    "api_board_path_missing": "Один из путей не содержит доступных файлов в базовой ветке.",
     "api_permission_required": "Для передачи задачи нужно действующее разрешение доски",
     "api_permission_changed": "Условия доски изменились. Владелец должен проверить и подтвердить их заново",
     "api_permission_revoked": "Работа API-команды остановлена: разрешение доски отозвано или изменилось",
@@ -193,7 +202,8 @@ async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
                  on_checkpoint: Callable[[], None] | None = None) -> dict:
     if action not in {"prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run",
                       "team-options", "set-team-default", "publish-check", "accept", "submit",
-                      "permission-show", "permission-prepare", "permission-authorize", "permission-revoke"}:
+                      "permission-show", "permission-prepare", "permission-authorize", "permission-revoke",
+                      "settings-preview", "settings-save"}:
         raise SymphonyError("Неизвестное действие API-команды")
     profile = api_profile(cfg, kind)
     context = board_context(cfg, kind, identifier)

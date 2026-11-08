@@ -47,6 +47,8 @@ class Permission:
         self.root = private_dir(private_dir(base / "api-permissions") / self.kind)
         self.path = self.root / "permission.json"
         self.pending = self.root / "pending.json"
+        self.settings_lock = self.root / "configuration"
+        self.teams = models.Teams(self.settings, self.context)
 
     def _load(self):
         if not self.path.exists() and not self.path.is_symlink():
@@ -67,17 +69,24 @@ class Permission:
         value = self._load()
         return value["revision"] if value else None
 
-    def proposal(self):
-        raw = config.load_settings(self.settings)
-        team = models.Teams(self.settings, self.context).default()
+    def proposal(self, defaults=None, *, check_paths=False):
+        raw, team, settings_revision = self.teams.defaults() if defaults is None else defaults
         spec = session.validate_spec({**config.session_options(raw, team), "task": "Board permission",
             "project": {"root": self.context["repo"], "paths": raw["paths"], "commit": "0" * 40},
             "execution": raw["execution"]})
         repo = Path(spec["project"]["root"])
         if repo.resolve(strict=True) != repo:
             raise session.SessionError("api_permission_changed")
-        project._git(str(repo), ["rev-parse", "--verify", "--end-of-options",
-                                (self.context["base_branch"] or "HEAD") + "^{commit}"], limit=128)
+        commit = project._git(str(repo), ["rev-parse", "--verify", "--end-of-options",
+                                         (self.context["base_branch"] or "HEAD") + "^{commit}"], limit=128)
+        if check_paths:
+            try:
+                _, snapshot = project.snapshot({**spec["project"], "commit": commit.decode("ascii").strip()})
+            except project.ProjectError as exc:
+                raise session.SessionError(str(exc)) from None
+            for path in spec["project"]["paths"]:
+                if not any(project._in_scope(file, [path]) for file in snapshot["files"]):
+                    raise session.SessionError("api_board_path_missing")
         info = repo.stat()
         terms = {"repo": str(repo), "base_branch": self.context["base_branch"],
                  "team": team, "mode": raw.get("mode"), "profiles": session._profiles(spec),
@@ -89,9 +98,11 @@ class Permission:
                    "rules": candidate.rules_snapshot(self.workflow.parent),
                    "code": {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                             for p in sorted(Path(__file__).parent.glob("api_*.py"))}}
+        if settings_revision is not None:
+            binding["work_settings_revision"] = settings_revision
         return {"fingerprint": digest(binding), "terms": terms}, spec
 
-    def show(self):
+    def show(self, *, defaults=None):
         try:
             value = self._load()
         except (session.SessionError, OSError, ValueError, KeyError):
@@ -104,11 +115,50 @@ class Permission:
                 result[key] = value[key]
         if value["status"] == "active":
             try:
-                if self.proposal()[0]["fingerprint"] != value["fingerprint"]:
+                if self.proposal(defaults)[0]["fingerprint"] != value["fingerprint"]:
                     result.update(status="changed", reason="api_permission_changed")
             except (session.SessionError, project.ProjectError, candidate.CandidateError, OSError, ValueError, KeyError):
                 result.update(status="changed", reason="api_permission_changed")
         return result
+
+    def preview_settings(self, mode, paths):
+        if not self.teams.binding:
+            raise session.SessionError("invalid_api_work_settings")
+        defaults = self.teams.defaults()
+        raw, team, revision = defaults
+        if mode is None and raw.get("mode") is not None:
+            raise session.SessionError("invalid_api_board_mode")
+        try:
+            paths = project.validate({"root": self.context["repo"], "paths": paths})["paths"]
+        except project.ProjectError as exc:
+            raise session.SessionError(str(exc)) from None
+        current, _ = self.proposal(defaults)
+        updated = config.with_work_settings(raw, mode, paths)
+        proposed, _ = self.proposal((updated, team, revision), check_paths=True)
+        changed = any(proposed["terms"][key] != current["terms"][key] for key in ("mode", "paths"))
+        status = self.show(defaults=defaults)["status"]
+        return {"current": current["terms"], "proposed": proposed["terms"], "changed": changed,
+                "expected": digest([current["fingerprint"], proposed["fingerprint"], self.revision()]),
+                "permission_status": "changed" if changed and status == "active" else status}
+
+    def save_settings(self, mode, paths, expected):
+        # Fence new submissions while inspecting assignments. In-flight
+        # requests keep their admission lock available while the board is busy.
+        with session._lock(self.settings_lock):
+            if self.teams.has_queued_work():
+                raise session.SessionError("api_board_settings_busy")
+            with session._lock(self.path):
+                preview = self.preview_settings(mode, paths)
+                if expected != preview["expected"]:
+                    raise session.SessionError("api_board_settings_changed")
+                if preview["changed"]:
+                    file = self.teams.work_file
+                    private_dir(file.parent)
+                    proposal = preview["proposed"]
+                    session._save(file, {"version": 1, "binding": self.teams.binding, "revision": secrets.token_hex(16),
+                                         "mode": proposal["mode"], "paths": proposal["paths"]})
+        return {"status": "saved", "mode": preview["proposed"]["mode"], "paths": preview["proposed"]["paths"],
+                "permission_status": preview["permission_status"]}
 
     def creation_id(self):
         value = self.show()

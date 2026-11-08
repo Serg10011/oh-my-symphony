@@ -132,7 +132,8 @@ class Board:
                                             base + "^{commit}"], limit=128).decode().strip()
 
     def proposal(self, team=None) -> dict:
-        raw = board_config.load_settings(self.settings)
+        base_settings = board_config.load_settings(self.settings)
+        raw, revision = self.teams.work_settings(base_settings)
         front, body = self.card()
         pinned = front.get("agent_kind") or (front.get("agent") or {}).get("kind")
         if pinned != self.context["agent_kind"]:
@@ -145,12 +146,13 @@ class Board:
             saved_mode = pinned_defaults.get("mode")
             if saved_mode not in (None, "economy", "productivity"):
                 raise BoardError("api_assignment_changed")
+            raw = raw.copy()
             if saved_mode is None:
                 raw.pop("mode", None)
             else:
                 raw["mode"] = saved_mode
         else:
-            roles = self.teams.default()
+            roles = self.teams.default(raw)
         if team is not None:
             roles = models.pair(team)
         options = board_config.session_options(raw, roles)
@@ -167,13 +169,15 @@ class Board:
                    "snapshot": snapshot["digest"], "profiles": session._profiles(spec),
                    "context": self.context, "settings": raw, "code": code,
                    "workflow_sha256": hashlib.sha256(self.workflow.read_bytes()).hexdigest(), "rules": rules}
+        if revision is not None:
+            binding["work_settings_revision"] = revision
         proposal = {"binding": _digest(binding), "card_digest": binding["card"], "spec": spec,
                     "profiles": binding["profiles"], "project_digest": snapshot["digest"], "rules": rules}
         if "mode" in raw:
             proposal["mode"] = raw["mode"]
         if "cloud_check" in raw:
             proposal.update(cloud_profile=cloud.PROFILE,
-                            check_config=_digest([raw, binding["workflow_sha256"]]),
+                            check_config=_digest([base_settings, binding["workflow_sha256"]]),
                             result_card_digest=self.card_digest(front, _held_body(body, RESULT_NOTE).strip()))
         return proposal
 
@@ -219,14 +223,6 @@ class Board:
                 return self.show()
             if time.time() > value["expires_at"]:
                 raise BoardError("api_confirmation_expired")
-            if self.proposal(value.get("team_override"))["binding"] != value["binding"]:
-                raise BoardError("api_assignment_changed")
-
-            revision = self.permission.revision()
-            value["permission_revision"] = revision
-            if not self.permission.allows(value):
-                raise BoardError("api_permission_revoked")
-
             def mutate(front, body):
                 if (self.card_digest(front, body) != value["card_digest"]
                         or not self._can_prepare_from(front.get("state"))):
@@ -238,7 +234,12 @@ class Board:
                 front["state"] = self.context["active_states"][0]
                 front["updated_at"] = session._now()
                 return front, body
-            with self.permission.admit(value):
+            with session._lock(self.permission.settings_lock), session._lock(self.permission.path):
+                if self.proposal(value.get("team_override"))["binding"] != value["binding"]:
+                    raise BoardError("api_assignment_changed")
+                value["permission_revision"] = self.permission.revision()
+                if not self.permission.allows(value):
+                    raise BoardError("api_permission_revoked")
                 self.tracker._mutate_ticket(self.identifier, mutate)
         return self.show()
 
@@ -251,7 +252,7 @@ class Board:
                 if previous.get("submission") != expected:
                     raise BoardError("api_permission_task_changed")
                 return self.show()
-            with session._lock(self.permission.path):
+            with session._lock(self.permission.settings_lock), session._lock(self.permission.path):
                 authorization = self.permission.validate_submission(self, expected)
                 proposal = self.proposal()
                 value = {"version": 1, "identifier": self.identifier, "status": "queued",
@@ -776,7 +777,8 @@ def cli(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--settings", required=True)
     parser.add_argument("--action", required=True, choices=["prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run", "team-options", "set-team-default", "publish-check", "accept", "submit",
-        "permission-show", "permission-prepare", "permission-authorize", "permission-revoke"])
+        "permission-show", "permission-prepare", "permission-authorize", "permission-revoke",
+        "settings-preview", "settings-save"])
     args = parser.parse_args(argv)
     def interrupted(*_):
         raise Interrupted("board_process_interrupted")
@@ -791,11 +793,15 @@ def cli(argv=None):
         payload = message.get("payload", {})
         if not isinstance(payload, dict):
             raise BoardError("invalid_board_payload")
-        if args.action.startswith("permission-"):
+        if args.action.startswith(("permission-", "settings-")):
             if message.get("run_id") is not None or message["context"]["identifier"] != "":
                 raise BoardError("invalid_board_payload")
             permission = permission_api.Permission(Path(args.settings), message["context"])
-            if args.action == "permission-authorize" and set(payload) == {"confirmation_token"}:
+            if args.action == "settings-preview" and set(payload) == {"mode", "paths"}:
+                result = permission.preview_settings(payload["mode"], payload["paths"])
+            elif args.action == "settings-save" and set(payload) == {"mode", "paths", "expected"}:
+                result = permission.save_settings(payload["mode"], payload["paths"], payload["expected"])
+            elif args.action == "permission-authorize" and set(payload) == {"confirmation_token"}:
                 result = permission.authorize(payload["confirmation_token"], keychain_credentials)
             elif args.action in {"permission-show", "permission-prepare", "permission-revoke"} and not payload:
                 result = getattr(permission, args.action.removeprefix("permission-"))()
