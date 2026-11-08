@@ -346,7 +346,10 @@ class Board:
             result["candidate"] = candidate.public_report(value["candidate"])
             result["delivery_status"] = value["candidate"]["status"]
             receipt = None
-            if value.get("cloud_profile") and value["candidate"]["status"] == "awaiting_full_checks":
+            if release and release["stage"] == "delivered":
+                receipt = release["proof"]
+                result["cloud_check"] = {"status": "ready", "commit": release["commit"], "receipt": receipt}
+            elif value.get("cloud_profile") and value["candidate"]["status"] == "awaiting_full_checks":
                 try:
                     subject = self._cloud_subject(value)
                     receipt = self._cloud_receipt(value, subject)
@@ -569,7 +572,7 @@ class Board:
             raise BoardError("api_result_not_ready")
         if version not in ("checked", "original"):
             raise BoardError("invalid_board_payload")
-        if version == "checked" and value.get("check_target"):
+        if version == "checked" and (value.get("check_target") or value.get("release_accept")):
             return delivery.review(self, value, offset)
         result = session.review(self.session_path, offset=offset)
         revision = value.get("candidate", {}).get("revision")
@@ -700,8 +703,7 @@ def sync_checks(settings: Path, context: dict):
     with session._lock(path):
         scan = session._decode(session._read_state(path)) if path.exists() else {}
         now = time.time()
-        if scan.get("next", 0) > now:
-            return {}
+        discover_now = scan.get("next", 0) <= now
         targets = []
         for child in sorted(folder.iterdir()):
             if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", child.name) or child.is_symlink()
@@ -709,13 +711,18 @@ def sync_checks(settings: Path, context: dict):
                 continue
             try:
                 board = Board(settings, {**context, "identifier": child.name})
-                value = delivery.refresh(board, board._load())
-                if value and (value.get("release_done") or value.get("release_block")):
+                value = board._load()
+                if value and value.get("release_accept") and delivery.reconcile_completion(board):
+                    continue
+                if not discover_now:
+                    continue
+                value = delivery.refresh(board, value)
+                if value and value.get("release_block"):
                     continue
                 subject = board._cloud_subject(value)
                 targets.append((board, subject, datetime.fromisoformat(value["created_at"]).timestamp()))
-            except (BoardError, session.SessionError, candidate.CandidateError, pc.ProjectError,
-                    OSError, ValueError, KeyError):
+            except (BoardError, session.SessionError, candidate.CandidateError, pc.ProjectError, SymphonyError,
+                    OSError, ValueError, KeyError, TypeError, AttributeError):
                 continue
         if not targets:
             return {}

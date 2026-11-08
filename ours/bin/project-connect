@@ -40,7 +40,8 @@ def application(root):
             if action == "connect":
                 result = await asyncio.to_thread(connect.connect, raw, root, grant)
             else:
-                result = await asyncio.to_thread(connect.task, raw, root, grant, submit=action == "submit")
+                result = await asyncio.to_thread(connect.task, raw, root, grant, submit=action == "submit",
+                                                 result=action == "result")
         except web.HTTPRequestEntityTooLarge:
             return response(connect.refusal("request_too_large"), status=413)
         except connect.ConnectError as exc:
@@ -58,6 +59,7 @@ def application(root):
     app.router.add_post("/v1/connect", handle)
     app.router.add_post("/v1/task", handle)
     app.router.add_post("/v1/submit", handle)
+    app.router.add_post("/v1/result", handle)
     return app
 
 
@@ -93,7 +95,7 @@ def client(port, credential, data, action="connect"):
 def main():
     cli = argparse.ArgumentParser(description=__doc__)
     sub = cli.add_subparsers(dest="action", required=True)
-    clients = {"request", "task", "submit"}
+    clients = {"request", "task", "submit", "result"}
     for name in ("review", "authorize", "serve", *sorted(clients)):
         op = sub.add_parser(name)
         if name not in clients:

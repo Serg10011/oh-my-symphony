@@ -145,7 +145,8 @@
           setText(releaseStatus, release.message || 'Для доставки требуется внимание.');
         }
       }
-      if (data.accepted) status.textContent = data.delivered ? 'Версия принята, PR открыт' : 'Версия принята, ожидает создания PR';
+      if (data.accepted) status.textContent = release?.completion?.message ||
+        (data.delivered ? 'Версия принята, PR открыт' : 'Версия принята, ожидает создания PR');
       if (data.stop_requested && data.status === 'running') status.textContent += '. Остановка запрошена; текущий ответ ещё может оплачиваться.';
       if (data.reason) status.textContent += ' ' + (reasons[data.reason] || 'Причина остановки указана в отчёте.');
       if (data.session?.execution?.review_source === 'before_command')

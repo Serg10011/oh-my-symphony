@@ -265,14 +265,15 @@ def authenticate(raw, root, challenge, proof, body, *, direction="request"):
     return grant, token
 
 
-def task(raw, root, grant, *, submit=False):
-    """Authenticated project handoff; never grants board spending permission."""
+def task(raw, root, grant, *, submit=False, result=False):
+    """Authenticated project handoff and access to its saved result."""
     from api_board import Board, BoardError
     from symphony import api_team
     from symphony.workflow import WorkflowState
 
     expected = {"project", "identifier"} | ({"authorization_id", "card_digest"} if submit else set())
-    if set(raw) != expected or raw["project"] != grant["request"]["project"]:
+    optional = {"offset", "version"} if result else set()
+    if not expected <= set(raw) <= expected | optional or raw["project"] != grant["request"]["project"]:
         raise ConnectError("invalid_fields")
     identifier = raw["identifier"]
     if not isinstance(identifier, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", identifier):
@@ -306,8 +307,17 @@ def task(raw, root, grant, *, submit=False):
     context = api_team.board_context(parsed, "api-team", identifier)
     try:
         runner = Board(board / cfg["api_team"]["settings_file"], context)
-        runner.card()
-        return runner.submit({k: raw[k] for k in ("authorization_id", "card_digest")}) if submit else runner.show()
+        front, _ = runner.card()
+        if submit:
+            return runner.submit({k: raw[k] for k in ("authorization_id", "card_digest")})
+        if result:
+            kind = front.get("agent_kind") or (front.get("agent") or {}).get("kind")
+            if kind != context["agent_kind"]:
+                raise ConnectError("api_team_not_selected")
+            return {"status": "result", "identifier": identifier, "card_state": front["state"],
+                    "review": runner.review(raw.get("offset", 0), raw.get("version", "checked"))}
+        current = runner.show()
+        return {**current, "card_state": runner.card()[0]["state"]}
     except (BoardError, api_session.SessionError) as exc:
         raise ConnectError(str(exc)) from None
 
