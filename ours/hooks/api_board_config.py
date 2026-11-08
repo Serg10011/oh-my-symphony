@@ -11,6 +11,8 @@ import api_cloud_check as cloud
 import api_executor as api
 import api_session as session
 
+MODES = ("economy", "productivity")
+
 
 def load_settings(path: Path) -> dict:
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 1024 * 1024:
@@ -19,12 +21,24 @@ def load_settings(path: Path) -> dict:
     if (not isinstance(raw, dict) or set(raw) - {"cloud_check", "mode", "route"} != {"version", "paths", "session", "execution"}
             or type(raw["version"]) is not int or raw["version"] != 1
             or ("cloud_check" in raw and raw["cloud_check"] != cloud.PROFILE)
-            or ("mode" in raw and raw["mode"] not in ("economy", "productivity"))
+            or ("mode" in raw and raw["mode"] not in MODES)
             or ("route" in raw and raw["route"] != "single-api")
             or not isinstance(raw["session"], dict)
             or set(raw["session"]) - {"context", "lead_profile", "worker_profile", "lead_effort", "limits", "budget"}):
         raise session.SessionError("invalid_api_board_settings")
     return raw
+
+
+def with_work_settings(raw, mode, paths):
+    if mode is not None and mode not in MODES:
+        raise session.SessionError("invalid_api_board_mode")
+    updated = {**raw, "paths": paths, "session": dict(raw["session"])}
+    if mode is None:
+        updated.pop("mode", None)
+    else:
+        updated["mode"] = mode
+        updated["session"].pop("lead_effort", None)
+    return updated
 
 
 def session_options(raw, roles):

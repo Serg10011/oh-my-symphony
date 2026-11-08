@@ -8,7 +8,9 @@ from pathlib import Path
 import re
 import stat
 
+import api_board_config as config
 import api_executor as api
+import api_project as project
 import api_session as session
 from symphony.errors import SymphonyError
 from symphony.trackers.file import parse_ticket_file
@@ -71,23 +73,72 @@ class Teams:
         if not isinstance(self.kind, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", self.kind):
             raise session.SessionError("invalid_composition")
         self.file = self.base / "team-defaults" / (self.kind + ".json")
+        self.work_file = self.base / "work-settings" / (self.kind + ".json")
 
-    def default(self):
+    def default(self, raw=None):
         if self.file.exists() or self.file.is_symlink():
             _checked_dir(self.base)
             _checked_dir(self.file.parent)
             return pair(session._decode(session._read_state(self.file)))
-        raw = session._decode(self.settings.read_bytes())
+        if raw is None:
+            raw = config.load_settings(self.settings)
         return from_spec(raw["session"])
 
+    def work_settings(self, raw):
+        if not self.work_file.exists() and not self.work_file.is_symlink():
+            return raw, None
+        _checked_dir(self.base)
+        folder = _checked_dir(self.work_file.parent)
+        if stat.S_IMODE(folder.stat().st_mode) != 0o700:
+            raise session.SessionError("invalid_api_work_settings")
+        value = session._decode(session._read_state(self.work_file))
+        if (not isinstance(value, dict) or set(value) != {"version", "binding", "revision", "mode", "paths"}
+                or type(value["version"]) is not int or value["version"] != 1
+                or not self.binding or value["binding"] != self.binding
+                or not isinstance(value["revision"], str) or not re.fullmatch(r"[0-9a-f]{32}", value["revision"])):
+            raise session.SessionError("invalid_api_work_settings")
+        try:
+            paths = project.validate({"root": self.context["repo"], "paths": value["paths"]})["paths"]
+        except project.ProjectError:
+            raise session.SessionError("invalid_api_work_settings") from None
+        return config.with_work_settings(raw, value["mode"], paths), value["revision"]
+
+    def defaults(self):
+        raw, revision = self.work_settings(config.load_settings(self.settings))
+        return raw, self.default(raw), revision
+
+    def has_queued_work(self, *, board_permission_only=False):
+        assignments = self.base / "api-team"
+        if not assignments.exists() and not assignments.is_symlink():
+            return False
+        for folder in _checked_dir(assignments).iterdir():
+            path = folder / "assignment.json"
+            if not path.exists() and not path.is_symlink():
+                continue
+            _checked_dir(folder)
+            value = session._decode(session._read_state(path))
+            if (not isinstance(value, dict) or value.get("identifier") != folder.name
+                    or value.get("status") not in ("prepared", "queued", "running", "result", "stopped")):
+                raise session.SessionError("invalid_api_assignment")
+            if value["status"] in ("queued", "running") and (not board_permission_only or value.get("authorization")):
+                return True
+        return False
+
     def save(self, choice):
+        from api_board_permission import Permission
+
         choice = pair(choice)
         for p in (self.base, self.file.parent):
             p.mkdir(mode=0o700, exist_ok=True)
             _checked_dir(p)
         if stat.S_IMODE(self.file.parent.stat().st_mode) != 0o700:
             raise session.SessionError("unsafe_state_file")
-        with session._lock(self.file):
+        permission = Permission(self.settings, self.context)
+        with session._lock(permission.settings_lock), session._lock(self.file):
+            if choice != self.default():
+                # Manually confirmed cards already have an independent team.
+                if self.has_queued_work(board_permission_only=True):
+                    raise session.SessionError("api_board_settings_busy")
             session._save(self.file, choice)
         return {"default": choice, **catalog()}
 
@@ -118,15 +169,16 @@ class Teams:
                     assigned[key] = from_spec(item["spec"])
             except (OSError, ValueError, KeyError, TypeError, session.SessionError, SymphonyError):
                 continue
-        default = self.default()
-        raw = session._decode(self.settings.read_bytes())
+        defaults = self.defaults()
+        raw, default, _ = defaults
         frozen = {"team": default, "mode": raw.get("mode"), "policy": policy_digest(raw)}
         # Existing boards remain per-card until the owner explicitly approves
         # a board permission. Only cards created under that permission inherit it.
         from api_board_permission import Permission
 
-        permission = Permission(self.settings, self.context).show()
+        permission = Permission(self.settings, self.context).show(defaults=defaults)
         if permission["status"] == "active":
             frozen["authorization_id"] = permission["id"]
-        return {"default": default, "creation_defaults": frozen, "project_binding": self.binding,
+        work = {"mode": raw.get("mode"), "paths": raw["paths"]}
+        return {"default": default, "creation_defaults": frozen, "work_settings": work, "project_binding": self.binding,
                 "assignments": assigned, "execution_permission": permission, **catalog()}

@@ -64,7 +64,89 @@
     ]);
     return { row, value, disable(flag) { lead.disabled = worker.disabled = flag; } };
   }
-  function settings(el, kind, data, save) {
+  const modeName = mode => mode === 'productivity' ? 'Продуктивность' : mode === 'economy' ? 'Экономия' : 'По конфигурации доски';
+  const pathName = path => path === '.' ? 'Весь репозиторий в пределах правил доступа' : path;
+  function workSettings(el, kind, current, request) {
+    const modes = current.mode === null ? [null, 'economy', 'productivity'] : ['economy', 'productivity'];
+    const mode = el('select', { class: 'select', 'aria-label': 'Режим работы' }, modes.map(value =>
+      el('option', { value: value || '', selected: current.mode === value }, modeName(value))));
+    const paths = el('textarea', { class: 'input', rows: 4, 'aria-label': 'Доступные файлы и папки' });
+    paths.value = current.paths.join('\n');
+    const saved = el('p', { class: 'form-hint' });
+    const details = el('dl', { class: 'api-team-assignment' });
+    const notice = el('p', { 'aria-live': 'polite', class: 'form-hint' });
+    const check = el('button', { type: 'button', class: 'btn btn-ghost' }, 'Проверить изменения');
+    const apply = el('button', { type: 'button', class: 'btn btn-primary' }, 'Сохранить настройки');
+    let pending = null;
+    function showCurrent() {
+      saved.textContent = 'Для новых карточек сейчас выбран режим «' + modeName(current.mode) + '». Доступ: '
+        + current.paths.map(pathName).join(', ') + '.';
+    }
+    function reset() {
+      pending = null;
+      apply.hidden = true;
+      details.replaceChildren();
+      notice.textContent = '';
+    }
+    function row(label, value) {
+      details.append(el('dt', {}, label), el('dd', {}, value));
+    }
+    async function edit(action) {
+      const choice = action === 'save' ? pending : {
+        mode: mode.value || null, paths: paths.value.split(/\r?\n/).filter(Boolean),
+      };
+      reset();
+      [check, apply, mode, paths].forEach(field => { field.disabled = true; });
+      try {
+        const result = await request(kind, action, choice);
+        if (action === 'save') {
+          current = result;
+          mode.value = current.mode || '';
+          if (current.mode !== null) mode.querySelector('option[value=""]')?.remove();
+          paths.value = current.paths.join('\n');
+          showCurrent();
+          notice.textContent = result.permission_status === 'changed'
+            ? 'Настройки сохранены. Подтверди новые условия в разделе «Разрешение на работу доски».'
+            : 'Настройки сохранены для новых карточек.';
+        } else if (result.changed) {
+          const { current: before, proposed: after } = result;
+          const added = after.paths.filter(path => !before.paths.includes(path));
+          const removed = before.paths.filter(path => !after.paths.includes(path));
+          if (before.mode !== after.mode) row('Режим', modeName(before.mode) + ' → ' + modeName(after.mode));
+          if (before.profiles.lead.effort !== after.profiles.lead.effort)
+            row('Усилие ведущего', before.profiles.lead.effort + ' → ' + after.profiles.lead.effort);
+          if (added.length) row('Добавятся', added.map(pathName).join(', '));
+          if (removed.length) row('Уберутся', removed.map(pathName).join(', '));
+          notice.textContent = result.permission_status === 'changed'
+            ? 'Для платной передачи потребуется подтвердить новые условия.'
+            : 'Изменения будут применены к новым карточкам. Платная передача требует отдельного разрешения.';
+          pending = { mode: after.mode, paths: after.paths, expected: result.expected };
+          apply.hidden = false;
+        } else {
+          notice.textContent = 'Настройки уже совпадают.';
+        }
+      } catch (error) {
+        notice.textContent = error.message || 'Не удалось изменить настройки доски.';
+      } finally {
+        [check, apply, mode, paths].forEach(field => { field.disabled = false; });
+      }
+    }
+    mode.addEventListener('change', reset);
+    paths.addEventListener('input', reset);
+    check.addEventListener('click', () => edit('preview'));
+    apply.addEventListener('click', () => { if (pending) edit('save'); });
+    showCurrent();
+    reset();
+    return el('section', { 'aria-label': 'Режим и доступ к файлам' }, [
+      el('h4', {}, 'Режим и доступ к файлам'),
+      saved,
+      el('div', { class: 'api-team-actions' }, [el('label', {}, ['Режим работы', mode])]),
+      el('label', { class: 'form-field' }, ['Доступные файлы и папки', paths]),
+      el('p', { class: 'form-hint' }, 'Укажи по одному пути от корня репозитория на строку. Точка означает весь репозиторий в пределах правил доступа.'),
+      details, notice, el('div', { class: 'api-team-actions' }, [check, apply]),
+    ]);
+  }
+  function settings(el, kind, data, save, configure) {
     const hint = el('p', { role: 'status', class: 'form-hint' });
     const button = el('button', { type: 'button', class: 'btn btn-primary' }, 'Сохранить команду доски');
     let base = data.default;
@@ -79,11 +161,13 @@
       } catch (e) { hint.textContent = e.message || 'Не удалось сохранить команду'; }
       finally { p.disable(false); button.disabled = same(p.value(),base); }
     });
-    return el('section', { class: 'card-panel settings-card', 'aria-label': 'Команда по умолчанию' }, [
+    const element = el('section', { class: 'card-panel settings-card', 'aria-label': 'Команда по умолчанию' }, [
       el('h3', {}, 'Команда по умолчанию · ' + kind),
       el('p', {}, 'Эта пара подставляется в новые назначения. В карточке можно выбрать другую до подтверждения.'),
       p.row, button, hint,
     ]);
+    if (data.work_settings && configure) element.appendChild(workSettings(el, kind, data.work_settings, configure));
+    return element;
   }
   function confirmedLabel(kind, profiles) {
     return kind + ' — ' + [profiles.lead?.model, profiles.worker?.model].filter(Boolean).map(name).join(' + ');
