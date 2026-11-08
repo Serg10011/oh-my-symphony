@@ -1,0 +1,94 @@
+{
+  "task": "S4-65",
+  "block": 3,
+  "status": "installed_and_started",
+  "recorded_at": "2026-11-07T16:21:35.176312+00:00",
+  "approval": "Сливай — подтверждение PR №110, установки и включения OMS без платного запуска",
+  "pr": 110,
+  "merge": "85aa05a898387dedad292449f76b45c1ed82458c",
+  "approved_head": "01a98bc60a7790688cc5a4d9d132b491aba53305",
+  "tree_matches_approved": true,
+  "repositories": {
+    "service": "85aa05a898387dedad292449f76b45c1ed82458c",
+    "oms": "85aa05a898387dedad292449f76b45c1ed82458c",
+    "applied_markers_match": true
+  },
+  "installation": {
+    "approved_pr": 110,
+    "approved_head": "01a98bc60a7790688cc5a4d9d132b491aba53305",
+    "merge": "85aa05a898387dedad292449f76b45c1ed82458c",
+    "started_at": "2026-11-07T16:04:02.595688+00:00",
+    "finished_at": "2026-11-07T16:15:39.535598+00:00",
+    "returncode": 0,
+    "temporary_directory": "/Volumes/ssd/symphony-checks-s465-oms-install-20261107"
+  },
+  "local_tests": {
+    "passed": 6571,
+    "skipped": 156,
+    "failed": 0,
+    "tests_s": 684.3,
+    "measured_at": "2026-11-07T16:15:38Z"
+  },
+  "diagnostics": {
+    "PASS": 21,
+    "WARN": 3,
+    "FAIL": 0
+  },
+  "board_url": "http://127.0.0.1:9972/#/board",
+  "lead": {
+    "profile": "deepseek-lead",
+    "model_label": "DeepSeek Flash 4.1",
+    "effort": "high"
+  },
+  "worker": {
+    "profile": "luna-worker",
+    "model_label": "Luna",
+    "effort": "max"
+  },
+  "mode": "economy",
+  "paths": [
+    "docs/our/reports/REPORT-54.md",
+    "ours/README.md"
+  ],
+  "new_issue_kind": "api-team",
+  "legacy_route_preserved": true,
+  "preserved_cards": 13,
+  "preserved_runs": 21,
+  "running": 0,
+  "retrying": 0,
+  "connector_restarted": true,
+  "connector_unauthorized_http": 403,
+  "new_project_grants": 0,
+  "new_board_permissions": 0,
+  "new_cards_created": 0,
+  "provider_calls": 0,
+  "api_cost_usd": "0",
+  "eve_unchanged": true,
+  "eve_running": false,
+  "browser": {
+    "verified_at": "2026-11-07T16:21:31.425615+00:00",
+    "method": "CUA accessibility inspection of the installed board",
+    "board_opened": true,
+    "old_cards_visible": 13,
+    "default_lead": "DeepSeek Flash 4.1",
+    "default_worker": "Luna",
+    "new_issue_agent": "api-team — DeepSeek Flash 4.1 + Luna",
+    "new_issue_form_closed_without_creation": true,
+    "spending_permission": "not_configured",
+    "legacy_default_agent_label": "claude",
+    "tab_left_open": true
+  },
+  "storage": {
+    "archive": "/Volumes/ssd/Проекты/oh-my-symphony/archives/s4-65-oms-install-20261107",
+    "checks": "/Volumes/ssd/Проекты/oh-my-symphony/checks/s4-65-oms-install-20261107",
+    "move_same_volume": true,
+    "no_open_files_before_move": true,
+    "no_registered_worktrees_in_moved_directory": true
+  },
+  "history_branch": "codex/oms-api-installed",
+  "remaining": [
+    "project chat access and paid permission need separate confirmation",
+    "legacy Default agent label remains claude; new-card form selects api-team",
+    "connector automatic login startup is not configured"
+  ]
+}

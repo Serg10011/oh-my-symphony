@@ -77,6 +77,30 @@ models, budgets or permissions. Follow project conventions within these limits.
 Report the result, evidence and limitations in the task's language. Do not claim
 to have edited files or run tests. File-tool rounds are part of this attempt.
 """
+# Keep version 1 stable: saved requests are reconstructed from this policy.
+EXECUTION_LEAD_ROLES_V1 = """Lead this task and own the complete result. Understand the
+goal, inspect relevant context, choose the solution and organize the work yourself.
+When a worker is configured, normally delegate suitable coherent implementation
+parts with their own checks. Give the expected result, essential context and
+constraints, including current facts that supersede older project documents;
+leave implementation choices to the worker. Independently review its actual
+changes and check evidence, integrate the parts and verify the whole task.
+You may implement complex integration work and small fixes yourself. For a small
+task, finish it yourself when delegation and review would cost more than the work.
+Do not call the worker merely to involve a second model. A worker-only review of
+your implementation is an exception when specifically useful, not the default
+division of work; you still own final review. If no worker is configured, complete
+the task yourself. Use a stable part_id and at most one targeted correction in
+that same worker conversation; do not bypass the limit by renaming the part.
+In the final report, briefly state the actual division of work and any limits.
+"""
+EXECUTION_WORKER_ROLES_V1 = """Implement the coherent part assigned by the lead and
+verify your work with appropriate checks. Choose the implementation within the
+given goal, context and constraints. Return actual changes, check evidence and
+remaining limitations to the lead, who owns integration and final review.
+If explicitly assigned only a review or investigation, follow that scope and
+report findings without making unrequested changes. Use the task's language.
+"""
 RESOURCE_INSTRUCTIONS = """The final user message supplies current runtime resources,
 not a new task.
 Remaining resources include this request and are shared across all participants.
@@ -289,6 +313,10 @@ def _load(path: Path, *, raw: bytes | None = None) -> dict:
         raise SessionError("invalid_state")
     calls = state["calls"]
     spec = state["spec"]
+    role_policy = state.get("role_policy_version", 0)
+    if (type(role_policy) is not int or role_policy not in (0, 1)
+            or (role_policy and "execution" not in spec)):
+        raise SessionError("invalid_role_policy")
     if "output_limits" in state:
         pinned = state["output_limits"]
         names = {p for p in (spec["lead_profile"], spec["worker_profile"]) if p}
@@ -307,6 +335,9 @@ def _load(path: Path, *, raw: bytes | None = None) -> dict:
                 or type(call.get("request_version", 1)) is not int
                 or call.get("request_version", 1) not in ((1, 2, 3) if "execution" in spec else (1, 2))):
             raise SessionError("invalid_state")
+        if (type(call.get("role_policy_version", 0)) is not int
+                or call.get("role_policy_version", 0) != role_policy):
+            raise SessionError("invalid_role_policy")
         if call["status"] == "received" and (not isinstance(call.get("response"), dict)
                                               or not isinstance(call["response"].get("usage"), dict)):
             raise SessionError("invalid_state")
@@ -386,6 +417,7 @@ def create(path, spec: dict) -> dict:
         os.close(fd)
         if "execution" in spec:
             try:
+                state["role_policy_version"] = 1
                 state["execution_state"] = workspace.create(path, spec, state["project_snapshot"])
             except (workspace.WorkspaceError, sandbox.SandboxError, project.ProjectError) as exc:
                 path.unlink()  # Only the empty file just created exclusively above.
@@ -976,6 +1008,8 @@ def _build_request(state, history, cap, resources, *, part_id=None, request_vers
         instructions = ("Lead this task and organize the work yourself. Delegate coherent useful parts only when worthwhile. "
                         "Use a stable part_id and at most one targeted correction for that same part. Review worker results."
                         if part_id is None else "Carry out the coherent part assigned by the lead and report evidence and limitations.")
+        if state.get("role_policy_version") == 1:
+            instructions = EXECUTION_LEAD_ROLES_V1 if part_id is None else EXECUTION_WORKER_ROLES_V1
         instructions += "\n" + workspace.INSTRUCTIONS
         instructions += "\nAvailable Python: " + spec["execution"]["python"]
         instructions += "\nLimits: " + json.dumps(limits)
@@ -1051,6 +1085,8 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport)
             "output_cap": cap, "request_sha256": hashlib.sha256(encoded).hexdigest(),
             "history_items": len(request["input"]), "resources": resources,
             "status": "in_flight", "started_at": _now()}
+    if "role_policy_version" in state:
+        call["role_policy_version"] = state["role_policy_version"]
     resumes = state.get("resumptions", [])
     if resumes and resumes[-1]["next_call_index"] == call["index"]:
         call["resume_of"] = resumes[-1].get("source_call_index", resumes[-1]["uncertain_call_index"])

@@ -1,0 +1,76 @@
+{
+  "status": "prepared_waiting_owner_approval",
+  "prepared_at": "2026-11-07T18:22:26.913547+00:00",
+  "board": "oms",
+  "base_commit": "85aa05a898387dedad292449f76b45c1ed82458c",
+  "request": {
+    "project": "oms",
+    "repo": "/Volumes/ssd/Проекты/oh-my-symphony/work/dev/oms-pipeline",
+    "base": "our-main",
+    "team": {
+      "lead_profile": "deepseek-lead",
+      "worker_profile": "luna-worker"
+    },
+    "mode": "economy",
+    "paths": [
+      "docs/our/reports/REPORT-54.md",
+      "ours/README.md"
+    ],
+    "verification": "oms-public-linux-v1"
+  },
+  "task": {
+    "title": "Обновить инструкцию по установленному API-конвейеру",
+    "description": "Обнови разделы S4-62 в ours/README.md по docs/our/reports/REPORT-54.md: они должны описывать установленную работу через браузер, выбор API-команды, проверку и приёмку результата, а также оставшиеся ограничения. Учитывай актуальное состояние: основная OMS уже подключена; новые обычные карточки получают DeepSeek Flash 4.1/high и Luna/max, а разрешение платной работы задаётся отдельно. Сохрани даты и результаты прежних проб. Изменяй только ours/README.md, пиши по-русски.",
+    "state": "Todo",
+    "agent_kind": "api-team",
+    "priority": 2
+  },
+  "cards_before": 13,
+  "project_grant_created": false,
+  "board_permission_authorized": false,
+  "card_created": false,
+  "provider_calls": 0,
+  "private_artifacts": "/Volumes/ssd/Проекты/oh-my-symphony/checks/s4-65-oms-first-task-20261107",
+  "payment_terms": {
+    "repo": "/Volumes/ssd/Проекты/oh-my-symphony/work/dev/oms-pipeline",
+    "base_branch": "our-main",
+    "team": {
+      "lead_profile": "deepseek-lead",
+      "worker_profile": "luna-worker"
+    },
+    "mode": "economy",
+    "profiles": {
+      "lead": {
+        "name": "deepseek-lead",
+        "provider": "deepseek",
+        "model": "deepseek-flash",
+        "effort": "high",
+        "endpoint": "https://api.deepseek.com/responses",
+        "key_env": "DEEPSEEK_API_KEY"
+      },
+      "worker": {
+        "name": "luna-worker",
+        "provider": "openai",
+        "model": "gpt-6-luna",
+        "effort": "max",
+        "endpoint": "https://api.openai.com/v1/responses",
+        "key_env": "OPENAI_API_KEY"
+      }
+    },
+    "paths": [
+      "docs/our/reports/REPORT-54.md",
+      "ours/README.md"
+    ],
+    "budget": null,
+    "limits": {
+      "max_calls": 1000,
+      "output_tokens_per_call": 393216,
+      "output_tokens_total": 2097152,
+      "request_bytes": 16777216
+    },
+    "budget_scope": "per_task",
+    "process_timeout_seconds": 7200.0
+  },
+  "approval_scope": "Project chat access, new submitted tasks within these board terms until revocation or a change, and the first README task; no publication, merge or paid retry.",
+  "credential_values_included": false
+}
