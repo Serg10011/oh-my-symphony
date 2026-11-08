@@ -140,8 +140,8 @@
     return el('section', { 'aria-label': 'Режим и доступ к файлам' }, [
       el('h4', {}, 'Режим и доступ к файлам'),
       saved,
-      el('div', { class: 'api-team-actions' }, [el('label', {}, ['Режим работы', mode])]),
-      el('label', { class: 'form-field' }, ['Доступные файлы и папки', paths]),
+      el('label', { class: 'form-group' }, [el('span', { class: 'form-label' }, 'Режим работы'), mode]),
+      el('label', { class: 'form-group' }, [el('span', { class: 'form-label' }, 'Доступные файлы и папки'), paths]),
       el('p', { class: 'form-hint' }, 'Укажи по одному пути от корня репозитория на строку. Точка означает весь репозиторий в пределах правил доступа.'),
       details, notice, el('div', { class: 'api-team-actions' }, [check, apply]),
     ]);
