@@ -11,6 +11,7 @@ import re
 
 import api_candidate as candidate
 import api_cloud_check as cloud
+import api_completion as completion
 import api_project as project
 import api_publication as publication
 import api_session as session
@@ -145,7 +146,7 @@ def recover_delivery(board, value):
                 # The verified PR receipt precedes the final assignment write.
                 # Recover a crash at that boundary, also after the base moves.
                 value = {**value, "release_done": {"commit": record["commit"], "pr": record["pr"]}}
-                completed(board, value)
+                accepted_delivery(board, value)
     return value
 
 
@@ -216,7 +217,7 @@ def fresh_receipt(value, subject, receipt):
         raise ReleaseError("release_receipt_changed")
 
 
-def completed(board, value):
+def accepted_delivery(board, value):
     done = value["release_done"]
     accept = value["release_accept"]
     sha, pr = done["commit"], done["pr"]
@@ -225,6 +226,7 @@ def completed(board, value):
         raise ReleaseError("release_receipt_changed")
     approved = session._decode(session._read_state(board.root / ("release_accept-" + accept["offer"] + ".json")))
     rec = session._decode(session._read_state(deliver.delivered_path(board.workflow.parent, board.identifier)))
+    subject = approved["subject"]
     proof = approved["receipt"]
     if any(type(proof.get(key)) is not int or proof[key] < 1 for key in ("run", "attempt")):
         raise ReleaseError("release_receipt_changed")
@@ -232,14 +234,38 @@ def completed(board, value):
     front, _ = board.card()
     if (str(front.get("created_at")) != approved["card_created_at"]
             or rec["id"] != board.identifier or rec["commit"] != sha or rec["source_commit"] != value["candidate"]["commit"]
+            or rec["source_tree"] != value["candidate"]["tree"]
+            or rec["repo"] != cloud.REPO or rec["base"] != BASE or rec["our_main"] != subject["base_commit"]
+            or rec["branch"] != f"deliver/{board.identifier}" or approved["branch"] != rec["branch"]
             or rec["api_binding"] != value["binding"] or rec["api_acceptance"] != approved["offer"]
             or approved["offer"] != accept["offer"] or approved["sha"] != sha or pr != rec["pr"]
-            or approved["subject"]["binding"] != value["binding"] or proof != rec["api_proof"]
-            or archived != {"version": 1, "subject": approved["subject"], "evidence": proof}
+            or subject["binding"] != value["binding"] or subject["identifier"] != board.identifier
+            or subject["commit"] != sha or proof != rec["api_proof"]
+            or archived != {"version": 1, "subject": subject, "evidence": proof}
             or proof["status"] != "passed" or proof["commit"] != sha
-            or type(pr["number"]) is not int or pr["url"] != f"https://github.com/{cloud.REPO}/pull/{pr['number']}"):
+            or proof["tree"] != subject["tree"] or proof["base_commit"] != subject["base_commit"]
+            or any(not isinstance(subject[k], str) or not cloud.OID.fullmatch(subject[k]) for k in ("tree", "base_commit"))
+            or type(pr["number"]) is not int or pr["number"] < 1
+            or pr["url"] != f"https://github.com/{cloud.REPO}/pull/{pr['number']}"):
         raise ReleaseError("release_receipt_changed")
-    return {"stage": "delivered", "commit": sha, "pr": pr, "accepted": True}
+    return rec, subject
+
+
+def completed(board, value):
+    record, _ = accepted_delivery(board, value)
+    return {"stage": "delivered", "commit": record["commit"], "pr": record["pr"], "accepted": True,
+            "proof": record["api_proof"], "completion": completion.view(board, value, record)}
+
+
+def reconcile_completion(board):
+    with session._lock(board.path):
+        value = recover_delivery(board, board._load())
+        if not value or not value.get("release_done"):
+            return False
+        if pairing(board, value) and value["spec"]["project"]["root"] == str(board.repo):
+            record, _ = accepted_delivery(board, value)
+            completion.reconcile(board, value, record)
+        return True
 
 
 def offer(board, value):
@@ -284,7 +310,14 @@ def offer(board, value):
 def review(board, value, offset):
     if type(offset) is not int or offset < 0:
         raise ReleaseError("invalid_workspace_query")
-    subject = board._cloud_subject(value)
+    value = recover_delivery(board, value)
+    if value.get("release_done"):
+        _, subject = accepted_delivery(board, value)
+        if publication.oid(board.root / "candidate.git", "rev-parse", "--verify",
+                           subject["commit"] + "^{tree}") != subject["tree"]:
+            raise ReleaseError("release_target_changed")
+    else:
+        subject = board._cloud_subject(value)
     base, sha = subject["base_commit"], subject["commit"]
     manifest = file_delta(board, base, sha)
     if offset > len(manifest):
