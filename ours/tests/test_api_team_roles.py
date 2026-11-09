@@ -61,6 +61,32 @@ def test_small_task_may_finish_without_calling_configured_worker(task):
     assert all(c["profile"] == "deepseek-lead" for c in session._load(path)["calls"])
 
 
+@pytest.mark.parametrize("legacy", [False, True], ids=["new-flash", "saved-flash"])
+def test_flash_lead_receives_pinned_delegation_policy(tmp_path, monkeypatch, legacy):
+    path, _ = prepared(tmp_path, lead_profile="sol-lead", worker_profile=session.api.FLASH_WORKER)
+    monkeypatch.setattr(workspace, "preflight", lambda *a: {"fixture": True})
+    monkeypatch.setattr(session.flash_probe, "subscription_executable", lambda: tmp_path / "fake-agy")
+    saved = state(path)
+    assert saved["role_policy_version"] == 2
+    if legacy:
+        saved["role_policy_version"] = 1
+        path.write_text(json.dumps(saved))
+
+    transport, sent = exchange([frame("Для этой правки проверка повторила бы всю работу.", model="gpt-6.1-sol")])
+    assert session.run(path, environ=KEYS, transport=transport)["status"] == "dialogue_complete"
+    assert len(sent) == 1
+    request = sent[0]["body"]
+    instructions = request["instructions"]
+    assert any(tool["name"] == "delegate_worker" for tool in request["tools"])
+    assert ("finish it yourself when delegation and review" in instructions) == legacy
+    assert ("Delegate suitable implementation, including small edits" in instructions) == (not legacy)
+    if not legacy:
+        assert "result would cost no more than doing the same work yourself" in instructions
+        assert "concrete reason briefly in your\nfinal report" in instructions
+    saved = session._load(path)
+    assert saved["role_policy_version"] == saved["calls"][0]["role_policy_version"] == (1 if legacy else 2)
+
+
 def test_solo_lead_keeps_its_assignment_without_delegation_tool(tmp_path, monkeypatch):
     path, _ = prepared(tmp_path, lead_profile="sol-lead", worker_profile=None)
     monkeypatch.setattr(workspace, "preflight", lambda *a: {"fixture": True})
