@@ -7,6 +7,8 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_CEILING
 import re
 
+from api_executor import FLASH_WORKER
+
 CATALOG = {
     "version": "2026-11-03-standard-peak-v2", "verified_on": "2026-11-03", "valid_until": "2026-11-10",
     "models": {
@@ -147,6 +149,10 @@ def validate_state(state: dict) -> None:
         raise BudgetError("invalid_budget_state")
     for call in state["calls"]:
         record = call.get("budget_reservation")
+        if call["profile"] == FLASH_WORKER:
+            if "budget_reservation" in call:
+                raise BudgetError("invalid_budget_state")
+            continue
         if (not isinstance(record, dict) or type(record.get("input_tokens")) is not int
                 or not 1 <= record["input_tokens"] <= 1_050_000):
             raise BudgetError("invalid_budget_state")

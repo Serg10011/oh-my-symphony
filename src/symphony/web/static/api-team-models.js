@@ -1,7 +1,8 @@
 /* Names come from the saved assignment; choices are limited by the board catalog. */
 (function (root) {
   'use strict';
-  const names = { 'deepseek-flash': 'DeepSeek Flash 4.1', 'gpt-6.1-sol': 'Sol 6.1', 'gpt-6-luna': 'Luna' };
+  const names = { 'deepseek-flash': 'DeepSeek Flash 4.1', 'gpt-6.1-sol': 'Sol 6.1', 'gpt-6-luna': 'Luna',
+    'gemini-3.8-flash-high': 'Gemini 3.8 Flash' };
   const name = id => names[id] || id;
   const cache = new Map();
   const invalidate = kind => { if (kind) cache.delete(kind); else cache.clear(); };
@@ -146,6 +147,45 @@
       details, notice, el('div', { class: 'api-team-actions' }, [check, apply]),
     ]);
   }
+  function geminiQuota(el, kind, initial, request) {
+    const details = el('dl', { class: 'api-team-assignment' });
+    const status = el('p', { class: 'form-hint', role: 'status' });
+    const button = el('button', { type: 'button', class: 'btn btn-ghost' }, 'Обновить квоту Gemini');
+    const date = value => {
+      const parsed = new Date(value || '');
+      return Number.isFinite(parsed.getTime()) ? parsed.toLocaleString('ru-RU') : null;
+    };
+    function render(snapshot) {
+      details.replaceChildren();
+      for (const [key, title] of [['five_hour', 'Пять часов'], ['weekly', 'Неделя']]) {
+        const bucket = snapshot?.buckets?.[key];
+        const percent = Number.isFinite(bucket?.remaining_percent)
+          ? bucket.remaining_percent.toLocaleString('ru-RU', { maximumFractionDigits: 2 }) + '%' : 'н/д';
+        const reset = date(bucket?.reset_time);
+        const value = bucket?.disabled ? 'Окно отключено' : percent + (reset ? ' · обновление ' + reset : '');
+        details.append(el('dt', {}, title), el('dd', {}, value));
+      }
+      const observed = date(snapshot?.observed_at);
+      status.textContent = observed ? 'Снимок Antigravity от ' + observed + '.'
+        : 'Нажми «Обновить квоту Gemini», чтобы прочитать остаток.';
+    }
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        const result = await request(kind, 'gemini-quota', {});
+        render(result.gemini_quota);
+        invalidate(kind);
+      } catch (error) {
+        status.textContent += ' ' + (error.message || 'Не удалось обновить квоту Gemini.');
+      } finally {
+        button.disabled = false;
+      }
+    });
+    render(initial);
+    return el('section', { 'aria-label': 'Квота Gemini' }, [
+      el('h4', {}, 'Остаток подписки Gemini'), details, status, button,
+    ]);
+  }
   function settings(el, kind, data, save, configure) {
     const hint = el('p', { role: 'status', class: 'form-hint' });
     const button = el('button', { type: 'button', class: 'btn btn-primary' }, 'Сохранить команду доски');
@@ -167,6 +207,8 @@
       p.row, button, hint,
     ]);
     if (data.work_settings && configure) element.appendChild(workSettings(el, kind, data.work_settings, configure));
+    if (data.models?.['flash-worker'] && configure)
+      element.appendChild(geminiQuota(el, kind, data.gemini_quota, configure));
     return element;
   }
   function confirmedLabel(kind, profiles) {

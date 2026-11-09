@@ -65,6 +65,7 @@ PUBLIC_ERRORS = {
     "api_result_not_ready": "Изменения будут доступны после завершения или остановки команды",
     "api_card_must_wait_for_confirmation": "Назначение можно подготовить только у ожидающей запуска карточки",
     "api_keychain_unavailable": "Не удалось получить ключ из Связки ключей",
+    "gemini_quota_unavailable": "Не удалось прочитать квоту Gemini в Antigravity. Проверь вход и повтори обновление.",
     "session_busy": "Команда обновляет журнал. Повтори чтение через несколько секунд",
     "cloud_invalid_run": "Введи номер запуска GitHub Actions цифрами",
     "cloud_not_enabled": "Для этого назначения чтение публичных проверок не включено",
@@ -203,7 +204,7 @@ async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
     if action not in {"prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run",
                       "team-options", "set-team-default", "publish-check", "accept", "submit",
                       "permission-show", "permission-prepare", "permission-authorize", "permission-revoke",
-                      "settings-preview", "settings-save"}:
+                      "settings-preview", "settings-save", "gemini-quota"}:
         raise SymphonyError("Неизвестное действие API-команды")
     profile = api_profile(cfg, kind)
     context = board_context(cfg, kind, identifier)

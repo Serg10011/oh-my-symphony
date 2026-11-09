@@ -30,6 +30,7 @@ import api_board_permission as permission_api
 import api_candidate as candidate
 import api_cloud_check as cloud
 import api_delivery as delivery
+import api_gemini_quota as gemini_quota
 import api_project as project
 import api_session as session
 import deliver
@@ -328,12 +329,16 @@ class Board:
                   "reason": value.get("reason"), "run_id": value.get("run_id"),
                   "stop_requested": self.stop_path.exists(), "accepted": False, "delivered": False,
                   "delivery_status": "not_configured"}
+        if "lead_escalation" in spec:
+            result["lead_escalation"] = spec["lead_escalation"]
         if value.get("authorization"):
             result["authorization"] = value["authorization"]
         if "mode" in value:
             result["mode"] = value["mode"]
         if "board_stages" in value:
             result["board_stages"] = value["board_stages"]
+        if "gemini_wait_until" in value:
+            result["gemini_wait_until"] = value["gemini_wait_until"]
         if value["status"] == "prepared":
             frozen = self.card()[0].get("api_defaults")
             default = models.pair(frozen["team"]) if isinstance(frozen, dict) else self.teams.default()
@@ -610,6 +615,14 @@ class Board:
                 self._save(value)
                 self._hold(value, "Разрешение доски отозвано или изменилось. Платный запуск не выполнен.")
                 return self.show()
+            if value["spec"]["worker_profile"] == api.FLASH_WORKER:
+                reset = gemini_quota.blocked_until(self.teams.saved_gemini_quota())
+                if reset is not None:
+                    value.update(status="stopped", reason="flash_quota_exhausted",
+                                 gemini_wait_until=reset.isoformat(), finished_at=session._now())
+                    self._save(value)
+                    self._hold(value, "По последнему снимку квота Gemini исчерпана.")
+                    return self.show()
             value.update(status="running", run_id=run_id, started_at=session._now())
             self._save(value)
         try:
@@ -756,7 +769,7 @@ def keychain_credentials(spec):
         if name is None:
             continue
         key = api.profile_for(name).key_env
-        if key in result:
+        if key is None or key in result:
             continue
         if sys.platform != "darwin":
             raise BoardError("api_keychain_platform_unsupported")
@@ -778,7 +791,7 @@ def cli(argv=None):
     parser.add_argument("--settings", required=True)
     parser.add_argument("--action", required=True, choices=["prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run", "team-options", "set-team-default", "publish-check", "accept", "submit",
         "permission-show", "permission-prepare", "permission-authorize", "permission-revoke",
-        "settings-preview", "settings-save"])
+        "settings-preview", "settings-save", "gemini-quota"])
     args = parser.parse_args(argv)
     def interrupted(*_):
         raise Interrupted("board_process_interrupted")
@@ -809,7 +822,7 @@ def cli(argv=None):
                 raise BoardError("invalid_board_payload")
             print(json.dumps(result, ensure_ascii=False))
             return 0
-        if args.action in {"team-options", "set-team-default"}:
+        if args.action in {"team-options", "set-team-default", "gemini-quota"}:
             if message.get("run_id") is not None or message["context"]["identifier"] != "":
                 raise BoardError("invalid_board_payload")
             teams = models.Teams(Path(args.settings), message["context"])
@@ -817,6 +830,8 @@ def cli(argv=None):
                 result = teams.directory(payload.get("identifiers", []))
             elif args.action == "set-team-default" and set(payload) == {"team"}:
                 result = teams.save(payload["team"])
+            elif args.action == "gemini-quota" and not payload:
+                result = teams.refresh_gemini_quota()
             else:
                 raise BoardError("invalid_board_payload")
             print(json.dumps(result))

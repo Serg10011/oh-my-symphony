@@ -14,6 +14,8 @@ from typing import Any, Mapping
 
 import httpx
 
+from api_flash_probe import MODEL as FLASH_MODEL
+
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 DEFAULT_OUTPUT_TOKENS = 4096
@@ -32,8 +34,8 @@ class Profile:
     provider: str
     model: str
     effort: str
-    endpoint: str
-    key_env: str
+    endpoint: str | None
+    key_env: str | None
 
 
 PROFILES = {
@@ -44,6 +46,8 @@ PROFILES = {
     "sol-lead": Profile("sol-lead", "openai", "gpt-6.1-sol", "medium",
                         "https://api.openai.com/v1/responses", "OPENAI_API_KEY"),
 }
+FLASH_WORKER = "flash-worker"
+FLASH_PROFILE = Profile(FLASH_WORKER, "antigravity", FLASH_MODEL, "high", None, None)
 
 
 class ExecutorError(Exception):
@@ -65,6 +69,8 @@ class ExecutorError(Exception):
 
 
 def profile_for(name: str) -> Profile:
+    if name == FLASH_WORKER:
+        return FLASH_PROFILE
     try:
         return PROFILES[name]
     except (KeyError, TypeError):
@@ -81,8 +87,11 @@ def output_limit(name: str) -> int:
 
 def validate_effort(name: str, effort: str) -> None:
     profile = profile_for(name)
-    choices = {"high", "max", "low"} if profile.provider == "deepseek" else {"low", "medium", "high", "xhigh", "max"}
-    if not isinstance(effort, str) or effort not in choices or (name == "luna-worker" and effort != "max"):
+    if name in ("luna-worker", FLASH_WORKER):
+        choices = {profile.effort}
+    else:
+        choices = {"high", "max", "low"} if profile.provider == "deepseek" else {"low", "medium", "high", "xhigh", "max"}
+    if not isinstance(effort, str) or effort not in choices:
         raise ExecutorError("invalid_effort")
 
 
@@ -126,6 +135,8 @@ def _validate_input(value: Any) -> None:
 def prepare(name: str, request: dict) -> tuple[Profile, dict]:
     """Build a bounded request without reading a key or accessing the network."""
     profile = profile_for(name)
+    if profile.endpoint is None:
+        raise ExecutorError("subscription_requires_team")
     allowed = {"input", "instructions", "tools", "max_output_tokens", "effort", "prompt_cache_options", "reasoning_context"}
     if not isinstance(request, dict) or set(request) - allowed:
         raise ExecutorError("unknown_request_field")
@@ -335,7 +346,7 @@ def execute(name: str, request: dict, *, environ: Mapping[str, str] | None = Non
 def doctor(name: str | None = None) -> dict:
     profiles = [profile_for(name)] if name else list(PROFILES.values())
     return {"version": 1, "network_used": False, "remote_access_verified": False,
-            "profiles": [{**asdict(p), "key_present": bool(os.environ.get(p.key_env))} for p in profiles]}
+            "profiles": [{**asdict(p), "key_present": bool(p.key_env and os.environ.get(p.key_env))} for p in profiles]}
 
 
 def _reject_constant(value: str) -> None:

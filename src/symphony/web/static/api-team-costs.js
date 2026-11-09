@@ -122,8 +122,23 @@
     const workerName = text(declaredWorker) || text(worker && worker.name);
     const leadModel = text(lead && lead.model);
     const workerModel = text(worker && worker.model);
-    const roleNames = { lead: leadName || leadModel, worker: workerName || workerModel };
+    const subscription = worker?.provider === 'antigravity';
+    const roleNames = { lead: leadName || leadModel, worker: subscription ? null : workerName || workerModel };
     const usage = session && session.usage && typeof session.usage === 'object' ? session.usage : null;
+    function withSubscription(result) {
+      if (!subscription) return result;
+      const row = usage?.[workerName];
+      const complete = Number.isSafeInteger(row?.total_tokens) && row.total_tokens >= 0;
+      const known = complete ? row.total_tokens : row?.known_total_tokens;
+      let detail = 'расход неизвестен';
+      if (row?.calls === 0 || !session) detail = 'запросов не было';
+      else if (complete || Number.isSafeInteger(known) && known > 0) {
+        detail = (complete ? '' : 'известная часть ') + known.toLocaleString('ru-RU') + ' токенов';
+        if (!complete) detail += ' · расход части запросов неизвестен';
+      }
+      return { ...result, subscription: true, worker: { value: 'Подписка Antigravity · ' + detail,
+        amount: null, assigned: true, incomplete: Boolean(session && !complete) } };
+    }
     const sessionCalls = session && typeof session.calls === 'number' ? session.calls : null;
     const parsed = reportLines(text(source) || '');
     const hasCost = parsed.rows.length > 0 || parsed.totalLine !== null || parsed.knownLine !== null;
@@ -132,15 +147,15 @@
     if (!hasCost && (session === null || session === undefined
                      || (sessionCalls === 0 && nothingSpent(session)))) {
       const started = session !== null && session !== undefined;
-      return zeroSummary(started ? 'Запросов ещё не было: сохранённых расходов нет.'
-        : 'Запуск ещё не начинался: сохранённых расходов нет.', roleNames);
+      return withSubscription(zeroSummary(started ? 'Запросов ещё не было: сохранённых расходов нет.'
+        : 'Запуск ещё не начинался: сохранённых расходов нет.', roleNames));
     }
     if (!hasCost) {
-      return unknownSummary('Подробный отчёт о расходе не распознан; итог неполный.',
-        roleNames, { calls: sessionCalls });
+      return withSubscription(unknownSummary('Подробный отчёт о расходе не распознан; итог неполный.',
+        roleNames, { calls: sessionCalls }));
     }
 
-    const rows = parsed.rows;
+    const rows = subscription ? parsed.rows.filter(row => row.model !== workerModel) : parsed.rows;
     let totalKnown = null, totalComplete = false, knownTotal = null;
     let estimatedRequests = null, reportedCalls = null, missing = null;
     if (parsed.totalLine !== null && parsed.totalLine.indexOf('полной суммы нет') < 0) {
@@ -291,7 +306,7 @@
         + (roles.worker.known === null ? 0 : roles.worker.known);
       unallocatedAmount = Math.max(knownTotal - allocated, 0);
     }
-    return {
+    return withSubscription({
       lead: { value: roleValue(roles.lead), amount: roles.lead.known,
         assigned: roles.lead.assigned, incomplete: roles.lead.assigned && roles.lead.incomplete },
       worker: { value: roleValue(roles.worker), amount: roles.worker.known,
@@ -302,7 +317,7 @@
       breakdownIncomplete,
       unallocated: { amount: unallocatedAmount, incomplete: unallocatedUnknown },
       calls: reportedCalls, missing, estimated: estimatedRequests,
-    };
+    });
   }
 
   root.SymphonyApiTeamCosts = { summary, micros, usd, count };

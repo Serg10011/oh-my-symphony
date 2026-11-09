@@ -13,6 +13,14 @@
     api_assignment_changed: 'Задача или настройки изменились после подтверждения; платный запуск отменён.',
     api_permission_revoked: 'Разрешение доски отозвано или изменилось. Новые обращения к моделям остановлены.',
     execution_preflight_failed: 'Проверка изоляции не прошла; модели не запускались.',
+    flash_cli_unavailable: 'На Mac недоступен Antigravity CLI для Flash.',
+    flash_customizations_active: 'Активные расширения Antigravity мешают проверить ограничения Flash.',
+    flash_worker_failed: 'Сбой исполнителя Flash. Сохранённый расход доступен в отчёте.',
+    flash_gate_rejected: 'Ограничения доступа Flash не подтверждены.',
+    flash_gate_unverified: 'Проверка ограничений Flash не прошла.',
+    flash_capacity_unavailable: 'Antigravity сообщил об ограничении квоты или доступности Flash. Остаток можно обновить в настройках.',
+    flash_quota_exhausted: 'По последнему снимку квота Gemini исчерпана.',
+    flash_output_limit: 'Ответ Flash превысил порог выходных токенов.',
     workspace_command_outside_scope: 'Команда записала файл вне разрешённых путей. Её изменения отклонены.',
   };
   const number = value => Number.isFinite(value) ? value.toLocaleString('ru-RU') : 'не указан';
@@ -35,9 +43,10 @@
     const spendLead = el('dd');
     const spendWorker = el('dd');
     const spendTotal = el('dd');
+    const spendTotalLabel = el('dt', {}, 'Итого');
     const spendList = el('dl', { class: 'api-team-assignment' }, [
       el('dt', {}, 'Ведущий'), spendLead, el('dt', {}, 'Исполнитель'), spendWorker,
-      el('dt', {}, 'Итого'), spendTotal,
+      spendTotalLabel, spendTotal,
     ]);
     const spendNote = el('p', { class: 'form-hint' });
     const spend = el('div', { class: 'api-team-spend', role: 'group', 'aria-label': 'Расход команды' },
@@ -149,6 +158,10 @@
         (data.delivered ? 'Версия принята, PR открыт' : 'Версия принята, ожидает создания PR');
       if (data.stop_requested && data.status === 'running') status.textContent += '. Остановка запрошена; текущий ответ ещё может оплачиваться.';
       if (data.reason) status.textContent += ' ' + (reasons[data.reason] || 'Причина остановки указана в отчёте.');
+      if (data.gemini_wait_until) {
+        const reset = new Date(data.gemini_wait_until);
+        if (Number.isFinite(reset.getTime())) status.textContent += ' Обновление квоты ожидается ' + reset.toLocaleString('ru-RU') + '.';
+      }
       if (data.session?.execution?.review_source === 'before_command')
         status.textContent += ' Можно посмотреть правки, сохранённые до этой команды.';
       if (data.status !== 'prepared') token = null;
@@ -217,6 +230,7 @@
         };
         setText(spendLead, spendData.lead.value);
         setText(spendWorker, spendData.worker.value);
+        setText(spendTotalLabel, spendData.subscription ? 'Итого по API' : 'Итого');
         setText(spendTotal, spendData.total.value);
         setText(spendNote, spendData.note);
         markSpend(spendLead, spendData.lead.incomplete);
@@ -232,8 +246,15 @@
       if (data.profiles) {
         onProfiles?.(data.profiles);
         const limits = data.limits || {}, project = data.project || {};
+        const subscription = data.profiles.worker?.provider === 'antigravity';
         const rows = [
-          ['Ведущий', model(data.profiles.lead)], ['Исполнитель', model(data.profiles.worker)],
+          ['Ведущий', model(data.session?.lead_effort?.current ? { ...data.profiles.lead, effort: data.session.lead_effort.current } : data.profiles.lead)],
+          ['Исполнитель', model(data.profiles.worker)],
+          ...(subscription ? [
+            ['Доступ Flash', 'Подписка Antigravity. Дополнительные кредиты выключены.'],
+            ['Порог ответа Flash', 'Конвейер проверяет объём после ответа и до выполнения операций.'],
+          ] : []),
+          ...(data.lead_escalation === 'high-to-max' ? [['Повышение усилия', 'Ведущий может повысить high до max с записью причины.']] : []),
           ...(data.mode ? [['Режим', data.mode === 'economy' ? 'Экономия' : 'Продуктивность']] : []),
           ['Денежный потолок', data.budget ? `${data.budget.max_usd} USD` : 'без отдельного денежного потолка'],
           ['Аварийный предел запросов', number(limits.max_calls)],

@@ -92,6 +92,8 @@ class Permission:
                  "team": team, "mode": raw.get("mode"), "profiles": session._profiles(spec),
                  "paths": spec["project"]["paths"], "budget": spec.get("budget"), "limits": spec["limits"],
                  "budget_scope": "per_task", "process_timeout_seconds": self.context["process_timeout_seconds"]}
+        if "lead_escalation" in spec:
+            terms["lead_escalation"] = spec["lead_escalation"]
         binding = {"terms": terms, "context": self.context, "settings_path": str(self.settings),
                    "settings": raw, "repository_identity": [info.st_dev, info.st_ino],
                    "workflow": hashlib.sha256(self.workflow.read_bytes()).hexdigest(),
