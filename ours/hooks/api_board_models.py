@@ -10,8 +10,10 @@ import stat
 
 import api_board_config as config
 import api_executor as api
+import api_gemini_quota as quota
 import api_project as project
 import api_session as session
+from api_flash_probe import ProbeError
 from symphony.errors import SymphonyError
 from symphony.trackers.file import parse_ticket_file
 
@@ -36,7 +38,7 @@ def pair(value):
             or not isinstance(value["lead_profile"], str)
             or value["worker_profile"] is not None and not isinstance(value["worker_profile"], str)):
         raise session.SessionError("invalid_composition")
-    session.validate_spec({"task": "team", **value})
+    session.validate_composition(value["lead_profile"], value["worker_profile"])
     return dict(value)
 
 
@@ -48,12 +50,13 @@ def from_spec(spec):
 def catalog():
     choices = []
     for lead in api.PROFILES:
-        for worker in [*api.PROFILES, None]:
+        for worker in [*api.PROFILES, api.FLASH_WORKER, None]:
             try:
                 choices.append(pair({"lead_profile": lead, "worker_profile": worker}))
             except session.SessionError:
                 pass
-    return {"pairs": choices, "models": {p.name: p.model for p in api.PROFILES.values()}}
+    profiles = [*api.PROFILES.values(), api.FLASH_PROFILE]
+    return {"pairs": choices, "models": {p.name: p.model for p in profiles}}
 
 
 def _checked_dir(path):
@@ -74,6 +77,7 @@ class Teams:
             raise session.SessionError("invalid_composition")
         self.file = self.base / "team-defaults" / (self.kind + ".json")
         self.work_file = self.base / "work-settings" / (self.kind + ".json")
+        self.quota_file = self.base / "gemini-quota" / "snapshot.json"
 
     def default(self, raw=None):
         if self.file.exists() or self.file.is_symlink():
@@ -106,6 +110,35 @@ class Teams:
     def defaults(self):
         raw, revision = self.work_settings(config.load_settings(self.settings))
         return raw, self.default(raw), revision
+
+    def saved_gemini_quota(self):
+        path = self.quota_file
+        try:
+            if not path.is_file() or path.is_symlink() or path.stat().st_size > quota.MAX_BYTES:
+                return None
+            _checked_dir(self.base)
+            return quota.saved_snapshot(session._decode(session._read_state(session._path(path))))
+        except (OSError, session.SessionError, ProbeError):
+            return None
+
+    def refresh_gemini_quota(self):
+        self.base.mkdir(mode=0o700, exist_ok=True)
+        _checked_dir(self.base)
+        folder = self.quota_file.parent
+        folder.mkdir(mode=0o700, exist_ok=True)
+        _checked_dir(folder)
+        path = session._path(self.quota_file)
+        with session._lock(path):
+            snapshot = self.saved_gemini_quota()
+            if not quota.recent(snapshot, 5):
+                try:
+                    snapshot = quota.saved_snapshot(quota.read(temporary_root=folder))
+                except (OSError, ProbeError):
+                    raise session.SessionError("gemini_quota_unavailable") from None
+                if snapshot["status"] == "unavailable":
+                    raise session.SessionError("gemini_quota_unavailable")
+                session._save(path, snapshot)
+        return {"gemini_quota": snapshot}
 
     def has_queued_work(self, *, board_permission_only=False):
         assignments = self.base / "api-team"
@@ -181,4 +214,5 @@ class Teams:
             frozen["authorization_id"] = permission["id"]
         work = {"mode": raw.get("mode"), "paths": raw["paths"]}
         return {"default": default, "creation_defaults": frozen, "work_settings": work, "project_binding": self.binding,
+                "gemini_quota": self.saved_gemini_quota(),
                 "assignments": assigned, "execution_permission": permission, **catalog()}

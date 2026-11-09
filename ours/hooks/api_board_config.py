@@ -24,7 +24,7 @@ def load_settings(path: Path) -> dict:
             or ("mode" in raw and raw["mode"] not in MODES)
             or ("route" in raw and raw["route"] != "single-api")
             or not isinstance(raw["session"], dict)
-            or set(raw["session"]) - {"context", "lead_profile", "worker_profile", "lead_effort", "limits", "budget"}):
+            or set(raw["session"]) - {"context", "lead_profile", "worker_profile", "lead_effort", "lead_escalation", "limits", "budget"}):
         raise session.SessionError("invalid_api_board_settings")
     return raw
 
@@ -44,13 +44,19 @@ def with_work_settings(raw, mode, paths):
 def session_options(raw, roles):
     options = {**raw["session"], **roles}
     lead = options.get("lead_profile", "deepseek-lead")
+    configured_lead = raw["session"].get("lead_profile", "deepseek-lead")
+    flash_worker = options.get("worker_profile") == api.FLASH_WORKER
+    if lead != configured_lead and lead != "sol-lead":
+        options.pop("lead_escalation", None)
     if "mode" in raw:
         if "lead_effort" in raw["session"]:
             raise session.SessionError("invalid_api_board_settings")
         if lead not in ("deepseek-lead", "sol-lead"):
             raise session.SessionError("invalid_composition")
-        options["lead_effort"] = "max" if raw["mode"] == "productivity" else api.profile_for(lead).effort
-    elif lead != raw["session"].get("lead_profile", "deepseek-lead"):
+        ordinary = "high" if "lead_escalation" in options or flash_worker else api.profile_for(lead).effort
+        options["lead_effort"] = "max" if raw["mode"] == "productivity" else ordinary
+    elif lead != configured_lead or (flash_worker and raw["session"].get("worker_profile") != api.FLASH_WORKER
+                                     and options.get("lead_effort") not in ("high", "max")):
         options.pop("lead_effort", None)
     return options
 

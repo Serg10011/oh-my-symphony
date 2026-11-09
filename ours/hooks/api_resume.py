@@ -43,7 +43,8 @@ def _verify_request(state, call, history):
     if call.get("history_items") != len(history) + 1 or not isinstance(call.get("resources"), dict):
         _reject()
     request = session._build_request(state, history, call["output_cap"], call["resources"],
-                                     part_id=call.get("part_id"), request_version=call.get("request_version", 1))
+                                     part_id=call.get("part_id"), request_version=call.get("request_version", 1),
+                                     call_index=call["index"])
     _, body = session.api.prepare(call["profile"], request)
     if _digest(session._encode(body)) != call.get("request_sha256"):
         raise session.SessionError("resume_request_changed")

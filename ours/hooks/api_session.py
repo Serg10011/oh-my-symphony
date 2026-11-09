@@ -5,7 +5,7 @@ from __future__ import annotations
 from contextvars import ContextVar
 
 import argparse
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 import fcntl
@@ -23,6 +23,10 @@ import api_executor as api
 import api_budget as budget
 import api_project as project
 import api_cache
+import api_effort
+import api_flash_probe as flash_probe
+import api_flash_protocol as flash_protocol
+import api_flash_transport as flash_transport
 import api_workspace as workspace
 import api_sandbox as sandbox
 
@@ -56,6 +60,12 @@ DELEGATE_TOOL = {"type": "function", "name": "delegate_luna",
                      "kind": {"type": "string", "enum": ["start", "correction"]}},
                      "required": ["part_id", "message", "kind"], "additionalProperties": False},
                  "strict": True}
+FLASH_DELEGATE_TOOL = {**DELEGATE_TOOL, "name": "delegate_worker"}
+FLASH_PART_INSTRUCTIONS = """Each message identifies a part_id and contains new
+assignments or project tool results for that part. Follow the current part and
+its resource counters. The response output ceiling is checked after your
+reply. Keep replies within the stated allowance.
+"""
 
 PROJECT_LEAD_INSTRUCTIONS = """You lead the assigned task. Understand it, choose the
 solution and organize work yourself. Delegate coherent useful parts to Luna only
@@ -164,14 +174,21 @@ def _text(value, limit: int, *, empty: bool = False) -> bool:
     return isinstance(value, str) and (empty or bool(value.strip())) and len(_encode(value)) <= limit
 
 
+def validate_composition(lead, worker):
+    if (lead not in ("deepseek-lead", "sol-lead") or worker not in (None, "luna-worker", api.FLASH_WORKER)
+            or (lead == "deepseek-lead" and worker != "luna-worker")):
+        raise SessionError("invalid_composition")
+
+
 def validate_spec(raw: dict) -> dict:
-    allowed = {"task", "context", "lead_profile", "worker_profile", "lead_effort", "limits", "budget", "project", "execution"}
+    allowed = {"task", "context", "lead_profile", "worker_profile", "lead_effort", "lead_escalation", "limits", "budget", "project", "execution"}
     if not isinstance(raw, dict) or set(raw) - allowed or not _text(raw.get("task"), 65536):
         raise SessionError("invalid_spec")
     lead, worker = raw.get("lead_profile", "deepseek-lead"), raw.get("worker_profile", "luna-worker")
-    if (lead not in ("deepseek-lead", "sol-lead") or worker not in (None, "luna-worker")
-            or (lead == "deepseek-lead" and worker is None)):
-        raise SessionError("invalid_composition")
+    validate_composition(lead, worker)
+    flash_worker = worker == api.FLASH_WORKER
+    if flash_worker and "execution" not in raw:
+        raise SessionError("flash_requires_execution")
     context = raw.get("context", "")
     if not _text(context, 131072, empty=True):
         raise SessionError("invalid_context")
@@ -187,13 +204,18 @@ def validate_spec(raw: dict) -> dict:
               "request_bytes": (1024, api.MAX_REQUEST_BYTES)}
     if any(type(limits[k]) is not int or not low <= limits[k] <= high for k, (low, high) in bounds.items()):
         raise SessionError("invalid_limits")
-    effort = raw.get("lead_effort", api.profile_for(lead).effort)
+    escalation = raw.get("lead_escalation", api_effort.POLICY if flash_worker else None)
+    effort = raw.get("lead_effort", "high" if escalation else api.profile_for(lead).effort)
     try:
         api.validate_effort(lead, effort)
     except api.ExecutorError:
         raise SessionError("invalid_lead_effort") from None
     result = {"task": raw["task"], "context": context, "lead_profile": lead,
               "worker_profile": worker, "lead_effort": effort, "limits": limits}
+    if "lead_escalation" in raw or flash_worker:
+        if escalation != api_effort.POLICY or lead != "sol-lead" or effort not in {"high", "max"}:
+            raise SessionError("invalid_lead_escalation")
+        result["lead_escalation"] = api_effort.POLICY
     if "budget" in raw:
         try:
             result["budget"] = budget.validate(raw["budget"])
@@ -341,11 +363,15 @@ def _load(path: Path, *, raw: bytes | None = None) -> dict:
         if call["status"] == "received" and (not isinstance(call.get("response"), dict)
                                               or not isinstance(call["response"].get("usage"), dict)):
             raise SessionError("invalid_state")
+        if call["profile"] == api.FLASH_WORKER:
+            _validate_flash_call(call, state["parts"], state["profiles"].get("worker"))
     for part_id, part in state["parts"].items():
         if (not api.NAME_RE.fullmatch(part_id) or not isinstance(part, dict)
                 or type(part.get("attempts")) is not int or not 1 <= part["attempts"] <= 2
                 or not isinstance(part.get("history"), list)):
             raise SessionError("invalid_state")
+    if not api_effort.valid(state):
+        raise SessionError("invalid_effort_history")
     if state["status"] == "prepared" and (calls or state["parts"] or state["tool_errors"]
             or state["lead_history"] != [{"role": "user", "content": spec["task"]}]):
         raise SessionError("invalid_state")
@@ -388,14 +414,46 @@ def _load(path: Path, *, raw: bytes | None = None) -> dict:
     return state
 
 
+def _validate_flash_call(call, parts, profile):
+    part_id = call.get("part_id")
+    if (not isinstance(part_id, str) or part_id not in parts or not isinstance(profile, dict)
+            or profile.get("name") != api.FLASH_WORKER or profile.get("provider") != "antigravity"
+            or not isinstance(profile.get("model"), str)):
+        raise SessionError("invalid_flash_state")
+    if call["status"] == "received":
+        response = call["response"]
+        if (response.get("model") != profile["model"] or response.get("billing") != "subscription"
+                or not isinstance(response.get("conversation_id"), str) or not response["conversation_id"]):
+            raise SessionError("invalid_flash_state")
+        usage = response["usage"]
+    elif call["status"] == "error":
+        error = call.get("error")
+        if (not isinstance(error, dict) or type(error.get("quota_usage_possible")) is not bool
+                or not isinstance(error.get("error"), str) or not re.fullmatch(r"flash_[a-z_]{1,80}", error["error"])):
+            raise SessionError("invalid_flash_state")
+        usage = call.get("usage")
+        if usage is None:
+            return
+    else:
+        return
+    try:
+        if not isinstance(usage, dict) or usage != flash_protocol.usage_delta(usage.get("provider_usage_delta")):
+            raise flash_protocol.ProtocolError("flash_invalid_usage_record")
+    except flash_protocol.ProtocolError:
+        raise SessionError("invalid_flash_state") from None
+
+
 def create(path, spec: dict) -> dict:
     spec, path = validate_spec(spec), _path(path)
     state = {"version": 1, "status": "prepared", "spec": spec, "created_at": _now(),
              "profiles": _profiles(spec),
              "output_limits": {p: min(spec["limits"]["output_tokens_per_call"], api.output_limit(p))
+                               if p != api.FLASH_WORKER else spec["limits"]["output_tokens_per_call"]
                                for p in (spec["lead_profile"], spec["worker_profile"]) if p},
              "lead_history": [{"role": "user", "content": spec["task"]}], "parts": {},
              "calls": [], "tool_errors": [], "result": None, "stop_reason": None}
+    if api_effort.enabled(spec):
+        state["effort_events"] = []
     if "project" in spec:
         try:
             spec["project"], state["project_snapshot"] = project.snapshot(spec["project"])
@@ -405,7 +463,8 @@ def create(path, spec: dict) -> dict:
     if "budget" in spec:
         try:
             state.update(budget_catalog=budget.snapshot(), preflights=[])
-            if any(p["model"] not in state["budget_catalog"]["models"] for p in state["profiles"].values() if p):
+            if any(p["model"] not in state["budget_catalog"]["models"]
+                   for p in state["profiles"].values() if p and p["name"] != api.FLASH_WORKER):
                 raise budget.BudgetError("unpriced_model")
         except budget.BudgetError as exc:
             raise SessionError(str(exc)) from None
@@ -429,11 +488,8 @@ def create(path, spec: dict) -> dict:
 def _spent(state: dict) -> int:
     total = 0
     for call in state["calls"]:
-        if call["status"] == "received":
-            output = call["response"]["usage"].get("output_tokens")
-            total += output if type(output) is int else call["output_cap"]
-        elif call.get("error", {}).get("charge_possible", True):
-            total += call["output_cap"]
+        output = _request_usage(call)["output_tokens"]
+        total += output if output is not None else call["output_cap"]
     return total
 
 
@@ -454,7 +510,10 @@ def _resources(state: dict, cap: int, *, worker: bool) -> dict:
               "calls_available_to_you": max(0, calls - reserved_calls),
               "output_tokens_available_to_you": max(0, tokens - reserved_tokens),
               "last_available_call": calls - reserved_calls <= 1}
-    if "budget" in state["spec"]:
+    subscription = worker and state["spec"]["worker_profile"] == api.FLASH_WORKER
+    if subscription:
+        result["response_output_cap_enforced_by_provider"] = False
+    if "budget" in state["spec"] and not subscription:
         used = budget.totals(state)["input_tokens_committed"]
         result["input_tokens_remaining"] = max(0, state["spec"]["budget"]["input_tokens_total"] - used)
     return result
@@ -473,12 +532,15 @@ def summary(state: dict) -> dict:
             continue
         calls = [c for c in state["calls"] if c["profile"] == profile]
         record = {"calls": len(calls)}
-        for key in ["input_tokens", "output_tokens", "cached_input_tokens", "cache_write_input_tokens", "reasoning_tokens"]:
-            values = [c["response"]["usage"].get(key) if c["status"] == "received"
-                      else (None if c.get("error", {}).get("charge_possible", True) else 0) for c in calls]
+        usage_rows = [_request_usage(call) for call in calls]
+        for key in USAGE_KEYS:
+            values = [row[key] for row in usage_rows]
             record[key] = sum(values) if all(type(v) is int for v in values) else None
         record["total_tokens"] = (record["input_tokens"] + record["output_tokens"]
                                   if record["input_tokens"] is not None and record["output_tokens"] is not None else None)
+        if profile == api.FLASH_WORKER:
+            record.update(billing="subscription", known_total_tokens=sum(row["total_tokens"] or 0 for row in usage_rows),
+                          unknown_usage_calls=sum(not row["usage_known"] for row in usage_rows))
         usage[profile] = record
     result = {"version": 1, "status": state["status"], "task_acceptance": "not_evaluated",
             "profiles": state["profiles"],
@@ -508,6 +570,8 @@ def summary(state: dict) -> dict:
             result["execution"]["review_source"] = "before_command"
     if "resumptions" in state:
         result["resumptions"] = state["resumptions"]
+    if api_effort.enabled(state["spec"]):
+        result["lead_effort"] = api_effort.summary(state)
     return result
 
 
@@ -547,7 +611,10 @@ def _request_usage(call: dict) -> dict:
         raw = call["response"].get("usage")
         raw = raw if isinstance(raw, dict) else {}
         values = {key: raw.get(key) for key in USAGE_KEYS}
-    elif call["status"] == "error" and not call.get("error", {}).get("charge_possible", True):
+    elif call["status"] == "error" and call["profile"] == api.FLASH_WORKER and isinstance(call.get("usage"), dict):
+        values = {key: call["usage"].get(key) for key in USAGE_KEYS}
+    elif call["status"] == "error" and not call.get("error", {}).get(
+            "quota_usage_possible" if call["profile"] == api.FLASH_WORKER else "charge_possible", True):
         values = dict.fromkeys(USAGE_KEYS, 0)
     else:
         values = dict.fromkeys(USAGE_KEYS)
@@ -599,7 +666,8 @@ def _request_record(call: dict, profiles: dict, catalog: dict) -> dict:
     requested_model = known.get("model") if isinstance(known, dict) else None
     model = call.get("response", {}).get("model", requested_model)
     usage = _request_usage(call)
-    amount, status = _estimate_request(catalog, model, usage)
+    subscription = profile == api.FLASH_WORKER
+    amount, status = (None, "subscription") if subscription else _estimate_request(catalog, model, usage)
     record = {"index": call["index"], "profile": profile,
               "model": model if isinstance(model, str) else "unknown",
               "requested_model": requested_model,
@@ -608,7 +676,13 @@ def _request_record(call: dict, profiles: dict, catalog: dict) -> dict:
               "finished_at": call.get("finished_at"), "usage": usage,
               "estimated_usd": amount, "estimate_status": status,
               "provider_billed_usd": None}
+    if subscription:
+        record["billing"] = "subscription"
+        if call["status"] == "error":
+            record["failure"] = call["error"]["error"]
     reservation = call.get("budget_reservation")
+    if "effort" in call:
+        record["effort"] = call["effort"]
     if isinstance(reservation, dict):
         record["budget_reservation"] = {key: value for key, value in reservation.items()
                                         if key in ("input_tokens", "cost_usd", "basis",
@@ -637,6 +711,11 @@ def _model_records(records: list[dict], catalog: dict) -> dict:
         grouped.setdefault(record["model"], []).append(record)
     result = {}
     for model, calls in grouped.items():
+        if calls[0].get("billing") == "subscription":
+            result[model] = {**_token_counts(calls), "model": model, "billing": "subscription",
+                             "known_total_tokens": sum(call["usage"]["total_tokens"] or 0 for call in calls),
+                             "estimated_usd": None}
+            continue
         amounts = [call["estimated_usd"] for call in calls]
         amount = _cost_sum(amounts) if all(value is not None for value in amounts) else None
         row = catalog["models"].get(model)
@@ -653,6 +732,9 @@ def _model_records(records: list[dict], catalog: dict) -> dict:
 
 
 def _cost_report(records: list[dict], catalog: dict, source: str) -> dict:
+    api_records = [record for record in records if record.get("billing") != "subscription"]
+    subscription_calls = len(records) - len(api_records)
+    records = api_records
     amounts = [record["estimated_usd"] for record in records]
     missing = sum(1 for amount in amounts if amount is None)
     total = _cost_sum(amounts) if not missing else None
@@ -667,13 +749,17 @@ def _cost_report(records: list[dict], catalog: dict, source: str) -> dict:
                    "provider_invoice_not_verified"]
     if unknown_writes:
         assumptions.append("unknown_cache_writes_priced_at_catalog_write_rate")
-    return {"estimated_total_usd": total, "estimate_complete": total is not None,
+    scope = {"api_requests": len(records), "subscription_requests": subscription_calls} if subscription_calls else {}
+    if subscription_calls:
+        assumptions.append("subscription_quota_reported_separately")
+    return {"estimated_total_usd": total, "estimate_complete": total is not None, **scope,
             "estimated_known_usd": _cost_sum([amount for amount in amounts if amount is not None]),
             "estimated_requests": len(records) - missing,
             "estimate_kind": "conservative_catalog_estimate",
             "requests_without_estimate": missing, "cache_write_unknown_calls": unknown_writes,
             "provider_billed_total_usd": None, "provider_invoice_verified": False,
-            "cost_scope": "generation_requests_of_this_session_only; provider_invoice_not_verified",
+            "cost_scope": ("api_generation_requests_only; provider_invoice_not_verified" if subscription_calls
+                           else "generation_requests_of_this_session_only; provider_invoice_not_verified"),
             "tariff": {"version": catalog.get("version"), "verified_on": catalog.get("verified_on"),
                        "valid_until": catalog.get("valid_until"), "source": source},
             "unpriced_models": sorted({record["model"] for record in records
@@ -704,6 +790,8 @@ def spend_report(state: dict) -> dict:
               "calls": len(records), "requests": records,
               "by_model": _model_records(records, catalog), "totals": _token_counts(records),
               "cost": _cost_report(records, catalog, source)}
+    if api_effort.enabled(state["spec"]):
+        result["lead_effort"] = api_effort.summary(state)
     if "budget" in state["spec"]:
         result["budget"] = _budget_report(state, catalog)
     return result
@@ -730,6 +818,8 @@ REPORT_ASSUMPTIONS = {
         "неизвестный объём записи в кеш оценён сверху каталожной ставкой записи",
     "provider_invoice_not_verified":
         "счёт провайдера не сверен: фактические списания неизвестны и могут отличаться от оценки",
+    "subscription_quota_reported_separately":
+        "токены Flash учитываются в подписке Antigravity отдельно от денежного бюджета API",
 }
 
 REPORT_TARIFF_SOURCES = {"session_snapshot": "снимок сессии", "builtin_catalog": "встроенный каталог"}
@@ -747,6 +837,16 @@ REPORT_STOP_REASONS = {
     "api_error": "ошибка при обращении к провайдеру",
     "unknown_usage": "провайдер не подтвердил расход токенов",
     "provider_output_limit": "ответ достиг предела выходных токенов провайдера",
+    "flash_output_limit": "ответ Flash превысил порог выходных токенов. Операции из ответа не выполнены",
+    "flash_worker_failed": "сбой исполнителя Flash",
+    "flash_cli_unavailable": "на Mac недоступен Antigravity CLI для Flash",
+    "flash_customizations_active": "глобальные расширения Antigravity мешают проверить ограничения Flash",
+    "flash_customizations_unreadable": "не удалось проверить расширения Antigravity",
+    "flash_startup_failed": "не удалось подготовить Antigravity на Mac",
+    "flash_gate_rejected": "не подтверждены ограничения доступа Flash",
+    "flash_gate_unverified": "проверка ограничений Flash не прошла",
+    "flash_cleanup_unconfirmed": "завершение процесса Flash не подтверждено",
+    "flash_capacity_unavailable": "Antigravity сообщил об ограничении квоты или доступности Flash",
     "incomplete_response": "получен незавершённый ответ",
     "model_refusal": "модель отказалась выполнять запрос",
     "invalid_tool_batch": "некорректный пакет вызовов инструментов",
@@ -813,6 +913,8 @@ def _counter_line(title: str, total, subset, subset_title: str) -> str:
 
 def _model_cost_line(row: dict) -> str:
     """Describe a model subtotal honestly: complete, partial or absent."""
+    if row.get("billing") == "subscription":
+        return "стоимость: подписка Antigravity"
     total, known = row.get("estimated_usd"), row.get("estimated_known_usd")
     if isinstance(total, str):
         return f"стоимость: {_usd(total)} — осторожная оценка по каталогу"
@@ -841,6 +943,9 @@ def render_report(data: dict) -> str:
     cost = data.get("cost") if isinstance(data.get("cost"), dict) else {}
     models = data.get("by_model") if isinstance(data.get("by_model"), dict) else {}
     budget_row = data.get("budget") if isinstance(data.get("budget"), dict) else None
+    profiles = data.get("profiles")
+    worker = profiles.get("worker") if isinstance(profiles, dict) else None
+    subscription = isinstance(worker, dict) and worker.get("name") == api.FLASH_WORKER
     lines = ["Отчёт о расходе сессии api-session",
              "Локальная оценка по сохранённым счётчикам: провайдер не опрашивается, счёт не сверяется.",
              "",
@@ -850,6 +955,15 @@ def render_report(data: dict) -> str:
     lines.append(f"  создана: {_label(data.get('created_at'))}")
     lines.append(f"  начата: {_label(data.get('started_at'))}")
     lines.append(f"  завершена: {_label(data.get('finished_at'))}")
+    if isinstance(data.get("lead_effort"), dict):
+        effort = data["lead_effort"]
+        lines.append(f"  усилие ведущего: {_label(effort.get('initial'))} → {_label(effort.get('current'))}")
+        for event in effort.get("events", []):
+            # The board also reads totals from this text. Model-supplied reasons
+            # must never introduce new report rows or headings.
+            reason = " ".join(_label(event.get("reason")).split())
+            lines.append(f"  повышение ведущим с запроса №{_count(event.get('effective_call_index'))}: "
+                         f"{reason}")
     lines.append(f"  запросов: {_count(totals.get('calls'))}"
                  f" · без подтверждённого расхода: {_count(totals.get('unknown_usage_calls'))}")
     if budget_row is None:
@@ -857,6 +971,8 @@ def render_report(data: dict) -> str:
     else:
         lines.append(f"  бюджет: включён · до {_usd(budget_row.get('max_usd'))} и"
                      f" {_count(budget_row.get('input_tokens_total'))} входных токенов")
+        if subscription:
+            lines.append("  Денежный и входной бюджет относится к обращениям через API.")
         lines.append(f"  сумма исходных резервов: {_usd(budget_row.get('reserved_cost_usd'))} ·"
                      f" верхняя оценка расхода: {_usd(budget_row.get('generation_cost_upper_usd'))}")
         lines.append("  входных токенов списано по бюджету:"
@@ -881,6 +997,9 @@ def render_report(data: dict) -> str:
                                            row.get("reasoning_tokens"), "рассуждения"))
         lines.append(f"    всего токенов: {_count(row.get('total_tokens'))}")
         lines.append("    " + _model_cost_line(row))
+        if row.get("billing") == "subscription" and row.get("unknown_usage_calls"):
+            lines.append(f"    известная часть: {_count(row.get('known_total_tokens'))} токенов"
+                         f" · без счётчика: {_count(row.get('unknown_usage_calls'))}")
         rates = row.get("rates_per_million_tokens")
         if isinstance(rates, dict):
             lines.append("    тариф в USD за 1 млн токенов: " + _rates_line(rates)
@@ -899,18 +1018,25 @@ def render_report(data: dict) -> str:
         lines.append(f"  без подтверждённого расхода: {_count(unknown)} запрос(ей):"
                      " их токены и стоимость не оцениваются")
     lines += ["", "Стоимость и полнота оценки"]
+    if subscription:
+        lines.append("  В денежную оценку входят обращения через API.")
     if isinstance(cost.get("estimated_total_usd"), str):
         amount = _usd(cost.get("estimated_total_usd"))
         lines.append(f"  оценка за всю сессию: {amount} — осторожная, по каталогу")
     else:
         lines.append("  оценка за всю сессию: полной суммы нет")
     lines.append(f"  известная часть: {_usd(cost.get('estimated_known_usd'))} за"
-                 f" {_count(cost.get('estimated_requests'))} из {_count(totals.get('calls'))} запросов")
+                 f" {_count(cost.get('estimated_requests'))} из {_count(cost.get('api_requests', totals.get('calls')))} запросов")
     missing = cost.get("requests_without_estimate")
     note = " — их списание не считается нулевым" if type(missing) is int and missing else ""
     lines.append(f"  запросов без оценки: {_count(missing)}" + note)
     for request in data.get("requests") or []:
-        if isinstance(request, dict) and request.get("estimated_usd") is None:
+        if not isinstance(request, dict):
+            continue
+        if request.get("billing") == "subscription":
+            if request.get("failure"):
+                lines.append(f"    №{_count(request.get('index'))} · Flash · {_label(request.get('failure'))}")
+        elif request.get("estimated_usd") is None:
             reason = _report_label(request.get("estimate_status"), REPORT_ESTIMATE_REASONS)
             lines.append(f"    №{_count(request.get('index'))} · {_label(request.get('model'))}: {reason}")
     unknown_writes = cost.get("cache_write_unknown_calls")
@@ -972,7 +1098,10 @@ def _credentials(spec: dict, environ) -> None:
     for name in [spec["lead_profile"], spec["worker_profile"]]:
         if name is None:
             continue
-        key = environ.get(api.profile_for(name).key_env, "")
+        key_name = api.profile_for(name).key_env
+        if key_name is None:
+            continue
+        key = environ.get(key_name, "")
         if not key:
             raise SessionError("missing_api_key")
         if not isinstance(key, str) or not all(33 <= ord(c) <= 126 for c in key):
@@ -983,15 +1112,17 @@ def _request_format(spec):
     return 3 if "execution" in spec else 2
 
 
-def _build_request(state, history, cap, resources, *, part_id=None, request_version=None):
+def _build_request(state, history, cap, resources, *, part_id=None, request_version=None, call_index=None):
     """Pure request construction, also used to verify a saved recovery boundary."""
     spec, limits = state["spec"], state["spec"]["limits"]
+    flash_worker = spec["worker_profile"] == api.FLASH_WORKER
+    delegate = [FLASH_DELEGATE_TOOL if flash_worker else DELEGATE_TOOL] if spec["worker_profile"] else []
     if request_version is None:
         request_version = _request_format(spec)
     if part_id is None:
         instructions = LEAD_INSTRUCTIONS + "\nLimits: " + json.dumps(limits) + "\nProject context:\n" + spec["context"]
         request = {"input": history, "instructions": instructions, "effort": spec["lead_effort"],
-                   "tools": [DELEGATE_TOOL] if spec["worker_profile"] else [], "max_output_tokens": cap}
+                   "tools": delegate, "max_output_tokens": cap}
     else:
         request = {"input": history, "instructions": WORKER_INSTRUCTIONS, "max_output_tokens": cap}
     if "project" in spec:
@@ -1001,7 +1132,7 @@ def _build_request(state, history, cap, resources, *, part_id=None, request_vers
         if part_id is None:
             instructions += "\nProject context:\n" + spec["context"]
         request["instructions"] = instructions
-        request["tools"] = list(project.TOOLS if request_version >= 2 else project.LEGACY_TOOLS) + ([DELEGATE_TOOL] if part_id is None and spec["worker_profile"] else [])
+        request["tools"] = list(project.TOOLS if request_version >= 2 else project.LEGACY_TOOLS) + (delegate if part_id is None else [])
         if request_version >= 2:
             request["instructions"] += "\nUse search_project_files for discovery before reading many files. Follow returned cursors; read offsets are Unicode characters, not file bytes."
     if "execution" in spec:
@@ -1017,8 +1148,15 @@ def _build_request(state, history, cap, resources, *, part_id=None, request_vers
             instructions += "\nProject context:\n" + spec["context"]
         instructions += "\nUse the task's language. Search before reading many files; follow returned cursors."
         request["instructions"] = instructions
-        request["tools"] = list(workspace.TOOLS) + ([DELEGATE_TOOL] if part_id is None and spec["worker_profile"] else [])
+        request["tools"] = list(workspace.TOOLS) + (delegate if part_id is None else [])
+        if flash_worker:
+            request["instructions"] += ("\n" + FLASH_PART_INSTRUCTIONS if part_id is not None else
+                                        "\nThe worker is Gemini Flash. Use delegate_worker for its assignments.")
     # Append transient counters after the stable context; never accumulate them in history.
+    if part_id is None and api_effort.enabled(spec):
+        request["effort"] = api_effort.current(state, call_index)
+        request["tools"] = request.get("tools", []) + [api_effort.TOOL]
+        request["instructions"] += "\n" + api_effort.INSTRUCTIONS
     request["instructions"] += "\n" + RESOURCE_INSTRUCTIONS
     if "execution" in spec and request_version >= 3:
         request["instructions"] += "\n" + workspace.scope_instructions(spec)
@@ -1036,7 +1174,46 @@ def _build_request(state, history, cap, resources, *, part_id=None, request_vers
     return request
 
 
-def _request(path, state, profile, history, *, part_id=None, environ, transport):
+class _FlashWorker:
+    """One subscription conversation per card, with new messages for each part."""
+
+    def __init__(self, root, processes):
+        self.root, self.processes = root, processes
+        self.conversation = None
+        self.history_offsets = {}
+
+    def prepare(self, request, part_id, resources):
+        pending = request["input"][self.history_offsets.get(part_id, 0):-1]
+        calls = {item["call_id"]: item for item in pending if item.get("type") == "function_call"}
+        messages = []
+        for item in pending:
+            if item.get("role") == "user":
+                messages.append({"assignment": item["content"]})
+            elif item.get("type") == "function_call_output":
+                call = calls[item["call_id"]]
+                messages.append({"tool": call["name"], "call_id": call["call_id"],
+                                 "arguments": _decode(call["arguments"]), "result": _decode(item["output"])})
+        message = {"part_id": part_id, "messages": messages, "resources": resources}
+        encoded = flash_protocol.turn_input(message, instructions=request["instructions"],
+                                            tools=request["tools"] if self.conversation is None else None)
+        return message, encoded
+
+    def exchange(self, request, message, part_id, index):
+        if self.conversation is None:
+            try:
+                conversation = flash_transport.Conversation(
+                    tools=request["tools"], instructions=request["instructions"],
+                    temporary_root=self.root, cancelled=_CANCELLATION.get())
+            except (OSError, flash_protocol.ProtocolError) as exc:
+                code = "flash_startup_failed" if isinstance(exc, OSError) else str(exc)
+                raise flash_transport.TransportError(code) from None
+            self.conversation = self.processes.enter_context(conversation)
+        response = self.conversation.exchange(message, turn_id=f"turn_{index}")
+        self.history_offsets[part_id] = len(request["input"]) - 1
+        return response
+
+
+def _request(path, state, profile, history, *, part_id=None, environ, transport, flash=None):
     if _cancelled(path, state):
         return None
     spec, limits = state["spec"], state["spec"]["limits"]
@@ -1044,7 +1221,9 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport)
         _stop(path, state, "call_limit")
         return None
     remaining = limits["output_tokens_total"] - _spent(state)
-    cap = min(_output_limits(state)[profile], api.output_limit(profile),
+    subscription = profile == api.FLASH_WORKER
+    limit = _output_limits(state)[profile]
+    cap = min(limit if subscription else min(limit, api.output_limit(profile)),
               remaining - (MIN_RESPONSE_TOKENS if part_id else 0))
     if cap < MIN_RESPONSE_TOKENS:
         _stop(path, state, "output_limit")
@@ -1052,16 +1231,19 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport)
     resources = _resources(state, cap, worker=part_id is not None)
     request = _build_request(state, history, cap, resources, part_id=part_id)
     try:
-        _, body = api.prepare(profile, request)
-        encoded = _encode(body)
-    except api.ExecutorError:
-        _stop(path, state, "invalid_request")
+        if subscription:
+            message, encoded = flash.prepare(request, part_id, resources)
+        else:
+            _, body = api.prepare(profile, request)
+            encoded = _encode(body)
+    except (api.ExecutorError, flash_protocol.ProtocolError) as exc:
+        _stop(path, state, "request_size_limit" if str(exc) == "flash_payload_too_large" else "invalid_request")
         return None
     if len(encoded) > limits["request_bytes"]:
         _stop(path, state, "request_size_limit")
         return None
     reservation = None
-    if "budget" in spec:
+    if "budget" in spec and not subscription:
         probe = {"profile": profile, "request_sha256": hashlib.sha256(encoded).hexdigest(), "status": "in_flight"}
         guard = _REQUEST_GUARD.get()
         with guard() if guard else nullcontext():
@@ -1085,6 +1267,8 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport)
             "output_cap": cap, "request_sha256": hashlib.sha256(encoded).hexdigest(),
             "history_items": len(request["input"]), "resources": resources,
             "status": "in_flight", "started_at": _now()}
+    if api_effort.enabled(spec) and part_id is None:
+        call["effort"] = request["effort"]
     if "role_policy_version" in state:
         call["role_policy_version"] = state["role_policy_version"]
     resumes = state.get("resumptions", [])
@@ -1097,11 +1281,28 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport)
         state["calls"].append(call)
         _save(path, state)
     try:
-        response = api.execute(profile, request, environ=environ, transport=transport)
+        if subscription:
+            response = flash.exchange(request, message, part_id, call["index"])
+        else:
+            response = api.execute(profile, request, environ=environ, transport=transport)
+    except flash_transport.TransportError as exc:
+        code = str(exc)
+        call.update(status="error", error={"error": code, "quota_usage_possible": exc.quota_usage_possible},
+                    finished_at=_now())
+        if exc.usage is not None:
+            call["usage"] = exc.usage
+        reason = ("operator_stopped" if code == "flash_cancelled" else code if code in {
+            "flash_capacity_unavailable", "flash_gate_rejected", "flash_gate_unverified",
+            "flash_cleanup_unconfirmed"} else "flash_worker_failed")
+        _stop(path, state, reason)
+        return None
     except Exception as exc:
-        error = exc.as_dict() if isinstance(exc, api.ExecutorError) else {"error": "client_error", "charge_possible": True}
+        if subscription:
+            error = {"error": "flash_client_error", "quota_usage_possible": True}
+        else:
+            error = exc.as_dict() if isinstance(exc, api.ExecutorError) else {"error": "client_error", "charge_possible": True}
         call.update(status="error", error=error, finished_at=_now())
-        _stop(path, state, "api_error")
+        _stop(path, state, "flash_worker_failed" if subscription else "api_error")
         return None
     call.update(status="received", response=response, finished_at=_now())
     violation = budget.settle(state, call, response) if reservation is not None else None
@@ -1111,7 +1312,7 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport)
     elif not response["usage"]["usage_known"]:
         _stop(path, state, "unknown_usage")
     elif response["usage"]["output_tokens"] > cap:
-        _stop(path, state, "provider_output_limit")
+        _stop(path, state, "flash_output_limit" if subscription else "provider_output_limit")
     elif response["status"] != "completed":
         _stop(path, state, "incomplete_response")
     elif response["refusals"]:
@@ -1205,14 +1406,14 @@ def _project_call(path, state, call, history, *, part_id=None, deferred=False, p
     return not fatal
 
 
-def _worker(path, state, part_id, part, *, environ, transport, partial=()):
+def _worker(path, state, part_id, part, *, environ, transport, flash=None, partial=()):
     seen = {item["call_id"] for item in part["history"] if item.get("type") == "function_call"}
     partial = list(partial)
     while state["status"] == "running":
         if not _worker_has_room(state):
             return _WorkerOutcome("\n\n".join(partial), "budget_reserves_lead_return")
         response = _request(path, state, state["spec"]["worker_profile"], part["history"],
-                            part_id=part_id, environ=environ, transport=transport)
+                            part_id=part_id, environ=environ, transport=transport, flash=flash)
         if response is None:
             return None
         part["history"].extend(response["output"])
@@ -1234,10 +1435,18 @@ def _worker(path, state, part_id, part, *, environ, transport, partial=()):
     return None
 
 
-def _dispatch(path, state, calls, *, environ, transport, resumed_part=None):
+def _dispatch(path, state, calls, *, environ, transport, flash=None, resumed_part=None):
     """Finish a lead batch; a recovered worker keeps its existing attempt/history."""
     spec = state["spec"]
     for index, call in enumerate(calls):
+        if call["name"] == api_effort.TOOL["name"]:
+            output = api_effort.apply(state, call, _now())
+            if "error" in output:
+                state["tool_errors"].append({"call_id": call["call_id"], "error": output["error"]})
+            state["lead_history"].append({"type": "function_call_output", "call_id": call["call_id"],
+                                          "output": json.dumps(output, ensure_ascii=False)})
+            _save(path, state)
+            continue
         if "project" in spec and call["name"] in _tool_names(state):
             if not _project_call(path, state, call, state["lead_history"], deferred=index >= PROJECT_CALLS_PER_RESPONSE):
                 return
@@ -1250,7 +1459,7 @@ def _dispatch(path, state, calls, *, environ, transport, resumed_part=None):
             partial = [c["response"]["output_text"] for c in state["calls"]
                        if c.get("part_id") == part_id and c["status"] == "received"
                        and c["history_items"] - 1 > start and c["response"]["output_text"].strip()]
-            worker = _worker(path, state, part_id, part, environ=environ, transport=transport, partial=partial)
+            worker = _worker(path, state, part_id, part, environ=environ, transport=transport, flash=flash, partial=partial)
             if worker is None:
                 return
             output = {"part_id": part_id, "attempt": part["attempts"], "text": worker.text}
@@ -1259,7 +1468,9 @@ def _dispatch(path, state, calls, *, environ, transport, resumed_part=None):
                 state["tool_errors"].append({"call_id": call["call_id"], "error": worker.error})
             resumed_part = None
         else:
-            args, error = _arguments(call, state["parts"])
+            delegate = FLASH_DELEGATE_TOOL if spec["worker_profile"] == api.FLASH_WORKER else DELEGATE_TOOL
+            args, error = (_arguments(call, state["parts"]) if spec["worker_profile"] and call["name"] == delegate["name"]
+                           else (None, "unknown_tool"))
             if not error and not _worker_has_room(state):
                 error = "budget_reserves_lead_return"
             if error:
@@ -1270,7 +1481,7 @@ def _dispatch(path, state, calls, *, environ, transport, resumed_part=None):
                 part = state["parts"].setdefault(part_id, {"attempts": 0, "history": []})
                 part["history"].append({"role": "user", "content": args["message"]})
                 part["attempts"] += 1
-                worker = _worker(path, state, part_id, part, environ=environ, transport=transport)
+                worker = _worker(path, state, part_id, part, environ=environ, transport=transport, flash=flash)
                 if worker is None:
                     return
                 output = {"part_id": part_id, "attempt": part["attempts"], "text": worker.text}
@@ -1282,7 +1493,7 @@ def _dispatch(path, state, calls, *, environ, transport, resumed_part=None):
         _save(path, state)
 
 
-def _lead_loop(path, state, *, environ, transport):
+def _lead_loop(path, state, *, environ, transport, flash=None):
     seen = {item["call_id"] for item in state["lead_history"] if item.get("type") == "function_call"}
     while state["status"] == "running":
         spec = state["spec"]
@@ -1307,7 +1518,7 @@ def _lead_loop(path, state, *, environ, transport):
                 state.update(status="dialogue_complete", result=response["output_text"], finished_at=_now())
                 _save(path, state)
             break
-        _dispatch(path, state, calls, environ=environ, transport=transport)
+        _dispatch(path, state, calls, environ=environ, transport=transport, flash=flash)
     return summary(state)
 
 
@@ -1346,6 +1557,12 @@ def _run(path, *, environ=None, transport=None, require_budget=False, credential
                 return summary(state)
         if _cancelled(path, state):
             return summary(state)
+        if state["spec"]["worker_profile"] == api.FLASH_WORKER:
+            try:
+                flash_probe.subscription_executable()
+            except (flash_probe.ProbeError, OSError) as exc:
+                _stop(path, state, "flash_startup_failed" if isinstance(exc, OSError) else str(exc))
+                return summary(state)
         env = dict(credential_loader(state["spec"]) if credential_loader is not None
                    else os.environ if environ is None else environ)
         _credentials(state["spec"], env)
@@ -1358,7 +1575,13 @@ def _run(path, *, environ=None, transport=None, require_budget=False, credential
                 raise SessionError(str(exc)) from None
         state.update(status="running", started_at=_now())
         _save(path, state)
-        return _lead_loop(path, state, environ=env, transport=transport)
+        try:
+            with ExitStack() as processes:
+                flash = _FlashWorker(path.parent, processes) if state["spec"]["worker_profile"] == api.FLASH_WORKER else None
+                return _lead_loop(path, state, environ=env, transport=transport, flash=flash)
+        except flash_transport.TransportError:
+            _stop(path, state, "flash_cleanup_unconfirmed")
+            return summary(state)
 
 
 def cli(argv=None) -> int:

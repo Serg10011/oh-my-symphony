@@ -38,6 +38,9 @@
         const number = value => Number.isFinite(value) ? value.toLocaleString('ru-RU') : 'не указан';
         const rows = [
           ['Ведущий', profile(t.profiles?.lead)], ['Исполнитель', profile(t.profiles?.worker)],
+          ...(t.profiles?.worker?.provider === 'antigravity'
+            ? [['Доступ Flash', 'Подписка Antigravity. Дополнительные кредиты выключены.']] : []),
+          ...(t.lead_escalation === 'high-to-max' ? [['Повышение усилия', 'Ведущий может повысить high до max с записью причины.']] : []),
           ['Режим', t.mode === 'productivity' ? 'Продуктивность' : t.mode === 'economy' ? 'Экономия' : 'По настройкам доски'],
           ['Ветка проекта', t.base_branch || 'HEAD'], ['Доступные файлы', (t.paths || []).join(', ')],
           ['Денежный потолок на одну задачу', t.budget ? `${t.budget.max_usd} USD` : 'Без отдельного денежного потолка'],

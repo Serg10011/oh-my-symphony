@@ -57,6 +57,30 @@ def expected_role_amount(report: dict, profile: str) -> int:
 
 
 @needs_node
+@pytest.mark.parametrize("unknown", [False, True])
+def test_subscription_usage_does_not_make_the_paid_total_partial(unknown):
+    report = reports.full_report()
+    model = "gemini-3.8-flash-high"
+    worker = {"name": "flash-worker", "model": model, "provider": "antigravity"}
+    report["profiles"] = {"lead": reports.board_profiles()["lead"], "worker": worker}
+    row = report["by_model"].pop("gpt-6-luna")
+    row.update(model=model, billing="subscription", estimated_usd=None, unknown_usage_calls=int(unknown),
+               total_tokens=None if unknown else 18, known_total_tokens=18)
+    report["by_model"][model] = row
+    report["requests"][-1].update(model=model, profile=worker["name"], billing="subscription", estimated_usd=None)
+    report["cost"].update(api_requests=2, subscription_requests=1, estimated_requests=2,
+                          estimated_total_usd="0.100000", estimated_known_usd="0.100000")
+    saved = reports.session_for(report) | {"profiles": report["profiles"]}
+    saved["usage"][worker["name"]].update(total_tokens=row["total_tokens"], known_total_tokens=18)
+    summary = spend_summary(render_report(report), saved, report["profiles"])
+    assert summary["total"]["value"] == "0.100000 USD" and summary["complete"]
+    assert summary["worker"]["amount"] is None
+    assert "Подписка Antigravity" in summary["worker"]["value"]
+    assert summary["worker"]["incomplete"] is unknown
+    assert ("расход части запросов неизвестен" in summary["worker"]["value"]) is unknown
+
+
+@needs_node
 @pytest.mark.parametrize("build", CASES)
 def test_card_total_matches_the_detailed_report(build):
     report = build()

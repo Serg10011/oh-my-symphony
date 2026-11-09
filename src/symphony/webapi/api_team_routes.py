@@ -39,9 +39,10 @@ def register_api_team_routes(app, ctx, orchestrator):
             if request.content_type != "application/json" or not _same_origin(request):
                 return _json_error(403, "api_team_origin", "Изменяй назначение на странице своей доски")
             operation = request.match_info.get("operation")
-            action = "settings-" + operation if operation else "set-team-default"
+            action = "gemini-quota" if operation == "gemini-quota" else (
+                "settings-" + operation if operation else "set-team-default")
             payload = await _read_json(request)
-            fields = {"mode", "paths"} if operation else {"team"}
+            fields = set() if operation == "gemini-quota" else ({"mode", "paths"} if operation else {"team"})
             if operation == "save":
                 fields.add("expected")
             if set(payload) != fields:
@@ -55,7 +56,7 @@ def register_api_team_routes(app, ctx, orchestrator):
         return web.json_response(result, headers={"Cache-Control": "no-store, private"})
     app.router.add_get("/api/v1/api-teams/{kind}", _wrap(team_settings))
     app.router.add_post("/api/v1/api-teams/{kind}", _wrap(team_settings))
-    app.router.add_post("/api/v1/api-teams/{kind}/settings/{operation:preview|save}", _wrap(team_settings))
+    app.router.add_post("/api/v1/api-teams/{kind}/settings/{operation:preview|save|gemini-quota}", _wrap(team_settings))
 
     async def permission(request):
         if not _request_is_loopback(request):
