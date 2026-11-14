@@ -187,11 +187,14 @@ def test_a_card_in_plan_is_taken_and_a_card_in_subtasks_is_not(kit: Kit, monkeyp
 
     cfg = core_cfg(kit.board)
     orch = make_orchestrator(cfg, monkeypatch)
-    assert orch._eligibility_contract_decision(issue("Plan"), cfg) is None
+    draft = orch._eligibility_contract_decision(issue("Plan"), cfg)
+    assert draft is not None and draft.code == "awaiting_start"
+    approved = issue("Plan", start_requested=True)
+    assert orch._eligibility_contract_decision(approved, cfg) is None
     refused = orch._eligibility_contract_decision(issue("Subtasks"), cfg)
     assert refused is not None
     assert (refused.disposition, refused.code) == (Disposition.REJECT, "inactive")
-    ready = orch._eligibility_decision(issue("Plan"), cfg, owning_retry=False)
+    ready = orch._eligibility_decision(approved, cfg, owning_retry=False)
     assert ready.disposition == Disposition.READY
 
 
@@ -205,7 +208,8 @@ def test_a_card_waits_for_a_blocker_in_subtasks_until_it_is_done(kit: Kit, monke
     def decision(blocker_state: str):
         blocker = BlockerRef(id=f"{PREFIX}-1", identifier=f"{PREFIX}-1", state=blocker_state)
         return orch._eligibility_decision(
-            issue("In Progress", blocked_by=(blocker,)), cfg, owning_retry=False
+            issue("In Progress", blocked_by=(blocker,), start_requested=True),
+            cfg, owning_retry=False,
         )
 
     for state in ("Plan", "Subtasks", "Human Review"):
