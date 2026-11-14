@@ -21,6 +21,7 @@ from typing import Any
 
 from ._shell import process_identity, terminate_process_tree
 from .errors import SymphonyError
+from .issue import Issue
 from .logging import get_logger
 from .workflow import AgentProfileConfig, ServiceConfig
 
@@ -115,6 +116,13 @@ def supports_team_settings(command: str) -> bool:
 def uses_board_queue(cfg: ServiceConfig, kind: str | None) -> bool:
     profile = api_profile(cfg, kind)
     return profile is not None and supports_team_settings(profile.command)
+
+
+def needs_manual_start(cfg: ServiceConfig, issue: Issue) -> bool:
+    if not cfg.tracker.manual_start or issue.start_requested:
+        return False
+    kind = cfg.agent.kind_for_state(issue.state, issue.agent_kind)
+    return api_profile(cfg, kind) is None
 
 
 async def defaults_for_new_card(cfg, kind, prefix, identifier):

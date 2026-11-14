@@ -511,10 +511,11 @@ def build_orchestrator_command(
     *,
     host: str,
     port: int,
+    require_manual_start: bool = False,
 ) -> list[str]:
     """Build the shell-free command used to launch the orchestrator service."""
     workflow = _resolved(workflow_path)
-    return [
+    command = [
         sys.executable,
         "-m",
         "symphony.cli",
@@ -524,6 +525,9 @@ def build_orchestrator_command(
         "--port",
         str(port),
     ]
+    if require_manual_start:
+        command.append("--require-manual-start")
+    return command
 
 
 def _popen_detached(
@@ -863,6 +867,10 @@ def _start(args: argparse.Namespace) -> int:
 
 def _start_locked(args: argparse.Namespace, *, workflow: Path, cfg: Any) -> int:
     port = _resolve_port(args.port, cfg)
+    require_manual_start = getattr(args, "require_manual_start", False)
+    if require_manual_start and not cfg.tracker.manual_start:
+        print("service start aborted: tracker.manual_start is required", file=sys.stderr)
+        return 1
     current = service_status(workflow, port=port)
     if current.state == "running" and current.record is not None:
         if args.replace:
@@ -889,6 +897,9 @@ def _start_locked(args: argparse.Namespace, *, workflow: Path, cfg: Any) -> int:
                 )
             return 0
     elif current.record is not None:
+        if require_manual_start:
+            print("service start aborted: existing service record needs attention", file=sys.stderr)
+            return 1
         stop_rc = _stop(
             argparse.Namespace(
                 workflow=args.workflow,
@@ -911,6 +922,7 @@ def _start_locked(args: argparse.Namespace, *, workflow: Path, cfg: Any) -> int:
         workflow,
         host=args.host,
         port=port,
+        require_manual_start=require_manual_start,
     )
     orchestrator_pid: int | None = None
     service_instance_id = secrets.token_urlsafe(32)
@@ -1124,6 +1136,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_start.add_argument("--port", type=int, default=None)
     p_start.add_argument("--replace", action="store_true")
     p_start.add_argument("--skip-doctor", action="store_true")
+    p_start.add_argument("--require-manual-start", action="store_true")
     p_start.set_defaults(func=_start)
 
     p_stop = sub.add_parser("stop", help="stop a managed service")

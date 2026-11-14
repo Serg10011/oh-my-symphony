@@ -94,6 +94,7 @@ _CANONICAL_FRONT_MATTER_KEYS = {
     "skills",
     "created_at",
     "updated_at",
+    "start_requested",
     "symphony_pm",
 }
 _LOCK_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -377,6 +378,7 @@ def issue_from_file(path: Path) -> Issue | None:
         skills=normalize_skill_names(front.get("skills")),
         request=str(front.get("request") or "").strip() or None,
         level=str(front.get("level") or "").strip() or None,
+        start_requested=front.get("start_requested") is True,
         planning_ref=_parse_planning_ref(front.get("symphony_pm")),
         planning_ref_state=(
             "absent"
@@ -702,16 +704,19 @@ def _is_owned_tracker_temp(path: Path) -> bool:
 class FileBoardTracker:
     """Adapter over a directory of Markdown ticket files."""
 
-    def __init__(self, tracker: TrackerConfig) -> None:
+    def __init__(self, tracker: TrackerConfig, *, read_only: bool = False) -> None:
         if tracker.board_root is None:
             raise LinearUnknownPayload("board_root not configured")
         self._root = tracker.board_root.resolve()
         self._history_path = tracker.run_history_path or self._root.parent / ".symphony" / "state.db"
         self._active = {s.lower() for s in tracker.active_states}
         self._terminal = {s.lower() for s in tracker.terminal_states}
-        self._root.mkdir(parents=True, exist_ok=True)
+        self._manual_start = tracker.manual_start
+        self._read_only = read_only
         self._last_graph_warning_signature: object = None
-        self._sweep_stale_temps()
+        if not read_only:
+            self._root.mkdir(parents=True, exist_ok=True)
+            self._sweep_stale_temps()
 
     def _lock_path(self, name: str) -> Path:
         return self._root / ".locks" / f"{_lock_name(name)}.lock"
@@ -767,6 +772,7 @@ class FileBoardTracker:
             path
             for path in self._root.glob("*.md")
             if not path.name.startswith(".tmp-")
+            and (not self._read_only or (not path.is_symlink() and path.is_file()))
         )
 
     def list_all_identifiers(self) -> set[str]:
@@ -929,6 +935,7 @@ class FileBoardTracker:
         mutate: _TicketMutation,
         *,
         missing_ok: bool = False,
+        refuse_symlink: bool = False,
     ) -> Path | None:
         path = self.find_path(identifier)
         if path is None:
@@ -941,6 +948,8 @@ class FileBoardTracker:
                 if missing_ok:
                     return None
                 raise SymphonyError("ticket not found", identifier=identifier)
+            if refuse_symlink and path.is_symlink():
+                raise SymphonyError("ticket must be a regular board file", identifier=identifier)
             seen_mtime_ns = _file_mtime_ns(path)
             front, body = parse_ticket_file(path)
             seen_token = (front.get("updated_at"), seen_mtime_ns)
@@ -974,9 +983,43 @@ class FileBoardTracker:
             front, body = result
         write_ticket_atomic(path, front, body)
 
+    def _set_state(self, front: dict[str, Any], new_state: str) -> None:
+        previous = normalize_state(front.get("state"))
+        target = normalize_state(new_state)
+        # These two host-managed lanes still belong to the approved plan.
+        stops = self._terminal - {"subtasks", "merging"}
+        if self._manual_start and previous != target and {previous, target} & stops:
+            front.pop("start_requested", None)
+        front["state"] = new_state
+
+    def request_start(self, issue: Issue) -> None:
+        """Queue an unchanged, explicitly selected legacy file card."""
+        def mutate(front: dict[str, Any], body: str) -> tuple[dict[str, Any], str] | None:
+            state = normalize_state(front.get("state"))
+            if (
+                not self._manual_start
+                or state not in self._active
+                or state in self._terminal
+                or front.get("state") != issue.state
+                or front.get("title") != issue.title
+                or (body or None) != issue.description
+                or _parse_agent_kind(front) != issue.agent_kind
+                or str(front.get("id") or front.get("identifier")) != issue.id
+            ):
+                raise SymphonyError("ticket changed or cannot be started", identifier=issue.identifier)
+            if (stamp := parse_iso_timestamp(front.get("updated_at"))) and stamp != issue.updated_at:
+                raise SymphonyError("ticket changed before start", identifier=issue.identifier)
+            if front.get("start_requested") is True:
+                return None
+            front["start_requested"] = True
+            front["updated_at"] = datetime.now(timezone.utc).isoformat()
+            return front, body
+
+        self._mutate_ticket(validate_identifier(issue.identifier), mutate, refuse_symlink=True)
+
     def transition(self, identifier: str, new_state: str) -> Path:
         def mutate(front: dict[str, Any], body: str) -> tuple[dict[str, Any], str]:
-            front["state"] = new_state
+            self._set_state(front, new_state)
             front["updated_at"] = datetime.now(timezone.utc).strftime(
                 "%Y-%m-%dT%H:%M:%SZ"
             )
@@ -1297,6 +1340,8 @@ class FileBoardTracker:
                 raise SymphonyError('staged ticket changed before release', identifier=identifier)
             front['creation_release'] = marker
             front['state'] = new_state
+            if self._manual_start:
+                front['start_requested'] = True
             front['updated_at'] = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
             write_ticket_atomic(path, front, body)
             _sync_ticket(path)
@@ -1424,7 +1469,7 @@ class FileBoardTracker:
             if title is not None:
                 front["title"] = title
             if state is not None:
-                front["state"] = state
+                self._set_state(front, state)
             if priority is not None:
                 front["priority"] = priority
             elif clear_priority:

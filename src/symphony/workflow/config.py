@@ -88,6 +88,7 @@ class TrackerConfig:
     # Internal file-tracker context, derived from WORKFLOW.md, not a YAML option.
     run_history_path: Path | None = None
     id_prefix: str = "TASK"
+    manual_start: bool = False
 
 
 @dataclass(frozen=True)

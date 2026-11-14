@@ -170,6 +170,18 @@ def test_should_dispatch_basic():
     assert orch._should_dispatch(issue, cfg) is True
 
 
+def test_manual_start_holds_legacy_cards_for_poll_and_retry():
+    cfg = _make_config(tracker_kind="file")
+    cfg = replace(cfg, tracker=replace(cfg.tracker, manual_start=True))
+    orch = _orch()
+    draft = _issue("MT-1")
+    queued = replace(_issue("MT-2"), start_requested=True)
+    assert not orch._should_dispatch(draft, cfg)
+    assert not orch._eligible(draft, cfg, owning_retry=True)
+    assert orch._should_dispatch(queued, cfg)
+    assert orch._eligible(queued, cfg, owning_retry=True)
+
+
 def test_candidate_payload_failure_logs_and_returns_before_dispatch(monkeypatch):
     cfg = _make_config()
     orch = _orch()

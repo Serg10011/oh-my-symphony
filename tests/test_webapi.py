@@ -2015,6 +2015,61 @@ async def test_open_project_starts_only_destination_and_returns_independent_url(
         await client.close()
 
 
+async def test_saved_board_read_and_explicit_start_are_separate(
+    board_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from symphony import service
+    from symphony.webapi import project_routes
+
+    root = board_dir.parent / "symphony-projects"
+    root.mkdir()
+    current = root / "oms"
+    shutil.copytree(board_dir, current)
+    eve = root / "eve"
+    (eve / "kanban").mkdir(parents=True)
+    for folder, port in ((current, 9972), (eve, 9973)):
+        (folder / "project.toml").write_text(
+            f'[project]\nname="{folder.name}"\nrepo="{folder}"\nport={port}\n',
+            encoding="utf-8",
+        )
+    workflow = current / "WORKFLOW.md"
+    (eve / "WORKFLOW.md").write_bytes(workflow.read_bytes())
+    shutil.copytree(current / "prompts", eve / "prompts")
+    shutil.copyfile(current / "kanban" / "SEED-1.md", eve / "kanban" / "SEED-1.md")
+    outside = board_dir / "outside.md"
+    outside.write_text(TICKET.replace("SEED-1", "EVE-9"), encoding="utf-8")
+    link = eve / "kanban" / "EVE-9.md"
+    link.symlink_to(outside)
+    monkeypatch.setattr(project_routes.Path, "home", lambda: root.parent)
+    monkeypatch.setattr(project_routes, "is_symphony_workflow_reachable", lambda *_, **__: False)
+    starts = []
+    monkeypatch.setattr(service, "main", lambda args: starts.append(args))
+    client = await _project_client(current, monkeypatch, _FakeProjectRegistry([]))
+    try:
+        response = await client.get("/api/v1/projects")
+        body = await response.json()
+        assert body["current"]["id"] == "oms"
+        assert {p["id"] for p in body["projects"]} == {"oms", "eve"}
+        response = await client.get("/api/v1/projects/eve/board")
+        body = await response.json()
+        assert body["board"]["read_only"]
+        assert [row["identifier"] for row in body["issues"]] == ["SEED-1"]
+        response = await client.get("/api/v1/projects/eve/board/SEED-1")
+        card = await response.json()
+        assert response.status == 200 and card["description"] and not card["can_start"]
+        response = await client.get("/api/v1/projects/eve/board/EVE-9")
+        assert response.status == 404
+        response = await client.post("/api/v1/projects/eve/board/SEED-1/start", json={})
+        assert response.status == 409
+        assert (await response.json())["error"]["code"] == "manual_start_required"
+        response = await client.post("/api/v1/projects/eve/open", json={})
+        assert (await response.json())["url"] == "/?board=eve"
+        assert starts == []
+        assert set((eve / "kanban").iterdir()) == {eve / "kanban" / "SEED-1.md", link}
+    finally:
+        await client.close()
+
+
 async def test_open_project_start_failure_returns_actionable_guidance(
     board_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2240,6 +2295,7 @@ def test_schedule_reason_taxonomy_covers_every_authoritative_code() -> None:
         "budget_exhausted",
         "finalizing",
         "inactive",
+        "awaiting_start",
         "incomplete_identity",
         "unsupported_agent",
         "waiting_dependency",

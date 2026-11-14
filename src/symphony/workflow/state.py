@@ -11,6 +11,7 @@ from __future__ import annotations
 import threading
 from pathlib import Path
 
+from ..errors import ConfigValidationError
 from .builder import build_service_config
 from .config import ServiceConfig
 from .parser import load_workflow
@@ -19,8 +20,9 @@ from .parser import load_workflow
 class WorkflowState:
     """Last-known-good config holder for §6.2 reload semantics."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, require_manual_start: bool = False) -> None:
         self.path = path
+        self._require_manual_start = require_manual_start
         self._config: ServiceConfig | None = None
         self._last_error: Exception | None = None
         self._lock = threading.RLock()
@@ -29,6 +31,8 @@ class WorkflowState:
         try:
             wf = load_workflow(self.path)
             cfg = build_service_config(wf)
+            if self._require_manual_start and not cfg.tracker.manual_start:
+                raise ConfigValidationError("manual start is required for this service")
         except Exception as exc:
             with self._lock:
                 self._last_error = exc
