@@ -22,8 +22,8 @@ import time
 import yaml
 
 from post_merge import STATE_REL
-from symphony import service
-from symphony.issue import normalize_state
+from symphony import api_team, service
+from symphony.issue import normalize_state, parse_iso_timestamp
 from symphony.workflow import WorkflowState
 
 
@@ -260,6 +260,44 @@ def connector_version(layout, head):
     return hashlib.sha256("\n".join(objects).encode()).hexdigest()
 
 
+def _held_api_result(cfg, path, front, db):
+    """Match a saved result to the queue hold for its most recent run."""
+    identifier = path.stem
+    if ((front.get("id") or front.get("identifier")) != identifier
+            or any(front.get(key, identifier) != identifier for key in ("id", "identifier"))):
+        return False
+    kind = front.get("agent_kind")
+    agent = front.get("agent")
+    if kind is None and isinstance(agent, dict):
+        kind = agent.get("kind")
+    if not isinstance(kind, str):
+        return False
+    kind = kind.strip().lower()
+    if not api_team.uses_board_queue(cfg, kind):
+        return False
+    assignment = api_team._read_assignment(cfg, identifier)
+    if (not assignment or assignment.get("version") != 1 or assignment.get("status") != "result"
+            or assignment.get("result_lane") != front["state"] or assignment.get("check_lane") != front["state"]
+            or parse_iso_timestamp(assignment.get("finished_at")) is None):
+        return False
+    candidate = assignment.get("candidate")
+    run_id = assignment.get("run_id")
+    if (not isinstance(candidate, dict) or candidate.get("identifier") != identifier
+            or candidate.get("status") != "awaiting_full_checks"
+            or not isinstance(commit := candidate.get("commit"), str) or not COMMIT.fullmatch(commit)
+            or not isinstance(candidate.get("checks"), dict) or candidate["checks"].get("static") != "passed"
+            or not isinstance(run_id, str) or not re.fullmatch(r"[0-9a-f]{32}", run_id)):
+        return False
+    return db.execute(
+        """SELECT 1 FROM runs JOIN issue_flags USING (issue_id)
+           WHERE runs.run_id = ? AND runs.issue_id = ? AND runs.identifier = ? AND runs.agent_kind = ?
+             AND runs.completed_at IS NOT NULL AND runs.status = 'api_team_finished'
+             AND issue_flags.paused = 1 AND issue_flags.pause_reason = ?
+             AND runs.rowid = (SELECT max(rowid) FROM runs WHERE issue_id = ?)""",
+        (run_id, identifier, identifier, kind, api_team.FINISHED_HOLD, identifier),
+    ).fetchone() is not None
+
+
 def queue_is_safe(layout):
     try:
         read_owned(layout.workflow)
@@ -270,6 +308,7 @@ def queue_is_safe(layout):
                 or SAFE_LANES & {normalize_state(s) for s in cfg.tracker.active_states}):
             return False
         terminal = SAFE_LANES & {normalize_state(s) for s in cfg.tracker.terminal_states}
+        verifying = []
         for path in cards.iterdir():
             if path.suffix != ".md" or path.name.startswith(".tmp-"):
                 continue
@@ -280,15 +319,21 @@ def queue_is_safe(layout):
             front = yaml.safe_load("\n".join(lines[1:delimiters[1]]))
             if not isinstance(front, dict) or not isinstance(front.get("state"), str):
                 return False
-            if normalize_state(front["state"]) not in terminal:
+            state = normalize_state(front["state"])
+            if state in {"verify", "проверка"}:
+                verifying.append((path, front))
+            elif state not in terminal:
                 return False
         db = layout.board / ".symphony/state.db"
         if cfg.tracker.run_history_path != db or db.resolve(strict=True) != db or not db.is_file():
             return False
         with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=2)) as conn:
+            # Check the saved holds and run history in the same read snapshot.
+            conn.execute("BEGIN")
             return (conn.execute("SELECT 1 FROM runs WHERE completed_at IS NULL LIMIT 1").fetchone() is None
-                    and conn.execute("SELECT 1 FROM issue_flags WHERE retry_attempt IS NOT NULL LIMIT 1").fetchone() is None)
-    except (*UNAVAILABLE, sqlite3.Error, yaml.YAMLError):
+                    and conn.execute("SELECT 1 FROM issue_flags WHERE retry_attempt IS NOT NULL LIMIT 1").fetchone() is None
+                    and all(_held_api_result(cfg, path, front, conn) for path, front in verifying))
+    except (*UNAVAILABLE, sqlite3.Error, yaml.YAMLError, OverflowError):
         return False
 
 
