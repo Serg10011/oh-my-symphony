@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -61,9 +62,8 @@ def test_merging_is_inactive_does_not_resolve_dependencies_and_survives_cleanup(
     refused = orch._eligibility_contract_decision(planning.issue("Merging"), cfg)
     assert (refused.disposition, refused.code) == (Disposition.REJECT, "inactive")
     blocker = BlockerRef(id="b", identifier="b", state="Merging")
-    waiting = orch._eligibility_decision(
-        planning.issue("In Progress", blocked_by=(blocker,)), cfg, owning_retry=False,
-    )
+    approved = replace(planning.issue("In Progress", blocked_by=(blocker,)), start_requested=True)
+    waiting = orch._eligibility_decision(approved, cfg, owning_retry=False)
     assert waiting.disposition == Disposition.WAIT_NON_SLOT
     ident = f"{planning.PREFIX}-7"
     ti.write(kit.board / "kanban" / f"{ident}.md", f"---\nid: {ident}\ntitle: T\nstate: Merging\n---\nbody\n")

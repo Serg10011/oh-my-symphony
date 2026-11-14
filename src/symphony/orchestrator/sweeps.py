@@ -440,7 +440,7 @@ def _maybe_schedule_continuous_improvement(self: Orchestrator, cfg: ServiceConfi
         agent_kind=ci.agent_kind,
         modes=list(ci.resolved_modes()),
     )
-    if not ci.enabled:
+    if not ci.enabled or cfg.tracker.manual_start:
         return
     # One run at a time: a second tick while in flight is a no-op.
     if self._improvement_task is not None and not self._improvement_task.done():

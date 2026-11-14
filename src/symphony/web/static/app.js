@@ -18,6 +18,8 @@
   // ------------------------------------------------------------------
 
   const API_BASE = '/api/v1';
+  const savedProject = new URLSearchParams(location.search).get('board');
+  const savedBoardPath = `/projects/${encodeURIComponent(savedProject)}/board`;
 
   // ------------------------------------------------------------------
   // API token (SYMPHONY_API_TOKEN mode)
@@ -180,7 +182,7 @@
   }
 
   const api = {
-    getBoard: async () => window.SymphonyApiModels.decorate(await apiRequest('/board'), (kind, ids) => {
+    getBoard: async () => savedProject ? apiRequest(savedBoardPath) : window.SymphonyApiModels.decorate(await apiRequest('/board'), (kind, ids) => {
       const params = new URLSearchParams(ids.map(id => ['id', id]));
       return apiRequest('/api-teams/' + encodeURIComponent(kind) + '?' + params, { signal: AbortSignal.timeout(4500) });
     }),
@@ -197,9 +199,11 @@
     },
     getProjects: () => apiRequest('/projects'),
     createOrAdoptProject: (payload) => apiRequest('/projects', { method: 'POST', body: JSON.stringify(payload) }),
-    openProject: (id) => apiRequest(`/projects/${encodeURIComponent(id)}/open`, { method: 'POST', body: '{}' }),
     createIssue: (payload) => apiRequest('/issues', { method: 'POST', body: JSON.stringify(payload) }),
-    getIssue: (id) => apiRequest(`/issues/${encodeURIComponent(id)}`),
+    getIssue: (id) => apiRequest(`${savedProject ? savedBoardPath : '/issues'}/${encodeURIComponent(id)}`),
+    startIssue: (id, updatedAt) => apiRequest(`${savedProject ? savedBoardPath : '/issues'}/${encodeURIComponent(id)}/start`, {
+      method: 'POST', body: JSON.stringify({ updated_at: updatedAt }),
+    }),
     apiTeam: (id, action, payload = {}) => apiRequest(`/issues/${encodeURIComponent(id)}/api-team${action ? '/' + action : ''}`,
       action ? { method: 'POST', body: JSON.stringify(payload) } : {}),
     patchIssue: (id, fields) => apiRequest(`/issues/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(fields) }),
@@ -1069,7 +1073,7 @@
     const boardPathEl = document.getElementById('project-board-path');
     if (!selector) return;
     clearNode(selector);
-    const current = state.currentProject;
+    const current = state.projects.find((project) => project.id === savedProject) || state.currentProject;
     const registeredCurrent = current && current.id;
     if (current && !registeredCurrent) {
       selector.appendChild(el('option', { value: '', selected: true }, current.name));
@@ -1077,19 +1081,19 @@
     for (const project of state.projects) {
       selector.appendChild(el('option', {
         value: project.id,
-        selected: project.id === (current && current.id),
+        selected: project.id === current?.id,
       }, project.name));
     }
     selector.disabled = state.projects.length === 0;
     if (current) {
       setProjectPath(pathEl, current.repo_path);
       setProjectPath(workflowPathEl, current.workflow_path);
-      setProjectPath(boardPathEl, current.board_path);
+      setProjectPath(boardPathEl, savedProject ? state.board?.board.path : current.board_path);
     }
   }
 
   async function switchProject(projectId) {
-    if (!projectId || projectId === (state.currentProject && state.currentProject.id)) return;
+    if (!projectId || projectId === (savedProject || state.currentProject?.id)) return;
     const previousProjectId = state.currentProject && state.currentProject.id;
     const maySwitch = pmMount && pmMount.beforeProjectSwitch
       ? pmMount.beforeProjectSwitch()
@@ -1101,13 +1105,20 @@
     const selector = document.getElementById('project-selector');
     if (selector) selector.disabled = true;
     try {
-      const opened = await api.openProject(projectId);
-      window.location.assign(opened.url);
+      if (projectId === state.currentProject?.id) {
+        window.location.assign('/');
+        return;
+      }
+      const projects = await api.getProjects();
+      const project = projects.projects.find((item) => item.id === projectId);
+      if (project?.running) window.location.assign(project.url);
+      else if (project?.saved) window.location.assign(`/?board=${encodeURIComponent(projectId)}`);
+      else throw new Error(t('projects.offline'));
     } catch (err) {
       showToast(err.message, 'error');
       renderProjectSwitcher();
       const restored = document.getElementById('project-selector');
-      if (restored) { restored.value = previousProjectId || ''; restored.focus({ preventScroll: true }); }
+      if (restored) { restored.value = savedProject || previousProjectId || ''; restored.focus({ preventScroll: true }); }
     }
   }
 
@@ -1166,6 +1177,7 @@
   // ------------------------------------------------------------------
 
   function currentRoute() {
+    if (savedProject) return 'board';
     const hash = location.hash.replace(/^#\/?/, '');
     return ROUTES.includes(hash) ? hash : 'board';
   }
@@ -1444,7 +1456,7 @@
         renderBoardSurface(document.getElementById('board-scroll'));
       },
     });
-    const rightControls = [buildBoardViewToggle()];
+    const rightControls = savedProject ? [] : [buildBoardViewToggle()];
     if (state.boardView === 'lanes' && hasTerminalColumns) rightControls.push(buildBoardScopeToggle());
     if (!readOnly && state.boardView === 'lanes') rightControls.push(el('button', { class: 'btn btn-primary', onClick: () => openIssueModal() }, t('board.newIssueButton')));
     const bar = el('div', { class: 'topbar' }, [
@@ -1452,7 +1464,8 @@
       el('div', { class: 'topbar-right' }, rightControls),
     ]);
     if (!readOnly) return bar;
-    return el('div', { class: 'topbar-wrap' }, [el('div', { class: 'banner banner-info' }, t('board.readOnlyTracker')), bar]);
+    const hint = savedProject ? t('projects.savedView') : t('board.readOnlyTracker');
+    return el('div', { class: 'topbar-wrap' }, [el('div', { class: 'banner banner-info' }, hint), bar]);
   }
 
   function buildBoardScopeToggle() {
@@ -1614,6 +1627,7 @@
       budget_exhausted: t('schedule.reasonBudgetExhausted'),
       finalizing: t('schedule.reasonFinalizing'),
       inactive: t('schedule.reasonInactive'),
+      awaiting_start: t('schedule.reasonAwaitingStart'),
       incomplete_identity: t('schedule.reasonIncompleteIdentity'),
       unsupported_agent: t('schedule.reasonUnsupportedAgent'),
       waiting_dependency: t('schedule.reasonDependency'),
@@ -2104,12 +2118,49 @@
       const detail = await api.getIssue(identifier);
       if (state.drawerIssue !== identifier) return;
       clearNode(drawer);
-      drawer.appendChild(buildDrawerContent(detail));
+      drawer.appendChild(savedProject ? buildSavedDrawer(detail) : buildDrawerContent(detail));
     } catch (err) {
       if (state.drawerIssue !== identifier) return;
       clearNode(drawer);
       drawer.appendChild(el('div', { class: 'drawer-error' }, t('issue.loadFailed', { id: identifier, error: err.message })));
     }
+  }
+
+  function buildSavedDrawer(detail) {
+    return el('div', { class: 'drawer-inner' }, [
+      el('div', { class: 'drawer-header' }, [
+        el('div', { class: 'drawer-id' }, detail.identifier),
+        el('button', { class: 'btn-icon', 'aria-label': t('common.close'), onClick: closeDrawer }, '✕'),
+      ]),
+      el('h2', null, detail.title),
+      el('div', { class: 'history-muted' }, detail.state),
+      detail.can_start ? buildStartButton(detail) : null,
+      el('div', { class: 'description-body' }, renderMarkdown(detail.description || '')),
+    ]);
+  }
+
+  function buildStartButton(detail) {
+    return el('button', {
+      type: 'button',
+      class: 'btn btn-primary',
+      onClick: async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          const result = await api.startIssue(detail.identifier, detail.updated_at);
+          if (result.url) {
+            window.location.assign(result.url);
+            return;
+          }
+          showToast(t('issue.startQueued'), 'success');
+          await refreshBoard();
+          if (state.drawerIssue === detail.identifier) await openDrawer(detail.identifier);
+        } catch (err) {
+          showToast(err.message, 'error');
+          button.disabled = false;
+        }
+      },
+    }, t('issue.start'));
   }
 
   async function commitField(identifier, fieldName, value, onError, onSuccess) {
@@ -2313,6 +2364,7 @@
     container.appendChild(header);
     container.appendChild(titleInput);
     container.appendChild(fieldsGrid);
+    if (detail.can_start) container.appendChild(buildStartButton(detail));
     const isApiTeam = (state.board?.board?.api_team_kinds || []).includes(detail.agent_kind);
     if (!isApiTeam) container.appendChild(buildExecutionSection(detail));
     if (isApiTeam) container.appendChild(window.SymphonyApiTeam.mount({
@@ -5518,6 +5570,7 @@
       if (!holdRender) {
         const firstLoad = !state.board;
         state.board = board;
+        if (savedProject && firstLoad) renderProjectSwitcher();
         const nameEl = document.getElementById('board-name');
         if (nameEl) {
           nameEl.textContent = board.board.name || 'symphony';
@@ -5584,6 +5637,9 @@
       updateConnectionIndicator();
     });
     wireGlobalShortcuts();
+    if (savedProject) {
+      document.querySelectorAll('.nav-item:not([data-route="board"]), #manage-projects').forEach((node) => { node.hidden = true; });
+    }
     const selector = document.getElementById('project-selector');
     if (selector) selector.addEventListener('change', async () => { await switchProject(selector.value); });
     const manageButton = document.getElementById('manage-projects');

@@ -246,6 +246,9 @@ def build_service_config(
     id_prefix = tracker_raw.get("id_prefix", "TASK")
     if not isinstance(id_prefix, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]{0,15}", id_prefix):
         raise ConfigValidationError("tracker.id_prefix must be an identifier prefix", value=id_prefix)
+    manual_start = tracker_raw.get("manual_start", False)
+    if not isinstance(manual_start, bool) or (manual_start and tracker_kind != "file"):
+        raise ConfigValidationError("tracker.manual_start requires a boolean and a file tracker")
     tracker = TrackerConfig(
         kind=tracker_kind,
         endpoint=tracker_endpoint,
@@ -265,6 +268,7 @@ def build_service_config(
         network_timeout_seconds=network_timeout_seconds,
         run_history_path=base_dir / ".symphony" / "state.db",
         id_prefix=id_prefix.upper(),
+        manual_start=manual_start,
     )
 
     polling_raw = cfg.get("polling") or {}

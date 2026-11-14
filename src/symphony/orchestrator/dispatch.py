@@ -78,6 +78,7 @@ async def _on_tick(self: Orchestrator) -> None:
             return
         log.warning("workflow_reload_failed", error=str(err))
     assert cfg is not None
+    self._manual_start = cfg.tracker.manual_start
     quota_hold.release_hold_if_workflow_changed(self, cfg)
     # Apply hot-reloadable settings.
     if (
@@ -722,9 +723,16 @@ def _eligibility_contract_decision(
             "inactive",
             f"inactive state: {issue.state}",
         )
-    from ..api_team import confirmed_in_queue, uses_board_queue
-    if (uses_board_queue(cfg, issue.agent_kind or cfg.agent.kind)
-            and not confirmed_in_queue(cfg, issue.identifier)):
+    from ..api_team import api_profile, confirmed_in_queue, uses_board_queue
+    kind = cfg.agent.kind_for_state(issue.state, issue.agent_kind)
+    board_queue = uses_board_queue(cfg, kind)
+    if cfg.tracker.manual_start and not board_queue:
+        if not issue.start_requested or api_profile(cfg, kind) is not None:
+            return _EligibilityDecision(
+                _EligibilityDisposition.REJECT, "awaiting_start",
+                "ticket is waiting for an explicit start",
+            )
+    if board_queue and not confirmed_in_queue(cfg, issue.identifier):
         return _EligibilityDecision(_EligibilityDisposition.REJECT, "api_not_queued",
                                     "API assignment is not confirmed and queued")
     if not (issue.id and issue.identifier and issue.title and issue.state):

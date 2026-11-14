@@ -13,7 +13,7 @@ from .. import api_team
 from ..api_team import api_profile, normal_review_lane, supports_team_settings, uses_board_queue
 
 from ..errors import SymphonyError
-from ..issue import Issue, registration_order_key
+from ..issue import Issue, normalize_state, registration_order_key
 from ..logging import get_logger
 from ..orchestrator import Orchestrator
 from ..orchestrator.run_registry import clamp_run_history_limit
@@ -64,6 +64,35 @@ from .validation import (
 )
 
 log = get_logger()
+
+
+def can_start_issue(cfg: ServiceConfig, issue: Issue) -> bool:
+    kind = cfg.agent.kind_for_state(issue.state, issue.agent_kind)
+    state = normalize_state(issue.state)
+    return (api_team.needs_manual_start(cfg, issue)
+            and kind in cfg.board_agent_kinds()
+            and state in {normalize_state(s) for s in cfg.tracker.active_states}
+            and state not in {normalize_state(s) for s in cfg.tracker.terminal_states})
+
+
+def check_start_request(request: web.Request) -> web.Response | None:
+    from .api_team_routes import _same_origin
+
+    if not _request_is_loopback(request) or not _same_origin(request):
+        return _json_error(403, "start_forbidden", "Запускай карточку со страницы конвейера")
+    return None
+
+
+async def startable_issue(
+    tracker: FileBoardTracker, cfg: ServiceConfig, identifier: str, updated_at: Any
+) -> Issue:
+    issue = await asyncio.to_thread(tracker.fetch_issue_full_by_id, identifier)
+    if issue is None:
+        raise web.HTTPNotFound(reason="Карточка не найдена")
+    if (not can_start_issue(cfg, issue)
+            or not issue.updated_at or updated_at != issue.updated_at.isoformat()):
+        raise SymphonyError("Карточка изменилась. Открой её заново")
+    return issue
 
 
 # ---------------------------------------------------------------------------
@@ -504,8 +533,26 @@ def _register_issue_routes(
                 "scheduling": scheduling,
                 "budgets": budgets,
                 "artifacts": artifacts,
+                **({"can_start": True} if issue and can_start_issue(ctx.config(), issue) and not live else {}),
             }
         )
+
+    async def handle_issue_start(request: web.Request) -> web.Response:
+        if (denied := check_start_request(request)) is not None:
+            return denied
+        identifier = _check_identifier(request.match_info["identifier"])
+        payload = await _read_json(request)
+        cfg = ctx.config()
+        tracker = ctx.file_tracker()
+        if orchestrator.find_running_issue_id(identifier) is not None:
+            return _json_error(409, "start_changed", "Карточка изменилась. Открой её заново")
+        try:
+            issue = await startable_issue(tracker, cfg, identifier, payload.get("updated_at"))
+            await asyncio.to_thread(tracker.request_start, issue)
+        except SymphonyError:
+            return _json_error(409, "start_changed", "Карточка изменилась. Открой её заново")
+        orchestrator.request_refresh()
+        return web.json_response({"identifier": identifier, "queued": True}, status=202)
 
     async def handle_issue_artifacts(request: web.Request) -> web.Response:
         identifier = _check_identifier(request.match_info["identifier"])
@@ -736,6 +783,7 @@ def _register_issue_routes(
         _wrap(handle_request_schedule),
     )
     app.router.add_post("/api/v1/issues", _wrap(handle_issue_create))
+    app.router.add_post("/api/v1/issues/{identifier}/start", _wrap(handle_issue_start))
     app.router.add_get("/api/v1/issues/{identifier}", _wrap(handle_issue_detail))
     app.router.add_patch("/api/v1/issues/{identifier}", _wrap(handle_issue_patch))
     app.router.add_get(

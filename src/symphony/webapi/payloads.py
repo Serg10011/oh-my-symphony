@@ -66,6 +66,7 @@ _PUBLIC_SCHEDULE_REASONS = {
     "budget_exhausted": "turn budget is exhausted",
     "finalizing": "finalization owns the ticket",
     "inactive": "ticket state is not active",
+    "awaiting_start": "ticket is waiting for an explicit start",
     "incomplete_identity": "ticket identity is incomplete",
     "unsupported_agent": "ticket requests an unsupported agent",
     "waiting_dependency": "waiting for dependencies",

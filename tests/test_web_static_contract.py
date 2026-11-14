@@ -535,11 +535,13 @@ def test_web_project_switcher_and_management_contract() -> None:
     assert 'id="project-board-path"' in html
     assert "getProjects: () => apiRequest('/projects')" in js
     assert "createOrAdoptProject: (payload)" in js
-    assert "openProject: (id)" in js
-    assert "method: 'POST', body: '{}'" in js
+    switcher = js.split("async function switchProject(", 1)[1].split("async function loadProjects()", 1)[0]
+    assert "await api.getProjects()" in switcher
+    assert "api.openProject" not in switcher
+    assert "window.location.assign(project.url)" in switcher
+    assert 'window.location.assign(`/?board=${encodeURIComponent(projectId)}`)' in switcher
     assert "modal.setAttribute('aria-labelledby', titleId)" in js
     assert "role: 'alert', 'aria-live': 'assertive'" in js
-    assert "window.location.assign(opened.url)" in js
     assert "function openManageProjectsDialog()" in js
     assert "'projects.boardPath': 'Issues are stored here'" in js
     assert "'projects.boardPath': '이슈 저장 위치'" in js

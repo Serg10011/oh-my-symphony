@@ -345,6 +345,7 @@ def health(self: Orchestrator) -> dict[str, Any]:
         "version": __version__,
         "generated_at": _utc_iso_z(),
         "workflow_path": str(self._workflow_state.path),
+        "manual_start": self._manual_start,
         "service_instance_id": self._service_instance_id,
         "orchestrator_pid": os.getpid(),
         "tick": {

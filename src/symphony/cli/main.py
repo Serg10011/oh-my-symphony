@@ -111,6 +111,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default="127.0.0.1",
         help="bind host for HTTP API (default: loopback)",
     )
+    parser.add_argument("--require-manual-start", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--log-level",
         default=None,
@@ -193,7 +194,7 @@ async def _run(args: argparse.Namespace) -> int:
             path=str(workflow_path),
         )
 
-    state = WorkflowState(workflow_path)
+    state = WorkflowState(workflow_path, require_manual_start=getattr(args, "require_manual_start", False))
     cfg, err = state.reload()
     if cfg is None:
         return _fail_startup(

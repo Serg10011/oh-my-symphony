@@ -1512,6 +1512,12 @@ async def _hold_reopened_ticket_over_budget(
 async def _auto_triage_todo_if_actionable(
     self: Orchestrator, issue: Issue, cfg: ServiceConfig
 ) -> bool:
+    if cfg.tracker.manual_start:
+        from ..api_team import api_profile
+
+        kind = cfg.agent.kind_for_state(issue.state, issue.agent_kind)
+        if not issue.start_requested or api_profile(cfg, kind) is not None:
+            return False
     if not _is_auto_triage_todo_candidate(issue, cfg):
         return False
     try:
