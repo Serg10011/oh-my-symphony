@@ -23,7 +23,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal, Mapping
+from typing import Any, Callable, Literal, Mapping, TypedDict
 
 from ._shell import _taskkill_tree
 from .errors import SymphonyError
@@ -46,6 +46,10 @@ from .workflow import (
 ProcessRunningPredicate = Callable[[int | None], bool]
 ServiceApiProbe = Callable[[str, int], bool]
 ServiceState = Literal["running", "stopped"]
+
+
+class _ServiceProbeKeywords(TypedDict, total=False):
+    service_instance_id: str
 
 # Module-level runtime bool. Pyright narrows literal `sys.platform == "win32"`
 # at evaluation time, marking Win-only branches as unreachable on macOS/Linux.
@@ -345,7 +349,7 @@ def port_owner_hint(
     if pid_alive:
         api_alive = False
     elif is_api_reachable is None:
-        probe_kwargs = (
+        probe_kwargs: _ServiceProbeKeywords = (
             {"service_instance_id": record.service_instance_id}
             if record.service_instance_id is not None
             else {}
@@ -476,7 +480,7 @@ def service_status(
     if pid_running:
         api_reachable = False
     elif is_api_reachable is None:
-        probe_kwargs = (
+        probe_kwargs: _ServiceProbeKeywords = (
             {"service_instance_id": record.service_instance_id}
             if record.service_instance_id is not None
             else {}
