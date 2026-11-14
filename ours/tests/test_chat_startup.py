@@ -11,6 +11,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from symphony.api_team import FINISHED_HOLD
+from symphony.orchestrator.run_registry import RunRegistry
+from symphony.trackers.file import issue_from_file
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 import chat_startup as startup  # noqa: E402
 
@@ -64,6 +68,44 @@ def card(layout):
 
 def database(layout):
     return layout.board / ".symphony/state.db"
+
+
+@pytest.fixture
+def saved_api_result(layout):
+    layout.workflow.write_text(layout.workflow.read_text().replace(
+        "  auto_merge_on_done: false\n",
+        "  auto_merge_on_done: false\n"
+        "  profiles:\n"
+        "    api-team:\n"
+        "      format: api-team-v1\n"
+        "      command: /usr/bin/python3 /test/api_board.py --settings /test/settings.json\n",
+    ))
+    card(layout).write_text(
+        "---\nid: OMS-11\nidentifier: OMS-11\ntitle: Saved result\nstate: Verify\n"
+        "agent:\n  kind: api-team\n---\nSaved result.\n"
+    )
+    database(layout).unlink()
+    registry = RunRegistry(database(layout))
+    issue = issue_from_file(card(layout))
+    assert issue is not None
+    run_id = registry.acquire_run(issue, workspace_path=layout.work, attempt=1,
+                                  attempt_kind="initial", agent_kind="api-team")
+    assert run_id is not None
+    assert registry.complete_run(issue_id=issue.id, run_id=run_id, status="api_team_finished")
+    registry.set_issue_flags(issue.id, paused=True, pause_reason=FINISHED_HOLD)
+    finished_at = registry.get_run(run_id).completed_at
+    registry.close()
+    assert finished_at is not None
+    assignment = layout.board / ".ours-state/api-team/OMS-11/assignment.json"
+    assignment.parent.mkdir(parents=True)
+    startup.save(assignment, {
+        "version": 1, "identifier": issue.identifier, "status": "result",
+        "run_id": run_id, "finished_at": finished_at.isoformat(),
+        "result_lane": "Verify", "check_lane": "Verify",
+        "candidate": {"identifier": issue.identifier, "status": "awaiting_full_checks",
+                      "commit": "a" * 40, "checks": {"static": "passed", "full": "not_run"}},
+    })
+    return assignment
 
 
 def test_prepares_two_registrations_without_starting_a_service(layout, monkeypatch):
@@ -160,6 +202,62 @@ def test_oms_checks_queue_again_after_doctor(layout, monkeypatch):
     monkeypatch.setattr(startup, "listeners", lambda _port: set())
     assert startup.ensure_oms(layout) == "queue_waiting"
     assert len(commands) == 1 and commands[0][-2:] == ("doctor", str(layout.workflow))
+
+
+def test_oms_recovers_with_saved_api_result(layout, saved_api_result, monkeypatch):
+    files = (card(layout), saved_api_result, database(layout))
+    before = [path.read_bytes() for path in files]
+    commands = []
+
+    def run(*argv, **_kwargs):
+        commands.append(argv)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(startup, "job", lambda _label: None)
+    monkeypatch.setattr(startup, "listeners", lambda _port: set())
+    monkeypatch.setattr(startup, "run", run)
+    assert startup.ensure_oms(layout) == "starting"
+    assert [command[0] for command in commands] == [str(layout.python), "/bin/launchctl"]
+    assert commands[1][1:] == ("bootstrap", startup.target(startup.OMS).rsplit("/", 1)[0],
+                               str(layout.plist(startup.OMS)))
+    assert [path.read_bytes() for path in files] == before
+
+
+@pytest.mark.parametrize("change", [
+    "missing_assignment", "queued_assignment", "missing_candidate", "other_run",
+    "legacy_agent", "missing_hold", "retry_pending", "newer_run",
+])
+def test_verify_requires_a_finished_api_result_without_retry(layout, saved_api_result, change):
+    if change == "legacy_agent":
+        ticket = card(layout)
+        ticket.write_text(ticket.read_text().replace("  kind: api-team", "  kind: claude"))
+    elif change == "missing_assignment":
+        saved_api_result.unlink()
+    elif change == "newer_run":
+        registry = RunRegistry(database(layout))
+        issue = issue_from_file(card(layout))
+        assert issue is not None
+        other = registry.acquire_run(issue, workspace_path=layout.work, attempt=2,
+                                     attempt_kind="initial", agent_kind="api-team")
+        assert other is not None
+        assert registry.complete_run(issue_id=issue.id, run_id=other, status="api_team_failed")
+        registry.close()
+    elif change in {"missing_hold", "retry_pending"}:
+        with sqlite3.connect(database(layout)) as conn:
+            if change == "missing_hold":
+                conn.execute("DELETE FROM issue_flags")
+            else:
+                conn.execute("UPDATE issue_flags SET retry_attempt = 2")
+    else:
+        value = json.loads(saved_api_result.read_bytes())
+        if change == "queued_assignment":
+            value["status"] = "queued"
+        elif change == "missing_candidate":
+            del value["candidate"]
+        else:
+            value["run_id"] = "b" * 32
+        startup.save(saved_api_result, value)
+    assert not startup.queue_is_safe(layout)
 
 
 def test_oms_starts_once_and_accepts_only_its_own_health(layout, monkeypatch):
