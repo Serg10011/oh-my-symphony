@@ -178,7 +178,7 @@ def _preview_workflow(project: Project) -> ServiceConfig:
     return cfg
 
 
-async def _ready_service(project: Project) -> bool:
+async def _ready_service(project: Project, *, require_manual_start: bool = False) -> bool:
     from ..service import load_record
 
     record = await asyncio.to_thread(load_record, project.workflow)
@@ -187,6 +187,7 @@ async def _ready_service(project: Project) -> bool:
     return await asyncio.to_thread(
         is_symphony_workflow_reachable, project.host, project.port, project.workflow,
         service_instance_id=record.service_instance_id if record else None,
+        require_manual_start=require_manual_start,
     )
 
 
@@ -314,7 +315,11 @@ def _register_project_routes(app: web.Application, ctx: _Ctx) -> None:
                 return _json_error(409, "start_changed", exc.message)
             from ..service import main as service_command
 
-            if not await _ready_service(project):
+            if await _ready_service(project):
+                if not await _ready_service(project, require_manual_start=True):
+                    return _json_error(409, "live_manual_start_required",
+                                       "Работающая служба ещё не подтвердила ручной режим")
+            else:
                 code = await asyncio.to_thread(
                     service_command, ["start", project.workflow, "--host", project.host,
                                       "--port", str(project.port), "--require-manual-start"]
@@ -322,7 +327,7 @@ def _register_project_routes(app: web.Application, ctx: _Ctx) -> None:
                 if code != 0:
                     raise ProjectError("service start failed")
                 for _ in range(20):
-                    if await _ready_service(project):
+                    if await _ready_service(project, require_manual_start=True):
                         break
                     await asyncio.sleep(0.2)
                 else:

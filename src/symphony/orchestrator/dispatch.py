@@ -78,6 +78,7 @@ async def _on_tick(self: Orchestrator) -> None:
             return
         log.warning("workflow_reload_failed", error=str(err))
     assert cfg is not None
+    self._manual_start = cfg.tracker.manual_start
     quota_hold.release_hold_if_workflow_changed(self, cfg)
     # Apply hot-reloadable settings.
     if (

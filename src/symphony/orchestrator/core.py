@@ -248,6 +248,7 @@ class Orchestrator:
             os.environ.pop(SERVICE_INSTANCE_ENV, None)
         )
         self._workflow_state = workflow_state
+        self._manual_start = False
         # Initiative D — backend factory via constructor injection. None
         # falls back to the module-level `build_backend`, looked up at call
         # time in `_build_agent_backend` so tests may also monkeypatch
@@ -600,6 +601,7 @@ class Orchestrator:
                 raise err or SymphonyError("workflow not loaded")
         ensure_workflow_repo_is_safe(cfg.workflow_path)
         validate_for_dispatch(cfg)
+        self._manual_start = cfg.tracker.manual_start
         # Surface the workflow dir to every subprocess spawned afterwards
         # (hooks and agent backends inherit via os.environ). WORKFLOW.md
         # authors can then reference it from `claude.command` etc., e.g.

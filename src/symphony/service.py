@@ -290,9 +290,12 @@ def is_symphony_workflow_reachable(
     workflow_path: str | Path,
     *,
     service_instance_id: str | None = None,
+    require_manual_start: bool = False,
 ) -> bool:
     """Return whether a port serves Symphony for the exact workflow."""
     payload = _probe_json(host, port, "/api/v1/health", service_instance_id)
+    if require_manual_start and (not isinstance(payload, dict) or payload.get("manual_start") is not True):
+        return False
     return _payload_serves_workflow(payload, workflow_path)
 
 

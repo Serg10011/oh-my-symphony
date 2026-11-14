@@ -2039,7 +2039,10 @@ async def test_saved_board_read_and_explicit_start_are_separate(
     outside = board_dir / "outside.md"
     outside.write_text(TICKET.replace("SEED-1", "EVE-9"), encoding="utf-8")
     link = eve / "kanban" / "EVE-9.md"
-    link.symlink_to(outside)
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        link = None
     monkeypatch.setattr(project_routes.Path, "home", lambda: root.parent)
     monkeypatch.setattr(project_routes, "is_symphony_workflow_reachable", lambda *_, **__: False)
     starts = []
@@ -2065,7 +2068,24 @@ async def test_saved_board_read_and_explicit_start_are_separate(
         response = await client.post("/api/v1/projects/eve/open", json={})
         assert (await response.json())["url"] == "/?board=eve"
         assert starts == []
-        assert set((eve / "kanban").iterdir()) == {eve / "kanban" / "SEED-1.md", link}
+        expected = {eve / "kanban" / "SEED-1.md"}
+        if link is not None:
+            expected.add(link)
+        assert set((eve / "kanban").iterdir()) == expected
+        eve_config = eve / "WORKFLOW.md"
+        eve_config.write_text(WORKFLOW_TEXT.replace("  kind: file", "  kind: file\n  manual_start: true"))
+        monkeypatch.setattr(
+            project_routes,
+            "is_symphony_workflow_reachable",
+            lambda *_, require_manual_start=False, **__: not require_manual_start,
+        )
+        response = await client.post(
+            "/api/v1/projects/eve/board/SEED-1/start", json={"updated_at": card["updated_at"]},
+        )
+        assert response.status == 409
+        assert (await response.json())["error"]["code"] == "live_manual_start_required"
+        assert starts == []
+        assert (eve / "kanban" / "SEED-1.md").read_text() == TICKET
     finally:
         await client.close()
 
