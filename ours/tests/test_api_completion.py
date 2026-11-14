@@ -39,12 +39,16 @@ def accepted(world, tmp_path, monkeypatch):
     pr = {**hub.pr, "merged": False}
     reads = []
 
-    def lookup(self, path):
+    def lookup(path):
         reads.append(pr["number"])
         assert path.endswith(f"/pulls/{pr['number']}")
         return pr
 
-    monkeypatch.setattr(publication.Publisher, "github", lookup)
+    monkeypatch.setattr(hub.publisher, "github", lookup)
+    # The fixture already supplies a publisher with an offline transport.
+    monkeypatch.setattr(completion, "publication", SimpleNamespace(
+        Publisher=lambda _board: hub.publisher, ReleaseError=publication.ReleaseError,
+    ))
     return board, hub, source, pr, reads
 
 
