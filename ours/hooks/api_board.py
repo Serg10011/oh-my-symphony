@@ -655,7 +655,7 @@ class Board:
                     if should_stop():
                         raise Interrupted()
                     yield
-            # run invokes the loader only after its local isolation preflight.
+            # The loader follows isolation and subscription readiness checks.
             outcome = session.run(self.session_path, transport=transport, cancelled=should_stop,
                                   credential_loader=credentials or keychain_credentials, on_checkpoint=on_checkpoint,
                                   request_guard=admit_request)
@@ -689,7 +689,9 @@ class Board:
                 value["result_lane"] = self._cancel_lane()
             value["finished_at"] = session._now()
             self._save(value)
-            self._hold(value, RESULT_NOTE, value.get("result_lane", "needs_human"))
+            reason = session.FLASH_READINESS_REASONS.get(value.get("reason"))
+            note = f"{reason}. Платных запросов к ведущему не было." if reason else RESULT_NOTE
+            self._hold(value, note, value.get("result_lane", "needs_human"))
         return self.show()
 
     def _stage(self, value, names):

@@ -845,7 +845,16 @@ REPORT_ASSUMPTIONS = {
 REPORT_TARIFF_SOURCES = {"session_snapshot": "снимок сессии", "builtin_catalog": "встроенный каталог"}
 REPORT_STATUSES = {"prepared": "подготовлена", "running": "выполняется", "stopped": "остановлена",
                    "dialogue_complete": "диалог завершён; приёмка результата отдельно"}
+FLASH_READINESS_REASONS = {
+    "flash_catalog_unavailable": "Не удалось получить список моделей Antigravity",
+    "flash_model_unavailable": "Выбранной модели нет в списке Antigravity для этого входа Google",
+    "flash_connection_unavailable": "Antigravity не открыл сеанс выбранной модели",
+    "flash_startup_contract_mismatch": "Antigravity не подтвердил выбранную модель и режим сеанса",
+}
+
+
 REPORT_STOP_REASONS = {
+    **FLASH_READINESS_REASONS,
     "operator_stopped": "остановлено оператором или после потери связи с доской",
     "board_process_interrupted": "служба прервала процесс команды. Подробности сохранены в журнале службы",
     "board_execution_failed": "процесс API-команды прерван; автоматического повтора нет",
@@ -1580,9 +1589,13 @@ def _run(path, *, environ=None, transport=None, require_budget=False, credential
             return summary(state)
         if state["spec"]["worker_profile"] == api.FLASH_WORKER:
             try:
-                flash_probe.subscription_executable()
+                flash_probe.check_readiness(state["profiles"]["worker"]["model"],
+                                            cancelled=_CANCELLATION.get(), temporary_root=path.parent)
             except (flash_probe.ProbeError, OSError) as exc:
-                _stop(path, state, "flash_startup_failed" if isinstance(exc, OSError) else str(exc))
+                if not _cancelled(path, state):
+                    _stop(path, state, "flash_startup_failed" if isinstance(exc, OSError) else str(exc))
+                return summary(state)
+            if _cancelled(path, state):
                 return summary(state)
         env = dict(credential_loader(state["spec"]) if credential_loader is not None
                    else os.environ if environ is None else environ)

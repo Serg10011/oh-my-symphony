@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import re
 import selectors
 import signal
 import subprocess
@@ -19,6 +20,7 @@ import time
 MODEL = "gemini-3.8-flash-high"
 AGENT = "symphony-controlled-worker"
 MAX_BYTES = 256 * 1024
+CATALOG_TIMEOUT = 12
 SETTINGS = {
     "modelProvider": "", "useG1Credits": False, "toolPermission": "strict",
     "allowNonWorkspaceAccess": False,
@@ -76,17 +78,17 @@ def subscription_executable(executable=None):
     return executable
 
 
-def inspect_init(event, directory):
+def inspect_init(event, directory, *, model=MODEL):
     value = event.get("init")
     if (event.get("event") != "init" or not isinstance(value, dict)
-            or value.get("model") != MODEL or value.get("agent") != AGENT
+            or value.get("model") != model or value.get("agent") != AGENT
             or value.get("permission_mode") != "strict"
             or value.get("cwd") != str(directory)
             or not isinstance(value.get("tools"), list)
             or any(not isinstance(tool, str) for tool in value["tools"])):
         raise ProbeError("flash_startup_contract_mismatch")
     extra = sorted(set(value["tools"]) - {"finish"})
-    return {"startup_contract_matches": True, "model": MODEL, "effort": "high",
+    return {"startup_contract_matches": True, "model": model, "effort": "high",
             "native_tools": sorted(set(value["tools"])), "unexpected_tools": extra,
             "tool_catalog_matches_profile": not extra, "effective_permissions_verified": False,
             "reason": "flash_effective_permissions_unverified",
@@ -104,13 +106,14 @@ def _environment():
             if key in {"HOME", "PATH", "TMPDIR", "LANG", "LC_ALL", "USER", "LOGNAME"}}
 
 
-def _inspect(executable, directory, timeout, cancelled):
+def _inspect(executable, directory, timeout, cancelled, *, model=MODEL):
     agents = directory / ".agents" / "agents"
     agents.mkdir(parents=True, mode=0o700)
     (agents / (AGENT + ".md")).write_text(AGENT_DOCUMENT)
+    settings = {**SETTINGS, "trustedWorkspaces": [str(directory)]}
     argv = [str(executable), "--input-format", "stream-json", "--output-format", "stream-json",
-            "--agent", AGENT, "--model", MODEL, "--effort", "high", "--disable-slash-commands",
-            "--settings", json.dumps(SETTINGS), "--print="]
+            "--agent", AGENT, "--model", model, "--effort", "high", "--disable-slash-commands",
+            "--settings", json.dumps(settings), "--print="]
     process = None
     selector = selectors.DefaultSelector()
     buffered, received = bytearray(), 0
@@ -143,7 +146,7 @@ def _inspect(executable, directory, timeout, cancelled):
                     event = json.loads(raw)
                     if not isinstance(event, dict):
                         raise ProbeError("flash_probe_invalid_output")
-                    return inspect_init(event, directory)
+                    return inspect_init(event, directory, model=model)
         raise ProbeError("flash_probe_no_init")
     except (OSError, ValueError, RecursionError):
         raise ProbeError("flash_probe_failed") from None
@@ -177,6 +180,42 @@ def probe(executable=None, *, timeout=30, cancelled=None, temporary_root=None):
     # This generated control directory contains no project files or task text.
     with tempfile.TemporaryDirectory(prefix="symphony-flash-probe-", dir=temporary_root) as directory:
         return _inspect(executable, Path(directory).resolve(), timeout, cancelled)
+
+
+def check_readiness(model, *, cancelled=None, temporary_root=None):
+    """Check the signed-in model catalog and its strict startup before API work."""
+    executable = subscription_executable()
+    with tempfile.TemporaryDirectory(prefix="symphony-flash-ready-", dir=temporary_root) as directory:
+        directory = Path(directory).resolve()
+        if cancelled and cancelled():
+            raise ProbeError("flash_probe_cancelled")
+        try:
+            result = subprocess.run([str(executable), "models"], cwd=directory, env=_environment(),
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                    timeout=CATALOG_TIMEOUT, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            raise ProbeError("flash_catalog_unavailable") from None
+        if cancelled and cancelled():
+            raise ProbeError("flash_probe_cancelled")
+        if result.returncode or len(result.stdout) > MAX_BYTES:
+            raise ProbeError("flash_catalog_unavailable")
+        models = set()
+        for row in result.stdout.splitlines():
+            fields = row.split(maxsplit=1)
+            if len(fields) == 2 and re.fullmatch(rb"[a-z0-9][a-z0-9_.-]*-[a-z0-9_.-]+", fields[0]):
+                models.add(fields[0])
+        if not models:
+            raise ProbeError("flash_catalog_unavailable")
+        if model.encode("ascii") not in models:
+            raise ProbeError("flash_model_unavailable")
+        try:
+            _inspect(executable, directory, 30, cancelled, model=model)
+        except ProbeError as exc:
+            if str(exc) in {"flash_probe_cancelled", "flash_startup_contract_mismatch"}:
+                raise
+            if str(exc) == "flash_probe_cleanup_unconfirmed":
+                raise ProbeError("flash_cleanup_unconfirmed") from None
+            raise ProbeError("flash_connection_unavailable") from None
 
 
 def cli(argv=None):

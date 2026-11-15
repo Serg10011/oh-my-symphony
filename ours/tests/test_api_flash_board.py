@@ -29,14 +29,33 @@ from pathlib import Path
 
 cid = "00000000-0000-4000-8000-000000000001"
 model = "gemini-3.8-flash-high"
-settings = json.loads(sys.argv[sys.argv.index("--settings")+1])
-assert settings["useG1Credits"] is False and settings["modelProvider"] == ""
 assert not any(key in os.environ for key in ("OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY"))
 assert not Path("README.md").exists()
-hooks = json.loads(Path(".agents/hooks.json").read_text())["symphony-gate"]
+if sys.argv[1:] == ["models"]:
+    if MODE == "catalog_failure":
+        print("Private catalog diagnostic", file=sys.stderr)
+        sys.exit(1)
+    slug = model + "-other" if MODE == "catalog_missing" else model
+    print(slug + "\tGemini 3.8 Flash")
+    sys.exit(0)
+settings = json.loads(sys.argv[sys.argv.index("--settings")+1])
+assert settings["useG1Credits"] is False and settings["modelProvider"] == ""
 
 def emit(event, value):
     print(json.dumps({"event": event, event: value}), flush=True)
+
+if not Path(".agents/hooks.json").exists():
+    if MODE == "connection_failure":
+        sys.exit(1)
+    if MODE == "wrong_model":
+        model += "-other"
+    Path(LOG+".ready").touch()
+    emit("init", {"model": model, "agent": "symphony-controlled-worker", "permission_mode": "strict",
+                  "cwd": os.getcwd(), "tools": ["finish", "view_file", "run_command"]})
+    assert not sys.stdin.buffer.read()
+    sys.exit(0)
+
+hooks = json.loads(Path(".agents/hooks.json").read_text())["symphony-gate"]
 
 def hook(event):
     handler = hooks[event][0]
@@ -172,8 +191,12 @@ def test_confirmed_flash_edits_only_the_task_copy_and_is_billed_separately(board
         sol(calls=[assignment(call_id="correction", kind="correction", message="Confirm the result.")]),
         sol("Проверен тест в копии задачи."),
     )
-    result = board.run("a" * 32, credentials=lambda _: {"OPENAI_API_KEY": KEYS["OPENAI_API_KEY"]},
-                       transport=transport)
+
+    def credentials(_):
+        assert Path(str(path) + ".ready").is_file()
+        return {"OPENAI_API_KEY": KEYS["OPENAI_API_KEY"]}
+
+    result = board.run("a" * 32, credentials=credentials, transport=transport)
     assert result["status"] == "result", result.get("report_text")
     assert [request["reasoning"]["effort"] for request in sent] == ["high", "high", "max", "max"]
     assert "assert 2 + 2 == 4" in json.dumps(sent[2]["input"])
@@ -237,3 +260,25 @@ def test_missing_cli_stops_before_openai_key_access(board, monkeypatch, tmp_path
     result = board.run("a" * 32, credentials=lambda _: pytest.fail("No credentials before local readiness"))
     assert result["status"] == "stopped" and result["reason"] == "flash_cli_unavailable"
     assert result["session"]["calls"] == 0
+
+
+@pytest.mark.parametrize(("mode", "reason"), [
+    ("catalog_failure", "flash_catalog_unavailable"),
+    ("catalog_missing", "flash_model_unavailable"),
+    ("connection_failure", "flash_connection_unavailable"),
+    ("wrong_model", "flash_startup_contract_mismatch"),
+])
+def test_subscription_readiness_failure_stops_before_sol(board, tmp_path, monkeypatch, mode, reason):
+    wire = fake_worker(tmp_path, monkeypatch, mode)
+    approve_flash(board)
+    result = board.run(
+        "a" * 32, credentials=lambda _: pytest.fail("The Sol key must not be read"),
+        transport=httpx.MockTransport(lambda _: pytest.fail("No API request before worker readiness")),
+    )
+    assert result["status"] == "stopped" and result["reason"] == reason
+    assert result["session"]["calls"] == 0 and not wire.exists()
+    front, body = board.card()
+    assert front["state"] == "needs_human"
+    assert session.FLASH_READINESS_REASONS[reason] in body and "Private catalog diagnostic" not in body
+    assert "Private catalog diagnostic" not in result["report_text"]
+    assert not list(board.root.glob("symphony-flash-ready-*"))
