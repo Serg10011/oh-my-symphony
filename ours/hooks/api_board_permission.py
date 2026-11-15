@@ -94,6 +94,8 @@ class Permission:
                  "budget_scope": "per_task", "process_timeout_seconds": self.context["process_timeout_seconds"]}
         if "lead_escalation" in spec:
             terms["lead_escalation"] = spec["lead_escalation"]
+        if spec["lead_profile"] == "deepseek-lead" and raw.get("context_paths"):
+            terms["context_paths"] = raw["context_paths"]
         binding = {"terms": terms, "context": self.context, "settings_path": str(self.settings),
                    "settings": raw, "repository_identity": [info.st_dev, info.st_ino],
                    "workflow": hashlib.sha256(self.workflow.read_bytes()).hexdigest(),

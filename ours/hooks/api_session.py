@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 import api_executor as api
 import api_budget as budget
 import api_project as project
+import api_project_context as project_context
 import api_cache
 import api_effort
 import api_flash_probe as flash_probe
@@ -200,7 +201,8 @@ def validate_composition(lead, worker):
 
 
 def validate_spec(raw: dict) -> dict:
-    allowed = {"task", "context", "lead_profile", "worker_profile", "lead_effort", "lead_escalation", "limits", "budget", "project", "execution"}
+    allowed = {"task", "context", "lead_profile", "worker_profile", "lead_effort", "lead_escalation",
+               "limits", "budget", "project", "execution", "project_context"}
     if not isinstance(raw, dict) or set(raw) - allowed or not _text(raw.get("task"), 65536):
         raise SessionError("invalid_spec")
     lead, worker = raw.get("lead_profile", "deepseek-lead"), raw.get("worker_profile", "luna-worker")
@@ -251,6 +253,13 @@ def validate_spec(raw: dict) -> dict:
         try:
             result["execution"] = workspace.validate(raw["execution"])
         except workspace.WorkspaceError as exc:
+            raise SessionError(str(exc)) from None
+    if "project_context" in raw:
+        if lead != "deepseek-lead" or "execution" not in result:
+            raise SessionError("invalid_project_context")
+        try:
+            result["project_context"] = project_context.validate(raw["project_context"], result["project"]["paths"])
+        except project.ProjectError as exc:
             raise SessionError(str(exc)) from None
     return result
 
@@ -403,6 +412,8 @@ def _load(path: Path, *, raw: bytes | None = None) -> dict:
     if "project" in spec:
         try:
             project.validate_snapshot(state.get("project_snapshot"), spec["project"])
+            if "project_context" in spec:
+                project_context.validate_snapshot(spec["project_context"], state["project_snapshot"])
         except project.ProjectError:
             raise SessionError("invalid_project_state") from None
         records = state.get("file_calls")
@@ -477,6 +488,8 @@ def create(path, spec: dict) -> dict:
     if "project" in spec:
         try:
             spec["project"], state["project_snapshot"] = project.snapshot(spec["project"])
+            if "project_context" in spec:
+                project_context.validate_snapshot(spec["project_context"], state["project_snapshot"])
             state["file_calls"] = []
         except project.ProjectError as exc:
             raise SessionError(str(exc)) from None
@@ -580,6 +593,8 @@ def summary(state: dict) -> dict:
         result["project"] = {"commit": snapshot["commit"], "paths": snapshot["paths"],
                              "files": len(snapshot["files"]), "digest": snapshot["digest"],
                              "file_calls": len(state["file_calls"]), "read_only": "execution" not in state["spec"]}
+    if "project_context" in state["spec"]:
+        result["project_context"] = project_context.metadata(state["spec"]["project_context"])
     if "execution" in state["spec"]:
         result["execution"] = {"mode": "isolated_source_copy", "network": False,
                                "automatic_retry": False, "source_repository_modified": False,
@@ -810,6 +825,8 @@ def spend_report(state: dict) -> dict:
               "calls": len(records), "requests": records,
               "by_model": _model_records(records, catalog), "totals": _token_counts(records),
               "cost": _cost_report(records, catalog, source)}
+    if "project_context" in state["spec"]:
+        result["project_context"] = project_context.metadata(state["spec"]["project_context"])
     if api_effort.enabled(state["spec"]):
         result["lead_effort"] = api_effort.summary(state)
     if "budget" in state["spec"]:
@@ -993,6 +1010,9 @@ def render_report(data: dict) -> str:
             reason = " ".join(_label(event.get("reason")).split())
             lines.append(f"  повышение ведущим с запроса №{_count(event.get('effective_call_index'))}: "
                          f"{reason}")
+    if isinstance(data.get("project_context"), dict):
+        context = data["project_context"]
+        lines.append(f"  общий контекст проекта · файлов {len(context['paths'])} · версия {context['sha256'][:12]}")
     lines.append(f"  запросов: {_count(totals.get('calls'))}"
                  f" · без подтверждённого расхода: {_count(totals.get('unknown_usage_calls'))}")
     if budget_row is None:
@@ -1190,6 +1210,8 @@ def _build_request(state, history, cap, resources, *, part_id=None, request_vers
     request["instructions"] += "\n" + RESOURCE_INSTRUCTIONS
     if "execution" in spec and request_version >= 3:
         request["instructions"] += "\n" + workspace.scope_instructions(spec)
+    if part_id is None and "project_context" in spec:
+        request["instructions"] = project_context.prefix(spec["project_context"]) + request["instructions"]
     profile = spec["worker_profile"] if part_id is not None else spec["lead_profile"]
     if request_version >= 2 and api.profile_for(profile).provider == "openai":
         history = api_cache.input_with_breakpoints(history, state["calls"], part_id)

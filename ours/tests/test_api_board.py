@@ -59,6 +59,127 @@ def approve(board):
     return token
 
 
+def test_project_context_reused_across_cards_and_kept_on_its_board(board, tmp_path):
+    settings = json.loads(board.settings.read_text())
+    settings["context_paths"] = ["README.md"]
+    board.settings.write_text(json.dumps(settings))
+    assert board.permission.proposal()[0]["terms"]["context_paths"] == ["README.md"]
+    lead_only_material = (board.repo / "README.md").read_text().strip()
+    (board.repo / "README.md").write_text("Uncommitted change")
+
+    approve(board)
+    transport, requests = exchange([
+        frame(None, [delegate()]), frame("Part complete", model="gpt-6-luna"), frame("Reviewed"),
+    ])
+    result = board.run("a" * 32, credentials=lambda _: KEYS, transport=transport)
+    first = requests[0]["body"]
+    first_prefix = first["instructions"].split("\n\n", 1)[0]
+    assert lead_only_material in first_prefix and "Uncommitted change" not in first_prefix
+    assert lead_only_material not in json.dumps(requests[1]["body"])
+    assert requests[2]["body"]["instructions"].startswith(first_prefix + "\n\n")
+    assert result["project_context"] == result["session"]["project_context"] == session.report(board.session_path)["project_context"]
+    assert result["project_context"]["paths"] == ["README.md"]
+    assert result["project_context"]["sha256"][:12] in result["report_text"]
+    assert lead_only_material not in json.dumps(result)
+
+    (board.repo / "src/main.py").write_text("# Update unrelated to the reference\n")
+    git(board.repo, "add", "src/main.py")
+    git(board.repo, "commit", "-qm", "Update code only")
+    git(board.repo, "branch", "-f", "our-main", "HEAD")
+    settings["session"]["limits"] = {"output_tokens_per_call": 256}
+    board.settings.write_text(json.dumps(settings))
+
+    def add_card(context, settings_path, identifier, title):
+        path = Path(context["board_root"]) / f"{identifier}.md"
+        path.write_text(f"---\nid: {identifier}\ntitle: {title}\nstate: needs_human\nagent_kind: api-team\n---\n")
+        return board_api.Board(settings_path, {**context, "identifier": identifier})
+
+    second = add_card(board.context, board.settings, "TEST-2", "Another task")
+    approve(second)
+    transport, requests = exchange([frame("Second result")])
+    second_result = second.run("b" * 32, credentials=lambda _: KEYS, transport=transport)
+    second_wire = requests[0]["body"]
+    assert second_result["project"]["commit"] != result["project"]["commit"]
+    assert second_result["project_context"] == result["project_context"]
+    assert second_wire["instructions"].startswith(first_prefix + "\n\n")
+    assert first["instructions"] != second_wire["instructions"] and first["input"] != second_wire["input"]
+
+    (board.repo / "README.md").write_text("Updated committed reference\n")
+    git(board.repo, "add", "README.md")
+    git(board.repo, "commit", "-qm", "Update reference")
+    git(board.repo, "branch", "-f", "our-main", "HEAD")
+    changed = add_card(board.context, board.settings, "TEST-3", "Use the updated reference")
+    assert changed.prepare()["project_context"]["sha256"] != result["project_context"]["sha256"]
+    assert session.show(board.session_path)["project_context"] == result["project_context"]
+
+    other = tmp_path / "other-board"
+    other.mkdir()
+    other_repo = repository(other, {"README.md": "Other project reference\n", "src/main.py": "# Other program\n"})
+    git(other_repo, "branch", "our-main")
+    (other / "kanban").mkdir()
+    (other / "WORKFLOW.md").write_text("Other trusted workflow\n")
+    other_settings = other / "api-settings.json"
+    other_settings.write_text(json.dumps(settings))
+    third = add_card({**board.context, "repo": str(other_repo), "workflow": str(other / "WORKFLOW.md"),
+                      "board_root": str(other / "kanban")}, other_settings, "OTHER-1", "Different project")
+    approve(third)
+    transport, requests = exchange([frame("Other project result")])
+    third_result = third.run("c" * 32, credentials=lambda _: KEYS, transport=transport)
+    third_wire = requests[0]["body"]
+    assert "Other project reference" in third_wire["instructions"] and lead_only_material not in json.dumps(third_wire)
+    assert third_result["project_context"]["sha256"] != result["project_context"]["sha256"]
+
+
+@pytest.mark.parametrize(("selection", "grants", "code"), [
+    (["README.md"], ["src"], "project_context_file_unavailable"),
+    (["src"], ["."], "project_context_file_unavailable"),
+    (["../README.md"], ["."], "invalid_project_path"),
+    ([".env"], ["."], "project_scope_denied"),
+])
+def test_project_context_requires_named_granted_files(board, selection, grants, code):
+    settings = json.loads(board.settings.read_text())
+    board.settings.write_text(json.dumps({**settings, "paths": grants, "context_paths": selection}))
+    with pytest.raises((session.SessionError, session.project.ProjectError), match=code):
+        board.prepare()
+    assert not board.path.exists() and not board.session_path.exists()
+
+
+def test_project_context_total_size_is_bounded_before_confirmation(board):
+    from api_project_context import MAX_CONTEXT_BYTES
+
+    settings = json.loads(board.settings.read_text())
+    board.settings.write_text(json.dumps({**settings, "context_paths": ["README.md", "src/main.py"]}))
+    for path in ("README.md", "src/main.py"):
+        (board.repo / path).write_text("a" * (MAX_CONTEXT_BYTES // 2 + 1))
+    git(board.repo, "add", "README.md", "src/main.py")
+    git(board.repo, "commit", "-qm", "Oversize reference")
+    git(board.repo, "branch", "-f", "our-main", "HEAD")
+    with pytest.raises(session.project.ProjectError, match="project_context_too_large"):
+        board.prepare()
+    assert not board.path.exists() and not board.session_path.exists()
+
+
+def test_project_context_for_deepseek_is_not_added_to_sol(board):
+    settings = json.loads(board.settings.read_text())
+    board.settings.write_text(json.dumps({**settings, "context_paths": ["README.md"]}))
+    view = board.prepare({"lead_profile": "sol-lead", "worker_profile": None})
+    assert "project_context" not in view
+    assert "project_context" not in board._load()["spec"]
+
+
+def test_saved_project_context_must_match_frozen_project_files(board):
+    settings = json.loads(board.settings.read_text())
+    board.settings.write_text(json.dumps({**settings, "context_paths": ["README.md"]}))
+    board.prepare()
+    spec = board._load()["spec"]
+    session.create(board.session_path, spec)
+    value = json.loads(board.session_path.read_text())
+    value["spec"]["project_context"]["files"]["README.md"] = "Changed after approval"
+    session._save(board.session_path, value)
+    with pytest.raises(session.SessionError, match="invalid_project_state"):
+        session.show(board.session_path)
+
+
 def test_prepare_is_free_and_confirm_is_bound_and_idempotent(board):
     view = board.prepare()
     assert view["status"] == "prepared" and view["project"]["commit"] != "our-main"

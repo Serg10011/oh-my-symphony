@@ -33,6 +33,7 @@ import api_delivery as delivery
 import api_group_release as group
 import api_gemini_quota as gemini_quota
 import api_project as project
+import api_project_context as project_context
 import api_session as session
 import deliver
 import project_config as pc
@@ -164,6 +165,8 @@ class Board:
                                       "execution": raw["execution"]})
         session._path(self.session_path)
         spec["project"], snapshot = project.snapshot(spec["project"])
+        if spec["lead_profile"] == "deepseek-lead" and raw.get("context_paths"):
+            spec["project_context"] = project_context.capture(snapshot, self.teams.binding, raw["context_paths"])
         code = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in sorted(Path(__file__).parent.glob("api_*.py"))}
         rules = candidate.rules_snapshot(self.workflow.parent)
@@ -330,6 +333,8 @@ class Board:
                   "reason": value.get("reason"), "run_id": value.get("run_id"),
                   "stop_requested": self.stop_path.exists(), "accepted": False, "delivered": False,
                   "delivery_status": "not_configured"}
+        if "project_context" in spec:
+            result["project_context"] = project_context.metadata(spec["project_context"])
         if "lead_escalation" in spec:
             result["lead_escalation"] = spec["lead_escalation"]
         if value.get("authorization"):

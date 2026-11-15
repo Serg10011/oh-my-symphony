@@ -271,14 +271,18 @@ def call(snapshot: dict, name: str, args: dict) -> dict:
             "eof": end == len(text), "text": text[start:end]}
 
 
+def _matches_blob(entry, data):
+    algorithm = hashlib.sha1 if len(entry["oid"]) == 40 else hashlib.sha256
+    actual = algorithm(b"blob " + str(len(data)).encode("ascii") + b"\x00" + data).hexdigest()
+    return len(data) == entry["bytes"] and actual == entry["oid"]
+
+
 def _read_text(snapshot, path):
     entry = snapshot["files"].get(path)
     if entry is None:
         raise ProjectError("project_file_unavailable")
     data = _git(snapshot["root"], ["cat-file", "blob", entry["oid"]], entry["bytes"])
-    algorithm = hashlib.sha1 if len(entry["oid"]) == 40 else hashlib.sha256
-    actual = algorithm(b"blob " + str(len(data)).encode("ascii") + b"\x00" + data).hexdigest()
-    if len(data) != entry["bytes"] or actual != entry["oid"]:
+    if not _matches_blob(entry, data):
         raise ProjectError("project_content_changed")
     try:
         text = data.decode("utf-8")

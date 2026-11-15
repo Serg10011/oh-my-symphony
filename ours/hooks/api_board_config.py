@@ -9,6 +9,8 @@ import yaml
 
 import api_cloud_check as cloud
 import api_executor as api
+import api_project as project
+import api_project_context as project_context
 import api_session as session
 
 MODES = ("economy", "productivity")
@@ -18,7 +20,8 @@ def load_settings(path: Path) -> dict:
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 1024 * 1024:
         raise session.SessionError("invalid_api_board_settings")
     raw = session._decode(path.read_bytes())
-    if (not isinstance(raw, dict) or set(raw) - {"cloud_check", "mode", "route"} != {"version", "paths", "session", "execution"}
+    if (not isinstance(raw, dict) or set(raw) - {"cloud_check", "mode", "route", "context_paths"}
+            != {"version", "paths", "session", "execution"}
             or type(raw["version"]) is not int or raw["version"] != 1
             or ("cloud_check" in raw and raw["cloud_check"] != cloud.PROFILE)
             or ("mode" in raw and raw["mode"] not in MODES)
@@ -26,6 +29,11 @@ def load_settings(path: Path) -> dict:
             or not isinstance(raw["session"], dict)
             or set(raw["session"]) - {"context", "lead_profile", "worker_profile", "lead_effort", "lead_escalation", "limits", "budget"}):
         raise session.SessionError("invalid_api_board_settings")
+    if "context_paths" in raw:
+        try:
+            raw["context_paths"] = project_context.paths(raw["context_paths"])
+        except project.ProjectError as exc:
+            raise session.SessionError(str(exc)) from None
     return raw
 
 
