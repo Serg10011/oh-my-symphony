@@ -24,6 +24,7 @@ import yaml
 from post_merge import STATE_REL
 from symphony import api_team, service
 from symphony.issue import normalize_state, parse_iso_timestamp
+from symphony.trackers.validate import IDENTIFIER_RE
 from symphony.workflow import WorkflowState
 
 
@@ -260,11 +261,39 @@ def connector_version(layout, head):
     return hashlib.sha256("\n".join(objects).encode()).hexdigest()
 
 
+def _matches_card_id(front, identifier):
+    return ((front.get("id") or front.get("identifier")) == identifier
+            and all(front.get(key, identifier) == identifier for key in ("id", "identifier")))
+
+
+def _card_waits_for_operator(cfg, path, front, state):
+    identifier = path.stem
+    if not IDENTIFIER_RE.fullmatch(identifier) or not _matches_card_id(front, identifier):
+        return False
+    if state == "todo" and front.get("start_requested", False) is not False:
+        return False
+
+    # API assignments have their own queue, independent of tracker.manual_start.
+    assignment_path = cfg.workflow_path.parent / ".ours-state" / "api-team" / identifier / "assignment.json"
+    if assignment_path.resolve() != assignment_path:
+        return False
+    try:
+        assignment_path.lstat()
+    except FileNotFoundError:
+        return True
+    assignment = api_team._read_assignment(cfg, identifier)
+    if not assignment or assignment.get("version") != 1:
+        return False
+    status = assignment.get("status")
+    if status == "prepared":
+        return "confirmed_at" not in assignment
+    return state == "needs_human" and status in ("stopped", "result")
+
+
 def _held_api_result(cfg, path, front, db):
     """Match a saved result to the queue hold for its most recent run."""
     identifier = path.stem
-    if ((front.get("id") or front.get("identifier")) != identifier
-            or any(front.get(key, identifier) != identifier for key in ("id", "identifier"))):
+    if not _matches_card_id(front, identifier):
         return False
     kind = front.get("agent_kind")
     agent = front.get("agent")
@@ -304,10 +333,19 @@ def queue_is_safe(layout):
         cfg, error = WorkflowState(layout.workflow).reload()
         cards = layout.board / "kanban"
         if (error or cfg is None or cfg.tracker.kind != "file" or cfg.tracker.board_root != cards or cfg.code_repo != layout.clone
-                or cfg.agent.auto_merge_on_done or cards.resolve(strict=True) != cards
-                or SAFE_LANES & {normalize_state(s) for s in cfg.tracker.active_states}):
+                or cfg.agent.auto_merge_on_done or cards.resolve(strict=True) != cards):
             return False
-        terminal = SAFE_LANES & {normalize_state(s) for s in cfg.tracker.terminal_states}
+        active = {normalize_state(s) for s in cfg.tracker.active_states}
+        terminal = {normalize_state(s) for s in cfg.tracker.terminal_states}
+        if SAFE_LANES & active:
+            return False
+        finished = SAFE_LANES & terminal
+        waiting = set()
+        if cfg.tracker.manual_start:
+            if "todo" in active - terminal:
+                waiting.add("todo")
+            if "needs_human" in terminal - active and "needs_human" in cfg.agent.preserve_workspace_states:
+                waiting.add("needs_human")
         verifying = []
         for path in cards.iterdir():
             if path.suffix != ".md" or path.name.startswith(".tmp-"):
@@ -322,7 +360,7 @@ def queue_is_safe(layout):
             state = normalize_state(front["state"])
             if state in {"verify", "проверка"}:
                 verifying.append((path, front))
-            elif state not in terminal:
+            elif state not in finished and (state not in waiting or not _card_waits_for_operator(cfg, path, front, state)):
                 return False
         db = layout.board / ".symphony/state.db"
         if cfg.tracker.run_history_path != db or db.resolve(strict=True) != db or not db.is_file():
