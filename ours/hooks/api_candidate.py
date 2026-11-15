@@ -236,7 +236,7 @@ def check_identity(path: Path, value: dict, state: dict) -> None:
         raise CandidateError("api_candidate_result_changed")
 
 
-def render_report(value: dict, *, cloud_checked=False, accepted=False) -> str:
+def render_report(value: dict, *, cloud_checked=False, accepted=False, group_release=False) -> str:
     value = public_report(value)
     labels = {"awaiting_full_checks": "Кандидат собран; полный прогон ещё не выполнен.",
               "no_changes": "Изменений файлов нет; задача автоматически не принята.",
@@ -253,8 +253,12 @@ def render_report(value: dict, *, cloud_checked=False, accepted=False) -> str:
               "api_result_not_complete": "Нет завершённого результата команды",
               "workspace_result_not_sealed": "Рабочие файлы ещё не закреплены после выполнения команды",
               "candidate_preparation_failed": "Не удалось подтвердить настройки, целостность или готовность результата"}
-    rows = ["Проверка и передача файлов", "Кандидат собран. Итог Linux-проверки показан отдельно."
-            if cloud_checked else labels[value["status"]]]
+    heading = labels[value["status"]]
+    if group_release:
+        heading = "Результат связан с принятым общим выпуском."
+    elif cloud_checked:
+        heading = "Кандидат собран. Итог Linux-проверки показан отдельно."
+    rows = ["Проверка и передача файлов", heading]
     rows.append(f"Изменённых файлов: {value['file_count']}.")
     for issue in value["issues"]:
         rows.append(issues.get(issue["code"], "Подготовка прервана") + (": " + issue["path"] if "path" in issue else ""))

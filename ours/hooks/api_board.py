@@ -30,6 +30,7 @@ import api_board_permission as permission_api
 import api_candidate as candidate
 import api_cloud_check as cloud
 import api_delivery as delivery
+import api_group_release as group
 import api_gemini_quota as gemini_quota
 import api_project as project
 import api_session as session
@@ -352,10 +353,11 @@ class Board:
             result["candidate"] = candidate.public_report(value["candidate"])
             result["delivery_status"] = value["candidate"]["status"]
             receipt = None
-            if release and release["stage"] == "delivered":
+            grouped = bool(release and release.get("group_release"))
+            if release and release["stage"] == "delivered" and not grouped:
                 receipt = release["proof"]
                 result["cloud_check"] = {"status": "ready", "commit": release["commit"], "receipt": receipt}
-            elif value.get("cloud_profile") and value["candidate"]["status"] == "awaiting_full_checks":
+            elif not grouped and value.get("cloud_profile") and value["candidate"]["status"] == "awaiting_full_checks":
                 try:
                     subject = self._cloud_subject(value)
                     receipt = self._cloud_receipt(value, subject)
@@ -369,6 +371,7 @@ class Board:
                     result["cloud_check"] = {"status": "stale"}
             result["report_text"] = (result.get("report_text", "") + "\n\n"
                                      + candidate.render_report(value["candidate"], cloud_checked=bool(receipt),
+                                                               group_release=grouped,
                                                                accepted=bool(release and release.get("accepted"))))
         if release:
             if "reason" in release:
@@ -578,13 +581,14 @@ class Board:
             raise BoardError("api_result_not_ready")
         if version not in ("checked", "original"):
             raise BoardError("invalid_board_payload")
-        if version == "checked" and (value.get("check_target") or value.get("release_accept")):
+        grouped = group.receipt(self, value)
+        if version == "checked" and not grouped and (value.get("check_target") or value.get("release_accept")):
             return delivery.review(self, value, offset)
         result = session.review(self.session_path, offset=offset)
         revision = value.get("candidate", {}).get("revision")
         if revision is not None and result["revision"] != revision:
             raise BoardError("api_candidate_result_changed")
-        if version == "original" and revision:
+        if (version == "original" or grouped) and revision:
             result.update(source="original_candidate", commit=value["candidate"]["commit"])
         return result
 
@@ -726,7 +730,8 @@ def sync_checks(settings: Path, context: dict):
             try:
                 board = Board(settings, {**context, "identifier": child.name})
                 value = board._load()
-                if value and value.get("release_accept") and delivery.reconcile_completion(board):
+                if (value and (value.get("release_accept") or group.receipt(board, value))
+                        and delivery.reconcile_completion(board)):
                     continue
                 if not discover_now:
                     continue

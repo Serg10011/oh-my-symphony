@@ -12,6 +12,7 @@ import re
 import api_candidate as candidate
 import api_cloud_check as cloud
 import api_completion as completion
+import api_group_release as group
 import api_project as project
 import api_publication as publication
 import api_session as session
@@ -153,7 +154,7 @@ def recover_delivery(board, value):
 def refresh(board, value):
     """Reconcile against the local project tip without publishing anything."""
     value = recover_delivery(board, value)
-    if value and value.get("release_done"):
+    if value and (value.get("release_done") or group.receipt(board, value)):
         return value
     try:
         configured = pairing(board, value)
@@ -260,6 +261,10 @@ def completed(board, value):
 def reconcile_completion(board):
     with session._lock(board.path):
         value = recover_delivery(board, board._load())
+        if record := group.receipt(board, value):
+            if pairing(board, value):
+                completion.reconcile(board, value, record)
+            return True
         if not value or not value.get("release_done"):
             return False
         if pairing(board, value) and value["spec"]["project"]["root"] == str(board.repo):
@@ -271,6 +276,9 @@ def reconcile_completion(board):
 def offer(board, value):
     if value and value.get("release_done"):
         return completed(board, value)
+    if record := group.receipt(board, value):
+        return {"stage": "delivered", "commit": record["commit"], "pr": record["pr"], "accepted": True,
+                "group_release": True, "completion": completion.view(board, value, record)}
     if not pairing(board, value):
         return None
     if value.get("release_block"):
@@ -348,6 +356,8 @@ def act(board, operation, expected, *, publisher=None):
             value = recover_delivery(board, board._load())
             if not value:
                 raise ReleaseError("release_offer_changed")
+            if group.receipt(board, value):
+                raise ReleaseError("group_release_card_already_recorded")
             current = offer(board, value)
             if operation == "publish-check" and (prior := value.get("release_check")) and prior["published"]:
                 if hmac.compare_digest(prior["offer"], expected):

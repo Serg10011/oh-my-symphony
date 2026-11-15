@@ -8,6 +8,7 @@ import time
 
 import api_candidate as candidate
 import api_cloud_check as cloud
+import api_group_release as group
 import api_publication as publication
 import api_session as session
 import post_merge
@@ -52,12 +53,18 @@ def _done_lane(board):
     return next((s for s in board.context["terminal_states"] if s.casefold() == "done"), None)
 
 
+def _eligible(board, value, record, lane):
+    if record.get("kind") == "group_release":
+        return lane in group.lanes(board, value)
+    return lane == board.review_lane
+
+
 def view(board, value, record):
     state = _state(value, record)
     lane = board.card()[0].get("state")
     if lane == _done_lane(board) and "applied_commit" in state:
         status = "done"
-    elif lane != board.review_lane:
+    elif not _eligible(board, value, record, lane):
         status = "held"
     elif state.get("reason"):
         status = "blocked"
@@ -83,6 +90,8 @@ def _card_matches(board, value, record, front, body):
 
 
 def _merged_commit(board, record):
+    if record.get("kind") == "group_release":
+        return record["merge_commit"]
     pr = record["pr"]
     actual = publication.Publisher(board).github(f"repos/{cloud.REPO}/pulls/{pr['number']}")
     try:
@@ -143,7 +152,16 @@ def _applied_commit(board, record, merge):
         tree = candidate._git(board.repo, "rev-parse", "--verify", record["commit"] + "^{tree}").decode().strip()
     except candidate.CandidateError:
         raise CompletionError("completion_installation_changed") from None
-    if tree != record["api_proof"]["tree"]:
+    if record.get("kind") == "group_release":
+        if tree != record["tree"]:
+            raise CompletionError("completion_installation_changed")
+        applied_tree = candidate._tree(board.repo, installed)
+        if any(applied_tree.get(path.encode(), b"") != entry.encode("ascii")
+               for path, entry in record["files"].items()):
+            installed_tree = candidate._oid(candidate._git(board.repo, "rev-parse", "--verify", installed + "^{tree}"))
+            if not group.includes(board, installed_tree, record["identity"]):
+                raise CompletionError("completion_installation_changed")
+    elif tree != record["api_proof"]["tree"]:
         raise CompletionError("completion_installation_changed")
     return installed
 
@@ -167,7 +185,7 @@ def reconcile(board, value, record):
     if done and front.get("state") == done and state.get("applied_commit"):
         record_lane()  # Replay after a crash between the card and history writes.
         return
-    if not done or front.get("state") != board.review_lane:
+    if not done or not _eligible(board, value, record, front.get("state")):
         return
     if not _card_matches(board, value, record, front, body):
         state["reason"] = "completion_card_changed"
@@ -207,7 +225,7 @@ def reconcile(board, value, record):
         return
 
     def transition(current, current_body):
-        if current.get("state") != board.review_lane:
+        if not _eligible(board, value, record, current.get("state")):
             return None
         if not _card_matches(board, value, record, current, current_body):
             state["reason"] = "completion_card_changed"
