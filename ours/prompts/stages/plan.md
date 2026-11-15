@@ -1,9 +1,9 @@
 ### PLAN -- slicing a task into subtasks
 
-You are the manager of task {{ issue.identifier }}. Your only output is one plan file. The program checks it and creates the subtask cards; the subtask cards do the work, not you.
+You are the manager of task {{ issue.identifier }}. Deliver one plan file. The program checks it and creates the subtask cards; the subtask cards do the work, not you.
 
 **Do NOT:**
-- edit any repository file, or the ticket, except the plan file `docs/{{ issue.identifier }}/work/plan.toml` (see below), the `state:` field and, if needed, `## Blocker`;
+- edit any repository file, or the ticket, except the plan file `docs/{{ issue.identifier }}/work/plan.toml` (see below), the `state:` field and, if needed, `## Plan Changes` or `## Blocker`;
 - create cards, run `symphony`, or call any service route;
 - run tests or any test command.
 
@@ -66,6 +66,9 @@ non_goals = ["Do not change code or prompts"]
 6. `check` proves the result of THIS subtask: what this subtask changes in its own `paths`. Never the result of another subtask, and never a precondition (for example, that a file written by a subtask above exists).
 
 ## Finish
+
+When revising a previously stated plan, add a short note to `## Plan Changes`
+in the card. Record what changed and why, and preserve earlier notes.
 
 1. Re-check `plan.toml` against the format and the rules above. The hook rejects the whole plan on any error and creates no cards.
 2. Set this card's `state:` to `Subtasks`, then stop. The hook checks the file after this turn: a valid plan creates the subtask cards; a rejected plan returns this card to `Plan` with a `## Plan Failure` section.

@@ -123,7 +123,17 @@ do the work within its grants.
 """
     + _EXECUTION_LEAD_REPORT
 )
-_EXECUTION_LEAD_POLICIES = {1: EXECUTION_LEAD_ROLES_V1, 2: EXECUTION_LEAD_ROLES_V2}
+_PLAN_CHANGE_REPORT = """When the agreed or stated plan changes, record what changed and the concrete
+reason in the task report. Include changes in who implements a part or which
+agreed checks you use. Explain taking on suitable worker implementation even
+if you make that decision before the first handoff.
+"""
+_EXECUTION_LEAD_POLICIES = {
+    1: EXECUTION_LEAD_ROLES_V1,
+    2: EXECUTION_LEAD_ROLES_V2,
+    3: EXECUTION_LEAD_ROLES_V1 + _PLAN_CHANGE_REPORT,
+    4: EXECUTION_LEAD_ROLES_V2 + _PLAN_CHANGE_REPORT,
+}
 EXECUTION_WORKER_ROLES_V1 = """Implement the coherent part assigned by the lead and
 verify your work with appropriate checks. Choose the implementation within the
 given goal, context and constraints. Return actual changes, check evidence and
@@ -364,9 +374,9 @@ def _load(path: Path, *, raw: bytes | None = None) -> dict:
     calls = state["calls"]
     spec = state["spec"]
     role_policy = state.get("role_policy_version", 0)
-    if (type(role_policy) is not int or role_policy not in (0, 1, 2)
+    if (type(role_policy) is not int or role_policy not in (0, *_EXECUTION_LEAD_POLICIES)
             or (role_policy and "execution" not in spec)
-            or (role_policy == 2 and spec["worker_profile"] != api.FLASH_WORKER)):
+            or (role_policy in (2, 4) and spec["worker_profile"] != api.FLASH_WORKER)):
         raise SessionError("invalid_role_policy")
     if "output_limits" in state:
         pinned = state["output_limits"]
@@ -509,7 +519,7 @@ def create(path, spec: dict) -> dict:
         os.close(fd)
         if "execution" in spec:
             try:
-                state["role_policy_version"] = 2 if spec["worker_profile"] == api.FLASH_WORKER else 1
+                state["role_policy_version"] = 4 if spec["worker_profile"] == api.FLASH_WORKER else 3
                 state["execution_state"] = workspace.create(path, spec, state["project_snapshot"])
             except (workspace.WorkspaceError, sandbox.SandboxError, project.ProjectError) as exc:
                 path.unlink()  # Only the empty file just created exclusively above.

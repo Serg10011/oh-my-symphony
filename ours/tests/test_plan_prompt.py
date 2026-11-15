@@ -82,6 +82,8 @@ def test_the_prompt_renders_for_a_manager_card_with_the_card_paths() -> None:
     text = render_plan()
     assert "docs/OMS-8/work/plan.toml" in text
     assert "docs/OMS-8/work/limits.md" in text
+    assert "When revising a previously stated plan, add a short note to `## Plan Changes`" in text
+    assert "Record what changed and why, and preserve earlier notes." in text
     assert "{{" not in text and "{%" not in text
 
 

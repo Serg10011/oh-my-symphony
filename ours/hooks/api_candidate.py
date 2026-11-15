@@ -236,7 +236,7 @@ def check_identity(path: Path, value: dict, state: dict) -> None:
         raise CandidateError("api_candidate_result_changed")
 
 
-def render_report(value: dict, *, cloud_checked=False, accepted=False, group_release=False) -> str:
+def render_report(value: dict, *, cloud_checked=False, accepted=False, group_release=False, group_ready=False) -> str:
     value = public_report(value)
     labels = {"awaiting_full_checks": "Кандидат собран; полный прогон ещё не выполнен.",
               "no_changes": "Изменений файлов нет; задача автоматически не принята.",
@@ -256,6 +256,8 @@ def render_report(value: dict, *, cloud_checked=False, accepted=False, group_rel
     heading = labels[value["status"]]
     if group_release:
         heading = "Результат связан с принятым общим выпуском."
+    elif group_ready:
+        heading = "Целевые проверки подтверждены. Кандидат ждёт общего выпуска."
     elif cloud_checked:
         heading = "Кандидат собран. Итог Linux-проверки показан отдельно."
     rows = ["Проверка и передача файлов", heading]
@@ -266,7 +268,7 @@ def render_report(value: dict, *, cloud_checked=False, accepted=False, group_rel
         rows.append(f"Других замечаний: {value['issue_count'] - len(value['issues'])}.")
     if accepted:
         rows.append("Приёмка подтверждена. Состояние PR указано в карточке.")
-    elif cloud_checked:
+    elif cloud_checked or group_ready:
         rows.append("Доставка ожидает отдельного решения. Приёмка остаётся за человеком.")
     else:
         rows.append("Полная проверка и доставка не выполнены. Приёмка остаётся за человеком.")
