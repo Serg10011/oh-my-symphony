@@ -1,5 +1,6 @@
 """Actual board HTTP and browser controls with a fake credential probe, no dispatcher."""
 import asyncio
+import json
 import os
 
 from aiohttp.test_utils import TestClient, TestServer
@@ -52,6 +53,38 @@ async def test_permission_routes_reject_foreign_browser_origin_and_extra_fields(
             assert (await http.post(route + "/" + action, json={})).status == 404
         assert (await (await http.get(route)).json())["status"] == "not_configured"
     assert not probes and not (board / ".ours-state/api-permissions/api-team/permission.json").exists()
+
+
+@pytest.mark.browser_e2e
+@pytest.mark.skipif(os.environ.get("SYMPHONY_BROWSER_E2E") != "1", reason="requires local Chromium")
+@pytest.mark.asyncio
+async def test_browser_shows_selected_deepseek_context_before_approval(host, simulated_service, monkeypatch):
+    pw = pytest.importorskip("playwright.async_api")
+    board, _, probes, app = application(host, monkeypatch)
+    settings = board / "api-settings.json"
+    config = json.loads(settings.read_text())
+    settings.write_text(json.dumps({**config, "context_paths": ["README.md"]}))
+    async with TestClient(TestServer(app)) as http, pw.async_playwright() as service:
+        created = await (await http.post("/api/v1/issues", json={"title": "Карточка с общим контекстом"})).json()
+        browser = await service.chromium.launch()
+        try:
+            page = await browser.new_page()
+            await page.add_init_script("localStorage.setItem('symphony.lang','ru')")
+            await page.goto(str(http.make_url("/#/settings")), wait_until="networkidle")
+            permission = page.get_by_role("region", name="Разрешение на работу доски")
+            await permission.get_by_role("button", name="Проверить условия доски").click()
+            label = permission.get_by_text("Общий контекст DeepSeek", exact=True)
+            await pw.expect(label.locator("xpath=following-sibling::dd[1]")).to_have_text("README.md")
+            await page.goto(str(http.make_url("/#/board")), wait_until="networkidle")
+            await page.locator(".card", has_text=created["identifier"]).click()
+            card = page.get_by_role("region", name="API-команда")
+            await card.get_by_role("button", name="Посмотреть назначение").click()
+            label = card.get_by_text("Общий контекст DeepSeek", exact=True)
+            await pw.expect(label.locator("xpath=following-sibling::dd[1]")).to_have_text("README.md")
+            assert "A real project file." not in await card.inner_text()
+            assert not probes and not list((board / ".ours-state/api-team").glob("*/session.json"))
+        finally:
+            await browser.close()
 
 
 @pytest.mark.browser_e2e

@@ -43,6 +43,7 @@
           ...(t.lead_escalation === 'high-to-max' ? [['Повышение усилия', 'Ведущий может повысить high до max с записью причины.']] : []),
           ['Режим', t.mode === 'productivity' ? 'Продуктивность' : t.mode === 'economy' ? 'Экономия' : 'По настройкам доски'],
           ['Ветка проекта', t.base_branch || 'HEAD'], ['Доступные файлы', (t.paths || []).join(', ')],
+          ...(t.context_paths?.length ? [['Общий контекст DeepSeek', t.context_paths.join(', ')]] : []),
           ['Денежный потолок на одну задачу', t.budget ? `${t.budget.max_usd} USD` : 'Без отдельного денежного потолка'],
           ['Аварийный предел запросов на задачу', number(t.limits?.max_calls)],
           ['Все токены ответов на задачу', number(t.limits?.output_tokens_total)],

@@ -261,6 +261,7 @@
           ['Токенов на ответ / на все ответы', `${number(limits.output_tokens_per_call)} / ${number(limits.output_tokens_total)}`],
           ['Время на запуск', `${number(data.process_timeout_seconds / 60)} мин`],
           ['Версия проекта', project.commit || 'не указана'], ['Доступные файлы', (project.paths || []).join(', ')],
+          ...(data.project_context?.paths?.length ? [['Общий контекст DeepSeek', data.project_context.paths.join(', ')]] : []),
         ];
         const key = JSON.stringify(rows) + data.task;
         if (assignment.dataset.content !== key) {
