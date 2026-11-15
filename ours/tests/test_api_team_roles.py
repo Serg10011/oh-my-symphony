@@ -65,7 +65,7 @@ def test_small_task_may_finish_without_calling_configured_worker(task):
 def test_flash_lead_receives_pinned_delegation_policy(tmp_path, monkeypatch, legacy):
     path, _ = prepared(tmp_path, lead_profile="sol-lead", worker_profile=session.api.FLASH_WORKER)
     monkeypatch.setattr(workspace, "preflight", lambda *a: {"fixture": True})
-    monkeypatch.setattr(session.flash_probe, "subscription_executable", lambda: tmp_path / "fake-agy")
+    monkeypatch.setattr(session.flash_probe, "check_readiness", lambda *a, **kw: None)
     saved = state(path)
     assert saved["role_policy_version"] == 2
     if legacy:

@@ -71,6 +71,20 @@ def database(layout):
 
 
 @pytest.fixture
+def manual_layout(layout):
+    workflow = layout.workflow.read_text().replace("  kind: file\n", "  kind: file\n  manual_start: true\n")
+    layout.workflow.write_text(workflow.replace("agent:\n", "agent:\n  preserve_workspace_states: [needs_human]\n"))
+    return layout
+
+
+def save_assignment(layout, identifier, status, **fields):
+    path = layout.board / ".ours-state/api-team" / identifier / "assignment.json"
+    path.parent.mkdir(parents=True)
+    startup.save(path, {"version": 1, "identifier": identifier, "status": status, **fields})
+    return path
+
+
+@pytest.fixture
 def saved_api_result(layout):
     layout.workflow.write_text(layout.workflow.read_text().replace(
         "  auto_merge_on_done: false\n",
@@ -160,6 +174,62 @@ def test_only_known_terminal_lanes_can_recover(layout, state):
 @pytest.mark.parametrize("state", ["Todo", "In Progress", "Verify", "needs_human", "unknown", "[Done]"])
 def test_unfinished_or_unrecognized_card_holds_oms(layout, state):
     card(layout).write_text(f"---\nidentifier: OMS-11\nstate: {state}\n---\n")
+    assert not startup.queue_is_safe(layout)
+
+
+def test_oms_recovers_with_manual_draft_and_stopped_card(manual_layout, monkeypatch):
+    layout = manual_layout
+    draft = card(layout)
+    draft.write_text("---\nid: OMS-11\ntitle: Draft\nstate: Todo\n---\n")
+    stopped = draft.with_name("OMS-12.md")
+    stopped.write_text("---\nid: OMS-12\ntitle: Flash unavailable\nstate: needs_human\nagent_kind: api-team\n---\n")
+    assignment = save_assignment(layout, "OMS-12", "stopped", reason="flash_connection_unavailable")
+    files = (draft, stopped, assignment, database(layout))
+    before = [path.read_bytes() for path in files]
+    commands = []
+
+    def run(*argv, **_kwargs):
+        commands.append(argv)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(startup, "job", lambda _label: None)
+    monkeypatch.setattr(startup, "listeners", lambda _port: set())
+    monkeypatch.setattr(startup, "run", run)
+    assert startup.ensure_oms(layout) == "starting"
+    assert [command[1] for command in commands] == ["-I", "bootstrap"]
+    assert [path.read_bytes() for path in files] == before
+
+
+@pytest.mark.parametrize(("state", "status", "allowed"), [
+    ("Todo", "prepared", True),
+    ("Todo", "queued", False),
+    ("Todo", "running", False),
+    ("needs_human", "running", False),
+    ("needs_human", "queued", False),
+    ("needs_human", "result", True),
+])
+def test_manual_queue_distinguishes_pending_and_settled_assignments(manual_layout, state, status, allowed):
+    card(manual_layout).write_text(f"---\nid: OMS-11\ntitle: Card\nstate: {state}\nagent_kind: api-team\n---\n")
+    save_assignment(manual_layout, "OMS-11", status)
+    assert startup.queue_is_safe(manual_layout) is allowed
+
+
+def test_manual_todo_waits_after_start_was_requested(manual_layout):
+    card(manual_layout).write_text("---\nid: OMS-11\ntitle: Approved\nstate: Todo\nstart_requested: true\n---\n")
+    assert not startup.queue_is_safe(manual_layout)
+
+
+def test_manual_todo_with_unreadable_assignment_is_not_a_draft(manual_layout):
+    card(manual_layout).write_text("---\nid: OMS-11\ntitle: Draft\nstate: Todo\nagent_kind: api-team\n---\n")
+    save_assignment(manual_layout, "OMS-11", "prepared").write_text("{unfinished")
+    assert not startup.queue_is_safe(manual_layout)
+
+
+def test_held_card_requires_workspace_preservation(manual_layout):
+    layout = manual_layout
+    card(layout).write_text("---\nid: OMS-11\ntitle: Needs help\nstate: needs_human\n---\n")
+    assert startup.queue_is_safe(layout)
+    layout.workflow.write_text(layout.workflow.read_text().replace("  preserve_workspace_states: [needs_human]\n", ""))
     assert not startup.queue_is_safe(layout)
 
 
