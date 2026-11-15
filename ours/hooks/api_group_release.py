@@ -1,0 +1,196 @@
+"""Bind reviewed card results to one approved, merged release."""
+from __future__ import annotations
+
+import hashlib
+import hmac
+import json
+import re
+import tempfile
+from contextlib import ExitStack
+from pathlib import Path
+
+import api_candidate as candidate
+import api_cloud_check as cloud
+import api_publication as publication
+import api_session as session
+from api_publication import BASE, ReleaseError
+
+
+def lanes(board, value):
+    review = {"needs_human", board.review_lane} - {None}
+    check = value.get("check_lane")
+    if check in board.context["active_states"]:
+        review.add(check)
+    return review
+
+
+def _ledger_path(board):
+    return session._path(board.root.parent / "group-releases.json")
+
+
+def _releases(path):
+    if not path.exists() and not path.is_symlink():
+        return {}
+    saved = session._decode(session._read_state(path))
+    if not isinstance(saved, dict) or saved.get("version") != 1 or not isinstance(saved.get("releases"), dict):
+        raise ReleaseError("group_release_changed")
+    return saved["releases"]
+
+
+def _fingerprint(release):
+    data = json.dumps(release, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+
+def _identity(value):
+    source = value["candidate"]
+    return {key: value[key] for key in ("binding", "result_card_digest")} | {
+        "source_commit": source["commit"], "source_tree": source["tree"], "source_base": source["base_commit"],
+    }
+
+
+def receipt(board, value):
+    if not value or value["status"] != "result":
+        return None
+    for offer, release in _releases(_ledger_path(board)).items():
+        card = release["cards"].get(board.identifier)
+        if card is None:
+            continue
+        if (offer != _fingerprint(release) or release["project"] != str(board.repo)
+                or release["workflow"] != str(board.workflow) or release["agent"] != board.context["agent_kind"]
+                or board.context["base_branch"] != BASE or value.get("cloud_profile") != cloud.PROFILE
+                or value.get("release_accept") or card["identity"] != _identity(value)):
+            raise ReleaseError("group_release_changed")
+        return {**release["target"], **card, "kind": "group_release", "api_acceptance": offer}
+    return None
+
+
+def _commit_tree(repo, commit):
+    return publication.oid(repo, "rev-parse", "--verify", commit + "^{tree}")
+
+
+def _target(board, number, head, publisher):
+    actual = publisher.github(f"repos/{cloud.REPO}/pulls/{number}")
+    url = f"https://github.com/{cloud.REPO}/pull/{number}"
+    try:
+        base, source = actual["base"], actual["head"]
+        merge = actual["merge_commit_sha"]
+        if (type(actual["number"]) is not int or actual["number"] != number or actual["html_url"] != url
+                or actual["state"] != "closed" or actual["merged"] is not True or not actual.get("merged_at")
+                or base["ref"] != BASE or source["sha"] != head
+                or any(ref["repo"]["id"] != cloud.REPO_ID or ref["repo"]["full_name"] != cloud.REPO
+                       for ref in (base, source))
+                or any(not isinstance(sha, str) or not cloud.OID.fullmatch(sha) for sha in (base["sha"], merge))):
+            raise ReleaseError("group_release_pr_changed")
+        parents = candidate._git(board.repo, "rev-list", "--parents", "-n", "1", merge).decode().split()
+        tree = _commit_tree(board.repo, head)
+        if parents != [merge, base["sha"], head] or _commit_tree(board.repo, merge) != tree:
+            raise ReleaseError("group_release_pr_changed")
+    except (KeyError, TypeError, AttributeError):
+        raise ReleaseError("group_release_pr_changed") from None
+    return {"repo": cloud.REPO, "base": BASE, "base_commit": base["sha"], "commit": head,
+            "tree": tree, "merge_commit": merge, "pr": {"number": number, "url": url}}
+
+
+def _objects(repo):
+    common = candidate._git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    directory = str((Path(common.decode().removesuffix("\n")) / "objects").resolve(strict=True))
+    if any(ch in directory for ch in ("\n", "\r", "\0")):
+        raise ReleaseError("group_release_changed")
+    return directory
+
+
+def includes(board, tree, source):
+    bare = board.root / "candidate.git"
+    with tempfile.TemporaryDirectory(prefix="symphony-release-") as directory:
+        scratch = Path(directory)
+        algorithm = "sha1" if len(tree) == 40 else "sha256"
+        candidate._git(scratch, "init", "--bare", "--quiet", "--template=", "--object-format=" + algorithm)
+        (scratch / "objects/info/alternates").write_text(_objects(board.repo) + "\n" + _objects(bare) + "\n")
+        try:
+            # Compare trees as siblings of the original base. Git must see
+            # the card's delta even if its commit was merged and then reverted.
+            release_view = publication.commit(
+                scratch, tree, [source["source_base"]], "Compare release with card",
+            )
+            merged = publication.oid(
+                scratch, "-c", "merge.renames=false", "merge-tree", "--write-tree", "--no-messages",
+                release_view, source["source_commit"],
+            )
+        except candidate.CandidateError:
+            return False
+        return merged == tree
+
+
+def _member(board, target, release_tree):
+    # The ordinary delivery also reads group receipts.
+    from api_delivery import file_delta, pairing
+
+    value = board._load()
+    if not pairing(board, value) or value.get("release_accept") or board.stop_path.exists():
+        raise ReleaseError("group_release_card_changed")
+    front, body = board.card()
+    kind = front.get("agent_kind") or (front.get("agent") or {}).get("kind")
+    if (front.get("state") not in lanes(board, value) or kind != board.context["agent_kind"]
+            or board.card_digest(front, body) != value["result_card_digest"]
+            or value["spec"]["project"]["root"] != str(board.repo)):
+        raise ReleaseError("group_release_card_changed")
+    candidate.check_identity(board.session_path, value, session._load(board.session_path))
+    identity = _identity(value)
+    files = file_delta(board, identity["source_base"], identity["source_commit"])
+    if not includes(board, target["tree"], identity):
+        raise ReleaseError("group_release_missing_changes")
+    return {"identity": identity, "files": {
+        path: release_tree.get(path.encode(), b"").decode("ascii") for path, _ in files
+    }}
+
+
+def _selection(boards, number, head):
+    if (not boards or type(number) is not int or number < 1
+            or not isinstance(head, str) or not cloud.OID.fullmatch(head)):
+        raise ReleaseError("group_release_bad_selection")
+    first = boards[0]
+    ids = {board.identifier for board in boards}
+    if len(ids) != len(boards) or any(
+            board.workflow != first.workflow or board.repo != first.repo or board.settings != first.settings
+            or board.context["agent_kind"] != first.context["agent_kind"] for board in boards):
+        raise ReleaseError("group_release_bad_selection")
+    return first, ids
+
+
+def preview(boards, number, head, *, publisher=None):
+    first, _ = _selection(boards, number, head)
+    target = _target(first, number, head, publisher or publication.Publisher(first))
+    tree = candidate._tree(first.repo, target["tree"])
+    release = {"target": target, "project": str(first.repo), "workflow": str(first.workflow),
+               "agent": first.context["agent_kind"],
+               "cards": {board.identifier: _member(board, target, tree) for board in boards}}
+    return {"offer": _fingerprint(release), "release": release}
+
+
+def record(boards, number, head, expected, *, publisher=None):
+    first, ids = _selection(boards, number, head)
+    if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise ReleaseError("group_release_offer_changed")
+    path = _ledger_path(first)
+    with session._lock(path):
+        releases = _releases(path)
+        if approved := releases.get(expected):
+            target = approved["target"]
+            if (_fingerprint(approved) != expected or target["commit"] != head
+                    or target["pr"]["number"] != number or set(approved["cards"]) != ids):
+                raise ReleaseError("group_release_offer_changed")
+            return {"offer": expected, "release": approved}
+        if any(ids & item["cards"].keys() for item in releases.values()):
+            raise ReleaseError("group_release_card_already_recorded")
+        # Fence the ordinary per-card acceptance while writing the group
+        # receipt. A concurrent card edit is checked again at projection.
+        with ExitStack() as locks:
+            for board in sorted(boards, key=lambda item: item.identifier):
+                locks.enter_context(session._lock(board.path))
+            shown = preview(boards, number, head, publisher=publisher)
+            if not hmac.compare_digest(shown["offer"], expected):
+                raise ReleaseError("group_release_offer_changed")
+            releases[expected] = shown["release"]
+            session._save(path, {"version": 1, "releases": releases})
+            return shown
