@@ -854,6 +854,7 @@ def test_verify_has_the_branch_of_a_task_card() -> None:
     manager = render_prompt("stages/verify.md", state="Verify", labels=("role:manager-plan",))
     for phrase in ("## Plan Accepted", f"docs/{ident}/work/final-diff.md", f"docs/{ident}/work/final-diff.patch",
                    f"docs/{ident}/qa/final-check.md", "needs_human", f"kanban/{ident}-N.md",
+                   "the concrete reason for each departure from the approved plan or agreed checks",
                    "`## Plan`, `## Acceptance Tests` and `## Done Signals` do not exist on this ticket",
                    "do not run `git diff`", "Not `Human Review`"):
         assert phrase in manager, phrase

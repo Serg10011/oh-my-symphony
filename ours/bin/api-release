@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preview or record the cards belonging to one approved release PR."""
+"""Record targeted checks or bind cards to one approved release PR."""
 
 import argparse
 import json
@@ -22,11 +22,18 @@ from symphony.workflow import WorkflowState  # noqa: E402
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("workflow", type=Path)
-    parser.add_argument("--pr", required=True, type=int)
-    parser.add_argument("--head", required=True)
+    parser.add_argument("--pr", type=int)
+    parser.add_argument("--head")
     parser.add_argument("--card", required=True, action="append")
     parser.add_argument("--offer", help="record the preview with this approved fingerprint")
+    parser.add_argument("--ready", metavar="COMMIT", help="record the targeted checks of one candidate")
+    parser.add_argument("--checks", help="short summary of the completed targeted checks")
     args = parser.parse_args(argv)
+    if args.ready is not None:
+        if len(args.card) != 1 or args.checks is None or any(v is not None for v in (args.pr, args.head, args.offer)):
+            parser.error("--ready requires one --card and --checks")
+    elif args.pr is None or args.head is None or args.checks is not None:
+        parser.error("the release preview requires --pr and --head")
     try:
         workflow = args.workflow.resolve(strict=True)
         config = pc.load_project(workflow.parent)
@@ -36,7 +43,9 @@ def main(argv=None):
         settings = workflow.parent / config["api_team"]["settings_file"]
         boards = [api_board.Board(settings, api_team.board_context(parsed, "api-team", ident))
                   for ident in args.card]
-        if args.offer is None:
+        if args.ready is not None:
+            result = api_group_release.record_review(boards[0], args.ready, args.checks)
+        elif args.offer is None:
             result = api_group_release.preview(boards, args.pr, args.head)
         else:
             result = api_group_release.record(boards, args.pr, args.head, args.offer)

@@ -359,10 +359,12 @@ class Board:
             result["delivery_status"] = value["candidate"]["status"]
             receipt = None
             grouped = bool(release and release.get("group_release"))
+            group_ready = bool(release and release["stage"] == "group-ready")
             if release and release["stage"] == "delivered" and not grouped:
                 receipt = release["proof"]
                 result["cloud_check"] = {"status": "ready", "commit": release["commit"], "receipt": receipt}
-            elif not grouped and value.get("cloud_profile") and value["candidate"]["status"] == "awaiting_full_checks":
+            elif (not grouped and not group_ready and value.get("cloud_profile")
+                  and value["candidate"]["status"] == "awaiting_full_checks"):
                 try:
                     subject = self._cloud_subject(value)
                     receipt = self._cloud_receipt(value, subject)
@@ -376,7 +378,7 @@ class Board:
                     result["cloud_check"] = {"status": "stale"}
             result["report_text"] = (result.get("report_text", "") + "\n\n"
                                      + candidate.render_report(value["candidate"], cloud_checked=bool(receipt),
-                                                               group_release=grouped,
+                                                               group_release=grouped, group_ready=group_ready,
                                                                accepted=bool(release and release.get("accepted"))))
         if release:
             if "reason" in release:
@@ -387,6 +389,7 @@ class Board:
 
     def _cloud_subject(self, value, *, allow_moved=False):
         if (not value or value.get("cloud_profile") != cloud.PROFILE or value["status"] != "result"
+                or "group_review" in value
                 or value.get("candidate", {}).get("status") != "awaiting_full_checks"):
             raise BoardError("cloud_not_enabled")
         report = value["candidate"]
@@ -463,12 +466,13 @@ class Board:
             target = self.review_lane if receipt["status"] == "passed" else "needs_human"
         self._release_lane(value, target)
 
-    def _release_lane(self, value, target):
-        pending = value.get("check_lane")
+    def _release_lane(self, value, target, *, allowed_states=None):
+        if allowed_states is None:
+            allowed_states = {value.get("check_lane"), self.review_lane, "needs_human"}
         if value["board_stages"][-1] == target and self.card()[0]["state"] == target:
             return
         def mutate(front, body):
-            if (front.get("state") not in {pending, self.review_lane, "needs_human"}
+            if (front.get("state") not in allowed_states
                     or self.card_digest(front, body) != value["result_card_digest"]):
                 raise BoardError("cloud_stale")
             front.update(state=target, updated_at=session._now())
@@ -737,7 +741,7 @@ def sync_checks(settings: Path, context: dict):
             try:
                 board = Board(settings, {**context, "identifier": child.name})
                 value = board._load()
-                if (value and (value.get("release_accept") or group.receipt(board, value))
+                if (value and (value.get("release_accept") or "group_review" in value or group.receipt(board, value))
                         and delivery.reconcile_completion(board)):
                     continue
                 if not discover_now:

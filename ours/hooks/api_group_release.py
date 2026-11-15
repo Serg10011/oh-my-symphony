@@ -122,21 +122,83 @@ def includes(board, tree, source):
         return merged == tree
 
 
-def _member(board, target, release_tree):
+def _result_identity(board, value, allowed_states=None):
     # The ordinary delivery also reads group receipts.
-    from api_delivery import file_delta, pairing
+    from api_delivery import pairing
 
-    value = board._load()
     if not pairing(board, value) or value.get("release_accept") or board.stop_path.exists():
         raise ReleaseError("group_release_card_changed")
     front, body = board.card()
     kind = front.get("agent_kind") or (front.get("agent") or {}).get("kind")
-    if (front.get("state") not in lanes(board, value) or kind != board.context["agent_kind"]
+    if allowed_states is None:
+        allowed_states = lanes(board, value)
+    if (front.get("state") not in allowed_states or kind != board.context["agent_kind"]
             or board.card_digest(front, body) != value["result_card_digest"]
             or value["spec"]["project"]["root"] != str(board.repo)):
         raise ReleaseError("group_release_card_changed")
     candidate.check_identity(board.session_path, value, session._load(board.session_path))
-    identity = _identity(value)
+    return _identity(value)
+
+
+def _check_note(value):
+    if not isinstance(value, str) or not value.strip() or len(value) > 500 or not value.isprintable():
+        raise ReleaseError("group_review_checks_required")
+    return value.strip()
+
+
+def review_receipt(board, value):
+    if not value or "group_review" not in value:
+        return None
+    record = value["group_review"]
+    if (not isinstance(record, dict) or set(record) != {"identity", "checks", "checked_at"}
+            or _check_note(record["checks"]) != record["checks"] or not isinstance(record["checked_at"], str)
+            or record["identity"] != _result_identity(board, value, {value.get("check_lane"), board.review_lane})):
+        raise ReleaseError("group_review_changed")
+    return record
+
+
+def project_review(board, value):
+    """Recover the lane projection from the saved target-check receipt."""
+    record = review_receipt(board, value)
+    if record is None:
+        return False
+    board._release_lane(value, board.review_lane, allowed_states={value["check_lane"], board.review_lane})
+    return True
+
+
+def record_review(board, expected, checks):
+    """Record the operator's checks of one candidate before assembling the release."""
+    from api_delivery import file_delta
+
+    checks = _check_note(checks)
+    if not isinstance(expected, str) or not cloud.OID.fullmatch(expected):
+        raise ReleaseError("group_review_changed")
+    with session._lock(board.root / "cloud-lookup"), session._lock(board.path):
+        value = board._load()
+        if not value or receipt(board, value):
+            raise ReleaseError("group_release_card_changed")
+        if any(key in value for key in ("check_target", "cloud_attempt", "cloud_seen", "release_check", "release_accept")):
+            raise ReleaseError("group_review_individual_check_started")
+        record = review_receipt(board, value)
+        if record is None:
+            identity = _result_identity(board, value, {value.get("check_lane")})
+            if identity["source_commit"] != expected:
+                raise ReleaseError("group_review_changed")
+            file_delta(board, identity["source_base"], identity["source_commit"])
+            record = {"identity": identity, "checks": checks, "checked_at": session._now()}
+            value["group_review"] = record
+            board._save(value)
+        elif record["identity"]["source_commit"] != expected or record["checks"] != checks:
+            raise ReleaseError("group_review_changed")
+        board._release_lane(value, board.review_lane, allowed_states={value["check_lane"], board.review_lane})
+        return {"status": "ready", "identifier": board.identifier, "commit": expected,
+                "checks": record["checks"], "checked_at": record["checked_at"]}
+
+
+def _member(board, target, release_tree):
+    from api_delivery import file_delta
+
+    identity = _result_identity(board, board._load())
     files = file_delta(board, identity["source_base"], identity["source_commit"])
     if not includes(board, target["tree"], identity):
         raise ReleaseError("group_release_missing_changes")

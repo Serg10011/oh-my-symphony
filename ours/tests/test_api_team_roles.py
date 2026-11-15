@@ -35,6 +35,8 @@ def test_worker_implements_and_lead_receives_result_with_distinct_role_instructi
     assert "implementation\nparts with their own checks" in lead
     assert "Independently review its actual\nchanges and check evidence" in lead
     assert "current facts that supersede older project documents" in lead
+    assert session._PLAN_CHANGE_REPORT in lead
+    assert session._PLAN_CHANGE_REPORT not in worker
     assert "Implement the coherent part assigned by the lead" in worker
     assert "verify your work with appropriate checks" in worker
     assert "explicitly assigned only a review or investigation" in worker
@@ -43,33 +45,42 @@ def test_worker_implements_and_lead_receives_result_with_distinct_role_instructi
     assert {f["path"] for f in session.review(path)["files"]} == {"tests/test_answer.py"}
     assert not (repo / "tests").exists()
     saved = session._load(path)
-    assert saved["role_policy_version"] == 1
-    assert all(c["role_policy_version"] == 1 for c in saved["calls"])
+    assert saved["role_policy_version"] == 3
+    assert all(c["role_policy_version"] == 3 for c in saved["calls"])
     # Resource counters remain a transient user message, outside the cached prefix.
     assert all(r["body"]["input"][-1]["content"].startswith(session.RESOURCE_PREFIX) for r in sent)
     assert sent[2]["body"]["prompt_cache_options"]["mode"] == "explicit"
     assert sent[1]["body"]["reasoning"] == {"effort": "max", "context": "all_turns"}
 
 
-def test_small_task_may_finish_without_calling_configured_worker(task):
+@pytest.mark.parametrize("policy_version", [1, 3], ids=["saved-api", "new-api"])
+def test_small_task_may_finish_without_calling_configured_worker(task, policy_version):
     path, _ = task
-    transport, sent = exchange([frame("Небольшая задача выполнена ведущим; Luna не вызывалась.")])
+    saved = state(path)
+    if policy_version == 1:
+        saved["role_policy_version"] = policy_version
+        path.write_text(json.dumps(saved))
+    reason = "Ведущий сделал правку сам, поскольку проверка потребовала бы повторить всю работу."
+    transport, sent = exchange([frame(reason)])
     result = session.run(path, environ=KEYS, transport=transport)
     assert result["status"] == "dialogue_complete" and len(sent) == 1
     assert result["worker_profile"] == "luna-worker" and result["parts"] == {}
-    assert "Do not call the worker merely to involve a second model" in sent[0]["body"]["instructions"]
+    assert result["result"] == reason
+    instructions = sent[0]["body"]["instructions"]
+    assert "Do not call the worker merely to involve a second model" in instructions
+    assert (session._PLAN_CHANGE_REPORT in instructions) == (policy_version == 3)
     assert all(c["profile"] == "deepseek-lead" for c in session._load(path)["calls"])
 
 
-@pytest.mark.parametrize("legacy", [False, True], ids=["new-flash", "saved-flash"])
-def test_flash_lead_receives_pinned_delegation_policy(tmp_path, monkeypatch, legacy):
+@pytest.mark.parametrize("policy_version", [1, 2, 4], ids=["legacy-api", "saved-flash", "new-flash"])
+def test_flash_lead_receives_pinned_delegation_policy(tmp_path, monkeypatch, policy_version):
     path, _ = prepared(tmp_path, lead_profile="sol-lead", worker_profile=session.api.FLASH_WORKER)
     monkeypatch.setattr(workspace, "preflight", lambda *a: {"fixture": True})
     monkeypatch.setattr(session.flash_probe, "check_readiness", lambda *a, **kw: None)
     saved = state(path)
-    assert saved["role_policy_version"] == 2
-    if legacy:
-        saved["role_policy_version"] = 1
+    assert saved["role_policy_version"] == 4
+    if policy_version != 4:
+        saved["role_policy_version"] = policy_version
         path.write_text(json.dumps(saved))
 
     transport, sent = exchange([frame("Для этой правки проверка повторила бы всю работу.", model="gpt-6.1-sol")])
@@ -78,13 +89,14 @@ def test_flash_lead_receives_pinned_delegation_policy(tmp_path, monkeypatch, leg
     request = sent[0]["body"]
     instructions = request["instructions"]
     assert any(tool["name"] == "delegate_worker" for tool in request["tools"])
-    assert ("finish it yourself when delegation and review" in instructions) == legacy
-    assert ("Delegate suitable implementation, including small edits" in instructions) == (not legacy)
-    if not legacy:
+    assert ("finish it yourself when delegation and review" in instructions) == (policy_version == 1)
+    assert ("Delegate suitable implementation, including small edits" in instructions) == (policy_version != 1)
+    assert (session._PLAN_CHANGE_REPORT in instructions) == (policy_version == 4)
+    if policy_version != 1:
         assert "result would cost no more than doing the same work yourself" in instructions
         assert "concrete reason briefly in your\nfinal report" in instructions
     saved = session._load(path)
-    assert saved["role_policy_version"] == saved["calls"][0]["role_policy_version"] == (1 if legacy else 2)
+    assert saved["role_policy_version"] == saved["calls"][0]["role_policy_version"] == policy_version
 
 
 def test_solo_lead_keeps_its_assignment_without_delegation_tool(tmp_path, monkeypatch):
@@ -95,6 +107,7 @@ def test_solo_lead_keeps_its_assignment_without_delegation_tool(tmp_path, monkey
     assert result["status"] == "dialogue_complete" and result["worker_profile"] is None
     assert len(sent) == 1 and all(t["name"] != "delegate_luna" for t in sent[0]["body"]["tools"])
     assert "If no worker is configured, complete\nthe task yourself" in sent[0]["body"]["instructions"]
+    assert session._PLAN_CHANGE_REPORT in sent[0]["body"]["instructions"]
 
 
 def test_legacy_editable_session_keeps_old_roles_and_no_new_policy_marker(task):
@@ -111,7 +124,7 @@ def test_legacy_editable_session_keeps_old_roles_and_no_new_policy_marker(task):
     assert all("role_policy_version" not in c for c in saved["calls"])
 
 
-@pytest.mark.parametrize("invalid", [True, None, "1", 2, -1])
+@pytest.mark.parametrize("invalid", [True, None, "1", 2, 4, -1])
 def test_unrecognized_role_policy_is_rejected_before_requests(task, invalid):
     path, _ = task
     saved = state(path)

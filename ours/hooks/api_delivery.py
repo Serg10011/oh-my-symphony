@@ -154,7 +154,7 @@ def recover_delivery(board, value):
 def refresh(board, value):
     """Reconcile against the local project tip without publishing anything."""
     value = recover_delivery(board, value)
-    if value and (value.get("release_done") or group.receipt(board, value)):
+    if value and (value.get("release_done") or "group_review" in value or group.receipt(board, value)):
         return value
     try:
         configured = pairing(board, value)
@@ -265,6 +265,8 @@ def reconcile_completion(board):
             if pairing(board, value):
                 completion.reconcile(board, value, record)
             return True
+        if group.project_review(board, value):
+            return True
         if not value or not value.get("release_done"):
             return False
         if pairing(board, value) and value["spec"]["project"]["root"] == str(board.repo):
@@ -279,6 +281,9 @@ def offer(board, value):
     if record := group.receipt(board, value):
         return {"stage": "delivered", "commit": record["commit"], "pr": record["pr"], "accepted": True,
                 "group_release": True, "completion": completion.view(board, value, record)}
+    if record := group.review_receipt(board, value):
+        return {"stage": "group-ready", "commit": record["identity"]["source_commit"],
+                "checks": record["checks"], "checked_at": record["checked_at"]}
     if not pairing(board, value):
         return None
     if value.get("release_block"):

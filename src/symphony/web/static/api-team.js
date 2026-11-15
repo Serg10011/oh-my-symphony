@@ -128,6 +128,7 @@
       if (data.status === 'result' && data.candidate?.status === 'no_changes')
         status.textContent = 'Нужна помощь: команда завершила работу без изменений файлов.';
       const release = data.release;
+      const groupReady = release?.stage === 'group-ready';
       releaseBox.hidden = !release || ['checking', 'waiting'].includes(release.stage);
       releaseChoice = release?.offer ? release : null;
       releaseButton.hidden = !releaseChoice;
@@ -150,12 +151,15 @@
           setText(releaseStatus, `Версия ${release.commit.slice(0, 12)} принята · PR №${release.pr.number}`);
           releaseLink.href = `https://github.com/Serg10011/oh-my-symphony/pull/${release.pr.number}`;
           releaseLink.hidden = false;
+        } else if (groupReady) {
+          setText(releaseStatus, `Проверен коммит ${release.commit}. ${release.checks}`);
         } else {
           setText(releaseStatus, release.message || 'Для доставки требуется внимание.');
         }
       }
       if (data.accepted) status.textContent = release?.completion?.message ||
         (data.delivered ? 'Версия принята, PR открыт' : 'Версия принята, ожидает создания PR');
+      if (groupReady) status.textContent = 'Готова к общему выпуску';
       if (data.stop_requested && data.status === 'running') status.textContent += '. Остановка запрошена; текущий ответ ещё может оплачиваться.';
       if (data.reason) status.textContent += ' ' + (reasons[data.reason] || 'Причина остановки указана в отчёте.');
       if (data.gemini_wait_until) {
@@ -200,9 +204,9 @@
       stop.hidden = !['prepared', 'queued', 'running'].includes(data.status) || data.stop_requested;
       review.hidden = !data.session?.execution || !['result', 'stopped'].includes(data.status);
       const check = data.cloud_check, receipt = check?.phase ? null : check?.receipt;
-      cloud.hidden = !check;
+      cloud.hidden = !check || groupReady;
       workflowLink.hidden = !receipt;
-      nextCheckRead = check?.status === 'ready' ? Date.now() + (receipt ? 60000 : 20000) : 0;
+      nextCheckRead = check?.status === 'ready' && !groupReady ? Date.now() + (receipt ? 60000 : 20000) : 0;
       if (receipt) {
         const outcome = receipt.status === 'passed' ? 'прошла' : 'завершилась с ошибкой';
         const base = receipt.comparison === 'success' ? 'прошла' : 'завершилась с ошибкой';
