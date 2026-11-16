@@ -50,14 +50,10 @@ def fingerprint(data):
                                      separators=(",", ":")).encode()).hexdigest()
 
 
-def file_delta(board, base, target):
-    """Check the actual two Git trees, including existing tests on the NEW base."""
-    bare = board.root / "candidate.git"
+def compare_files(bare, base, target, allowed, cfg):
+    """Check the actual two Git trees, including existing tests on the base."""
     before, after = candidate._tree(bare, base), candidate._tree(bare, target)
     paths = sorted(k.decode() for k in before.keys() | after.keys() if before.get(k) != after.get(k))
-    saved = session._decode(session._read_state(board.root / "candidate.json"))
-    allowed = {f["path"] for f in saved["files"]}
-    cfg = check.load_config(board.workflow.parent)
     if any(candidate.KEY_LIKE.search(p.encode()) or check.has_api_key(p) for p in allowed | set(paths)):
         raise ReleaseError("release_possible_secret")
     if not paths:
@@ -85,6 +81,13 @@ def file_delta(board, base, target):
                 raise ReleaseError("release_possible_secret")
         result.append((p, "added" if old is None else "deleted" if new is None else "modified"))
     return result
+
+
+def file_delta(board, base, target):
+    saved = session._decode(session._read_state(board.root / "candidate.json"))
+    allowed = {f["path"] for f in saved["files"]}
+    return compare_files(board.root / "candidate.git", base, target, allowed,
+                         check.load_config(board.workflow.parent))
 
 
 def target_commit(board, value, base):
@@ -190,7 +193,8 @@ def refresh(board, value):
             value["release_block"] = {"base": base, "reason": str(exc)}
             save_lane(board, value, "needs_human")
             return value
-        for key in ("cloud_seen", "cloud_attempt", "release_check", "release_block", "check_target"):
+        for key in ("cloud_seen", "cloud_attempt", "release_check", "release_block", "check_target",
+                    "final_error", "final_document"):
             value.pop(key, None)
         if target:
             value["check_target"] = target
@@ -320,18 +324,9 @@ def offer(board, value):
             "rebuilt": original is not None, "original": original, "accepted": value.get("release_accept", {}).get("offer") == key}
 
 
-def review(board, value, offset):
+def review_files(board, base, sha, offset, *, source="delivery_target"):
     if type(offset) is not int or offset < 0:
         raise ReleaseError("invalid_workspace_query")
-    value = recover_delivery(board, value)
-    if value.get("release_done"):
-        _, subject = accepted_delivery(board, value)
-        if publication.oid(board.root / "candidate.git", "rev-parse", "--verify",
-                           subject["commit"] + "^{tree}") != subject["tree"]:
-            raise ReleaseError("release_target_changed")
-    else:
-        subject = board._cloud_subject(value)
-    base, sha = subject["base_commit"], subject["commit"]
     manifest = file_delta(board, base, sha)
     if offset > len(manifest):
         raise ReleaseError("invalid_workspace_query")
@@ -346,8 +341,20 @@ def review(board, value, offset):
             text += "\n… Полное изменение доступно по проверенному коммиту."
         rows.append({"path": path, "change": change, "diff": text, "binary": binary})
     end = offset + len(rows)
-    return {"source": "delivery_target", "commit": sha, "base_commit": base, "files": rows,
+    return {"source": source, "commit": sha, "base_commit": base, "files": rows,
             "total": len(manifest), "next_offset": end if end < len(manifest) else None}
+
+
+def review(board, value, offset):
+    value = recover_delivery(board, value)
+    if value.get("release_done"):
+        _, subject = accepted_delivery(board, value)
+        if publication.oid(board.root / "candidate.git", "rev-parse", "--verify",
+                           subject["commit"] + "^{tree}") != subject["tree"]:
+            raise ReleaseError("release_target_changed")
+    else:
+        subject = board._cloud_subject(value)
+    return review_files(board, subject["base_commit"], subject["commit"], offset)
 
 
 def act(board, operation, expected, *, publisher=None):

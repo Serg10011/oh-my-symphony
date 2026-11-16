@@ -30,11 +30,14 @@ import api_board_permission as permission_api
 import api_candidate as candidate
 import api_cloud_check as cloud
 import api_delivery as delivery
+import api_final
 import api_group_release as group
 import api_gemini_quota as gemini_quota
+import api_plan
 import api_project as project
 import api_project_context as project_context
 import api_session as session
+import api_subtasks
 import deliver
 import project_config as pc
 from symphony.errors import SymphonyError
@@ -134,6 +137,14 @@ class Board:
         return project._git(str(self.repo), ["rev-parse", "--verify", "--end-of-options",
                                             base + "^{commit}"], limit=128).decode().strip()
 
+    def check_config(self, settings=None):
+        if settings is None:
+            settings = session._decode(self.settings.read_bytes())
+        return _digest([settings, hashlib.sha256(self.workflow.read_bytes()).hexdigest()])
+
+    def cloud_profile(self):
+        return board_config.load_settings(self.settings).get("cloud_check")
+
     def proposal(self, team=None) -> dict:
         base_settings = board_config.load_settings(self.settings)
         raw, revision = self.teams.work_settings(base_settings)
@@ -141,6 +152,10 @@ class Board:
         pinned = front.get("agent_kind") or (front.get("agent") or {}).get("kind")
         if pinned != self.context["agent_kind"]:
             raise BoardError("api_card_agent_changed")
+        labels = front.get("labels") or []
+        if api_plan.DRAFT_LABEL in labels:
+            raise BoardError("api_plan_subtask_draft")
+        planning = api_plan.PLAN_LABEL in labels
         pinned_defaults = front.get("api_defaults")
         if pinned_defaults is not None:
             if not isinstance(pinned_defaults, dict) or pinned_defaults.get("policy") != models.policy_digest(raw):
@@ -159,16 +174,31 @@ class Board:
         if team is not None:
             roles = models.pair(team)
         options = board_config.session_options(raw, roles)
+        if planning:
+            subtask_options = {**options, "execution": raw["execution"]}
+            context = options.get("context", "")
+            if not isinstance(context, str):
+                raise session.SessionError("invalid_context")
+            try:
+                brief = api_plan.plan_context(self, front, raw["paths"])
+            except api_plan.PlanError as exc:
+                raise BoardError(exc.reason) from None
+            options.update(phase="plan", worker_profile=None, context=context + brief)
+            if roles["worker_profile"] == api.FLASH_WORKER:
+                options.setdefault("lead_escalation", session.api_effort.POLICY)
+        else:
+            options["execution"] = raw["execution"]
         spec = session.validate_spec({**options, "task": str(front.get("title", "")) + "\n\n" + body,
                                       "project": {"root": str(self.repo), "paths": raw["paths"],
-                                                  "commit": self._base_commit()},
-                                      "execution": raw["execution"]})
+                                                  "commit": self._base_commit()}})
         session._path(self.session_path)
         spec["project"], snapshot = project.snapshot(spec["project"])
         if spec["lead_profile"] == "deepseek-lead" and raw.get("context_paths"):
             spec["project_context"] = project_context.capture(snapshot, self.teams.binding, raw["context_paths"])
         code = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in sorted(Path(__file__).parent.glob("api_*.py"))}
+        if planning:
+            code["plan.py"] = hashlib.sha256(Path(__file__).with_name("plan.py").read_bytes()).hexdigest()
         rules = candidate.rules_snapshot(self.workflow.parent)
         binding = {"card": self.card_digest(front, body), "spec": spec,
                    "snapshot": snapshot["digest"], "profiles": session._profiles(spec),
@@ -176,11 +206,18 @@ class Board:
                    "workflow_sha256": hashlib.sha256(self.workflow.read_bytes()).hexdigest(), "rules": rules}
         if revision is not None:
             binding["work_settings_revision"] = revision
+        if planning:
+            binding["planning_team"] = roles
         proposal = {"binding": _digest(binding), "card_digest": binding["card"], "spec": spec,
                     "profiles": binding["profiles"], "project_digest": snapshot["digest"], "rules": rules}
+        if planning:
+            proposal["planning_team"] = roles
+            proposal["subtask_spec"] = {**subtask_options, "project": spec["project"]}
+            proposal["subtask_context_paths"] = raw.get("context_paths", [])
+            proposal["plan_check_config"] = self.check_config()
         if "mode" in raw:
             proposal["mode"] = raw["mode"]
-        if "cloud_check" in raw:
+        if not planning and "cloud_check" in raw:
             proposal.update(cloud_profile=cloud.PROFILE,
                             check_config=_digest([base_settings, binding["workflow_sha256"]]),
                             result_card_digest=self.card_digest(front, _held_body(body, RESULT_NOTE).strip()))
@@ -287,52 +324,117 @@ class Board:
                 result["submission_refusal"] = "api_permission_card_not_eligible"
         return result
 
+    def prepare_subtasks(self):
+        with session._lock(self.path):
+            token = api_subtasks.prepare(self, self._load())
+        return {**self.show(), "confirmation_token": token}
+
+    def start_subtasks(self, token):
+        with session._lock(self.path), session._lock(self.permission.settings_lock), session._lock(self.permission.path):
+            api_subtasks.confirm(self, self._load(), token)
+        self.sync_subtasks()
+        return self.show()
+
+    def sync_subtasks(self):
+        with session._lock(self.path):
+            value = self._load()
+            if not value or value["spec"].get("phase") != "plan":
+                return False
+            api_subtasks.advance(self, value)
+            run = api_subtasks._load(self)
+            if not run or run["status"] != "complete":
+                return False
+            if not value.get("aggregate") and not value.get("final_error"):
+                try:
+                    api_final.assemble(self, value, run)
+                except (BoardError, api_plan.PlanError, candidate.CandidateError, session.SessionError, project.ProjectError,
+                        pc.ProjectError, SymphonyError, OSError, ValueError) as exc:
+                    reason = str(exc) if isinstance(exc, session.SessionError) else "api_final_result_changed"
+                    api_final.fail(self, value, reason)
+                    return False
+            if value.get("aggregate") and self.card()[0]["state"] == "Subtasks":
+                self._release_lane(value, "Verify", allowed_states={"Subtasks", "Verify"})
+            if value.get("cloud_attempt") and self.card()[0]["state"] in {"Verify", "Document"}:
+                try:
+                    subject = self._cloud_subject(value)
+                except BoardError:
+                    pass  # The normal cloud poll handles a changed release base.
+                else:
+                    self._checked_lane(value, subject)
+            api_final.reconcile_local_review(self, value)
+            return api_final.can_check_local(self, value)
+
+    def check_local_final(self, cancelled):
+        api_final.local_check(self, cancelled)
+        return self.show()
+
+    def _recover_running(self, value):
+        # The lifetime lock survives HTTP disconnects. A crashed owner is
+        # recorded once without re-arming its paid assignment.
+        try:
+            with session._lock(self.root / "owner"), session._lock(self.path):
+                value = self._load()
+                if value["status"] == "running":
+                    if self.session_path.exists():
+                        session.interrupt(self.session_path, "board_execution_failed")
+                    value.update(status="stopped", reason="board_execution_failed", finished_at=session._now())
+                    self._save(value)
+                    self._hold(value, "Процесс API-команды прерван. Автоматического платного повтора нет.",
+                               append_note=value["spec"].get("phase") != "plan" and not value.get("subtask"))
+        except session.SessionError as exc:
+            if str(exc) != "session_busy":
+                raise
+        return value
+
     def show(self) -> dict:
         value = self._load()
         if value is None:
+            view = self.permission_view()
             if self.tracker.find_path(self.identifier):
-                frozen = self.card()[0].get("api_defaults")
+                front, _ = self.card()
+                labels = front.get("labels") or []
+                if api_plan.PLAN_LABEL in labels:
+                    view["phase"] = "plan"
+                if api_plan.DRAFT_LABEL in labels:
+                    view["plan_draft"] = True
+                frozen = front.get("api_defaults")
                 if isinstance(frozen, dict):
-                    return {"version": 1, "status": "unassigned", "identifier": self.identifier, **self.permission_view(),
+                    return {"version": 1, "status": "unassigned", "identifier": self.identifier, **view,
                             "mode": frozen.get("mode"), "team_picker": {"default": models.pair(frozen.get("team")),
                                                                         "override": None, **models.catalog()}}
-            return {"version": 1, "status": "unassigned", "identifier": self.identifier, **self.permission_view(),
+            return {"version": 1, "status": "unassigned", "identifier": self.identifier, **view,
                     "team_picker": {"default": self.teams.default(), "override": None, **models.catalog()}}
         if value["status"] == "running":
-            # The lifetime lock survives HTTP disconnects but is released by
-            # the OS on process death. A crashed owner can never be retried.
-            try:
-                with session._lock(self.root / "owner"):
-                    with session._lock(self.path):
-                        value = self._load()
-                        if value["status"] == "running":
-                            if self.session_path.exists():
-                                session.interrupt(self.session_path, "board_execution_failed")
-                            value.update(status="stopped", reason="board_execution_failed",
-                                         finished_at=session._now())
-                            self._save(value)
-                            self._hold(value, "Процесс API-команды прерван. Автоматического платного повтора нет.")
-            except session.SessionError as exc:
-                if str(exc) != "session_busy":
-                    raise
+            value = self._recover_running(value)
         release = None
-        try:
-            value = delivery.refresh(self, value)
-            release = delivery.offer(self, value)
-        except (BoardError, delivery.ReleaseError, cloud.CloudError, session.SessionError, candidate.CandidateError,
-                pc.ProjectError, OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
-            code = str(exc) if isinstance(exc, (BoardError, session.SessionError)) else "release_target_changed"
-            release = {"stage": "blocked", "reason": code}
+        if (value["spec"].get("phase") != "plan" or value.get("aggregate")) and not value.get("subtask"):
+            try:
+                value = delivery.refresh(self, value)
+                release = delivery.offer(self, value)
+            except (BoardError, delivery.ReleaseError, cloud.CloudError, session.SessionError, candidate.CandidateError,
+                    pc.ProjectError, OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+                code = str(exc) if isinstance(exc, (BoardError, session.SessionError)) else "release_target_changed"
+                release = {"stage": "blocked", "reason": code}
         spec = value["spec"]
         result = {"version": 1, "identifier": self.identifier, "status": value["status"],
                   **self.permission_view(),
                   "profiles": value["profiles"], "task": spec["task"], "limits": spec["limits"],
                   "budget": spec.get("budget"), "project": spec["project"],
-                  "execution": spec["execution"],
+                  "execution": spec.get("execution"),
                   "process_timeout_seconds": self.context["process_timeout_seconds"],
                   "reason": value.get("reason"), "run_id": value.get("run_id"),
                   "stop_requested": self.stop_path.exists(), "accepted": False, "delivered": False,
                   "delivery_status": "not_configured"}
+        if spec.get("phase") == "plan":
+            batch = value.get("plan_batch") or {}
+            result.update(phase="plan", plan={"status": batch.get("status", value["status"]),
+                                             "cards": batch.get("cards", []),
+                                             "errors": value.get("plan_errors", [])})
+            if batch.get("status") == "ready":
+                result["plan"]["launch"] = api_subtasks.view(self)
+        if value.get("subtask"):
+            result["subtask"] = {"parent": value["subtask"]["parent"],
+                                 "check": value.get("subtask_check")}
         if "project_context" in spec:
             result["project_context"] = project_context.metadata(spec["project_context"])
         if "lead_escalation" in spec:
@@ -354,6 +456,21 @@ class Board:
             state = session._load(self.session_path)
             result["session"] = session.summary(state)
             result["report_text"] = session.render_report(session.spend_report(state))
+        if spec.get("phase") == "plan" and value.get("plan_errors"):
+            result["report_text"] = (result.get("report_text", "") + "\n\nПроверка плана\n"
+                                     + "\n".join(f"- {problem}" for problem in value["plan_errors"]))
+        if value.get("subtask_check"):
+            proof = value["subtask_check"]
+            verdict = "пройдена" if proof["status"] == "passed" else "не пройдена"
+            command, output = proof["command"], proof.get("output", "")
+            result["report_text"] = result.get("report_text", "") + f"\n\nПроверка подзадачи {verdict}\n{command}\n{output}"
+        if value.get("aggregate"):
+            final = api_final.view(self, value)
+            result["final"] = final
+            if document := api_final.render_document(self, value, final):
+                result["report_text"] = result.get("report_text", "") + "\n\n" + document
+        elif value.get("final_error"):
+            result["final"] = {"status": "failed", "reason": value["final_error"]}
         if value.get("candidate"):
             result["candidate"] = candidate.public_report(value["candidate"])
             result["delivery_status"] = value["candidate"]["status"]
@@ -376,10 +493,11 @@ class Board:
                         result["cloud_check"]["phase"] = seen["phase"]
                 except (BoardError, session.SessionError, ValueError, KeyError, TypeError):
                     result["cloud_check"] = {"status": "stale"}
-            result["report_text"] = (result.get("report_text", "") + "\n\n"
-                                     + candidate.render_report(value["candidate"], cloud_checked=bool(receipt),
-                                                               group_release=grouped, group_ready=group_ready,
-                                                               accepted=bool(release and release.get("accepted"))))
+            if not value.get("aggregate") or result["final"]["status"] != "ready":
+                result["report_text"] = (result.get("report_text", "") + "\n\n"
+                                         + candidate.render_report(value["candidate"], cloud_checked=bool(receipt),
+                                                                   group_release=grouped, group_ready=group_ready,
+                                                                   accepted=bool(release and release.get("accepted"))))
         if release:
             if "reason" in release:
                 release["message"] = PUBLIC_ERRORS.get(release["reason"], "Требуется сверка версии или настройки доставки")
@@ -396,8 +514,7 @@ class Board:
         try:
             front, body = self.card()
             current = session._decode(self.settings.read_bytes())
-            if "check_config" in value and value["check_config"] != _digest(
-                    [current, hashlib.sha256(self.workflow.read_bytes()).hexdigest()]):
+            if "check_config" in value and value["check_config"] != self.check_config(current):
                 raise BoardError("cloud_stale")
             origin = candidate._git(self.repo, "config", "--local", "--no-includes", "--get-all",
                                     "remote.origin.url").decode().removesuffix("\n")
@@ -405,6 +522,8 @@ class Board:
             lanes = {value.get("result_lane", "needs_human")}
             if value.get("check_lane") and self.review_lane:
                 lanes.update((self.review_lane, "needs_human"))
+            if value.get("aggregate"):
+                lanes.add("Document")
             target = value.get("check_target")
             if target is not None:
                 delivery.validate_target(self, target, report["commit"])
@@ -416,13 +535,19 @@ class Board:
                     or not allow_moved and self._base_commit() != (target or report)["base_commit"]
                     or candidate.rules_snapshot(self.workflow.parent) != value["rules"]):
                 raise BoardError("cloud_stale")
-            candidate.check_identity(self.session_path, value, session._load(self.session_path))
+            self.verify_result(value)
         except (candidate.CandidateError, session.SessionError, session.workspace.WorkspaceError,
                 project.ProjectError, SymphonyError, OSError, ValueError, KeyError, TypeError, AttributeError):
             raise BoardError("cloud_stale") from None
         return {"profile": cloud.PROFILE, "identifier": self.identifier, "binding": value["binding"],
                 "run_id": value["run_id"], **{k: report[k] for k in ("commit", "tree", "revision", "base_commit")},
                 **(target or {})}
+
+    def verify_result(self, value):
+        if value.get("aggregate"):
+            api_final.check_identity(self, value)
+        else:
+            candidate.check_identity(self.session_path, value, session._load(self.session_path))
 
     def _cloud_receipt(self, value, subject):
         ref = value.get("cloud_attempt")
@@ -463,12 +588,20 @@ class Board:
         seen = value.get("cloud_seen")
         if receipt and (not seen or seen["phase"] == "verified" and
                         (seen["run"], seen["attempt"]) == (receipt["run"], receipt["attempt"])):
+            if value.get("aggregate"):
+                if receipt["status"] == "passed":
+                    api_final.document(self, value, subject, receipt)
+                else:
+                    api_final.fail(self, value, "api_final_tests_failed")
+                return
             target = self.review_lane if receipt["status"] == "passed" else "needs_human"
         self._release_lane(value, target)
 
     def _release_lane(self, value, target, *, allowed_states=None):
         if allowed_states is None:
             allowed_states = {value.get("check_lane"), self.review_lane, "needs_human"}
+            if value.get("aggregate"):
+                allowed_states.add("Document")
         if value["board_stages"][-1] == target and self.card()[0]["state"] == target:
             return
         def mutate(front, body):
@@ -564,10 +697,13 @@ class Board:
                 if value["status"] != "running":
                     value.update(status="stopped", reason="operator_stopped")
                     self._save(value)
-                    self._hold(value, "Запуск отменён до обращения к моделям.", self._cancel_lane())
+                    self._hold(value, "Запуск отменён до обращения к моделям.", self._cancel_lane(),
+                               append_note=not value.get("subtask"))
+            elif value["spec"].get("phase") == "plan":
+                api_subtasks.cancel(self)
         return self.show()
 
-    def _hold(self, value, text, lane="needs_human"):
+    def _hold(self, value, text, lane="needs_human", *, append_note=True):
         moved = False
         def mutate(front, body):
             nonlocal moved
@@ -578,7 +714,7 @@ class Board:
             front["state"] = lane
             moved = True
             front["updated_at"] = session._now()
-            return front, _held_body(body, text)
+            return front, _held_body(body, text) if append_note else body
         self.tracker._mutate_ticket(self.identifier, mutate)
         if moved and "board_stages" in value and value["board_stages"][-1] != lane:
             value["board_stages"].append(lane)
@@ -590,6 +726,15 @@ class Board:
             raise BoardError("api_result_not_ready")
         if version not in ("checked", "original"):
             raise BoardError("invalid_board_payload")
+        if value.get("aggregate"):
+            if self.card_digest(*self.card()) != value["result_card_digest"]:
+                raise BoardError("api_final_result_changed")
+            if version == "checked" and value.get("cloud_profile"):
+                return delivery.review(self, value, offset)
+            self.verify_result(value)
+            report = value["candidate"]
+            return delivery.review_files(self, report["base_commit"], report["commit"], offset,
+                                         source="original_candidate" if version == "original" else "composed_result")
         grouped = group.receipt(self, value)
         if version == "checked" and not grouped and (value.get("check_target") or value.get("release_accept")):
             return delivery.review(self, value, offset)
@@ -606,27 +751,74 @@ class Board:
             return self._run(run_id, credentials=credentials, transport=transport,
                              cancelled=cancelled, on_checkpoint=on_checkpoint)
 
+    def _finish_plan(self, value, text):
+        with session._lock(self.path):
+            try:
+                if not self.permission.allows(value):
+                    raise api_plan.PlanError("api_permission_revoked")
+                if self.proposal(value["planning_team"])["binding"] != value["binding"]:
+                    raise api_plan.PlanError("api_plan_parent_changed")
+                receipt = api_plan.materialize(self, value, text)
+            except (api_plan.PlanError, BoardError, SymphonyError, session.SessionError, project.ProjectError,
+                    candidate.CandidateError, OSError, ValueError) as exc:
+                reason = exc.reason if isinstance(exc, api_plan.PlanError) else "api_plan_staging_failed"
+                value.update(status="stopped", reason=reason, finished_at=session._now(),
+                             plan_errors=exc.problems if isinstance(exc, api_plan.PlanError) else [])
+                self._save(value)
+                self._hold(value, "", append_note=False)
+                return
+            if value["board_stages"][-1] != "Subtasks":
+                value["board_stages"].append("Subtasks")
+            value.pop("plan_errors", None)
+            value.update(status="result", reason=None, plan_batch=receipt, finished_at=session._now())
+            self._save(value)
+
+    def recover_plan(self):
+        with session._lock(self.root / "owner"):
+            value = self._load()
+            if not value or value["spec"].get("phase") != "plan" or not self.session_path.exists():
+                raise BoardError("api_plan_not_recoverable")
+            if value.get("plan_batch", {}).get("status") != "ready":
+                outcome = session.show(self.session_path)
+                if outcome["status"] != "dialogue_complete":
+                    raise BoardError("api_plan_not_recoverable")
+                self._finish_plan(value, outcome["result"])
+        return self.show()
+
     def _run(self, run_id, *, credentials=None, transport=None, cancelled=None, on_checkpoint=None):
         with session._lock(self.path):
             value = self._load()
             if (not value or value["status"] != "queued" or self.stop_path.exists()
                     or not isinstance(run_id, str) or not re.fullmatch(r"[0-9a-f]{32}", run_id)):
                 raise BoardError("api_assignment_not_queued")
+            subtask = value.get("subtask")
+            refusal = None
             try:
                 # An approved run keeps its team when the board default changes.
                 # Repository, raw settings, task and permissions are still revalidated.
-                unchanged = self.proposal(models.from_spec(value["spec"]))["binding"] == value["binding"]
+                if subtask:
+                    api_subtasks.live(self, value, recheck=True)
+                    if self.card_digest(*self.card()) != value["card_digest"]:
+                        refusal = "api_plan_subtask_changed"
+                else:
+                    team = value.get("planning_team") or models.from_spec(value["spec"])
+                    if self.proposal(team)["binding"] != value["binding"]:
+                        refusal = "api_assignment_changed"
+            except api_plan.PlanError as exc:
+                refusal = exc.reason
             except (BoardError, candidate.CandidateError, session.SessionError, project.ProjectError, OSError, ValueError):
-                unchanged = False
-            if not unchanged:
-                value.update(status="stopped", reason="api_assignment_changed")
+                refusal = "api_assignment_changed"
+            if refusal:
+                value.update(status="stopped", reason=refusal)
                 self._save(value)
-                self._hold(value, "Назначение изменилось после подтверждения. Платный запуск не выполнен.")
+                self._hold(value, "Назначение изменилось после подтверждения. Платный запуск не выполнен.",
+                           append_note=not subtask)
                 return self.show()
             if not self.permission.allows(value):
                 value.update(status="stopped", reason="api_permission_revoked", finished_at=session._now())
                 self._save(value)
-                self._hold(value, "Разрешение доски отозвано или изменилось. Платный запуск не выполнен.")
+                self._hold(value, "Разрешение доски отозвано или изменилось. Платный запуск не выполнен.",
+                           append_note=not subtask)
                 return self.show()
             if value["spec"]["worker_profile"] == api.FLASH_WORKER:
                 reset = gemini_quota.blocked_until(self.teams.saved_gemini_quota())
@@ -634,12 +826,13 @@ class Board:
                     value.update(status="stopped", reason="flash_quota_exhausted",
                                  gemini_wait_until=reset.isoformat(), finished_at=session._now())
                     self._save(value)
-                    self._hold(value, "По последнему снимку квота Gemini исчерпана.")
+                    self._hold(value, "По последнему снимку квота Gemini исчерпана.", append_note=not subtask)
                     return self.show()
             value.update(status="running", run_id=run_id, started_at=session._now())
             self._save(value)
         try:
-            self._stage(value, ("In Progress", "В работе"))
+            planning = value["spec"].get("phase") == "plan"
+            self._stage(value, ("Plan",) if planning else ("In Progress", "В работе"))
             self._save(value)
             session.create(self.session_path, value["spec"])
             def should_stop():
@@ -648,10 +841,12 @@ class Board:
                 try:
                     if not self.permission.allows(value):
                         return True
+                    if subtask:
+                        api_subtasks.live(self, value)
                     front, body = self.card()
                     return (front.get("state") not in self.context["active_states"]
                             or self.card_digest(front, body) != value["card_digest"])
-                except (BoardError, SymphonyError, session.SessionError, project.ProjectError,
+                except (BoardError, api_plan.PlanError, SymphonyError, session.SessionError, project.ProjectError,
                         candidate.CandidateError, OSError, ValueError, KeyError):
                     # Removed/malformed cards withdraw permission; do not send
                     # another request while their identity cannot be checked.
@@ -668,18 +863,28 @@ class Board:
             outcome = session.run(self.session_path, transport=transport, cancelled=should_stop,
                                   credential_loader=credentials or keychain_credentials, on_checkpoint=on_checkpoint,
                                   request_guard=admit_request)
-            value.update(status="result" if outcome["status"] == "dialogue_complete" else "stopped",
-                         reason=outcome["stop_reason"])
-            if outcome["status"] == "dialogue_complete":
+            complete = outcome["status"] == "dialogue_complete"
+            if planning and complete:
+                if should_stop():
+                    raise Interrupted()
+                self._finish_plan(value, outcome["result"])
+                return self.show()
+            value.update(status="result" if complete else "stopped", reason=outcome["stop_reason"])
+            if complete:
                 self._stage(value, ("Verify", "Проверка"))
                 value["candidate"] = candidate.public_report(candidate.prepare(self.session_path, self.workflow.parent,
-                    self.identifier, value["rules"], cancelled=should_stop))
+                    self.identifier, value["rules"], cancelled=should_stop,
+                    shared=Path(subtask["repository"]) if subtask else None))
+                if subtask:
+                    proof = value["subtask_check"] = api_subtasks.verify(self, value, should_stop)
+                    if proof["status"] != "passed":
+                        value.update(status="stopped", reason=proof["reason"])
         except Interrupted as exc:
             reason = "operator_stopped" if self.stop_path.exists() else exc.reason
             if self.session_path.exists():
                 session.interrupt(self.session_path, reason)
             value.update(status="stopped", reason=reason)
-        except (BoardError, candidate.CandidateError, session.SessionError, session.workspace.WorkspaceError,
+        except (BoardError, api_plan.PlanError, candidate.CandidateError, session.SessionError, session.workspace.WorkspaceError,
                 session.sandbox.SandboxError, project.ProjectError, OSError):
             if self.session_path.exists():
                 session.interrupt(self.session_path, "board_execution_failed")
@@ -690,7 +895,9 @@ class Board:
         except (session.SessionError, project.ProjectError, candidate.CandidateError, OSError, ValueError, KeyError):
             value["reason"] = "api_permission_revoked"
         with session._lock(self.path):
-            if value["status"] == "result" and self.review_lane and value.get("candidate", {}).get("status") == "awaiting_full_checks":
+            if value["status"] == "result" and subtask:
+                value["result_lane"] = "Verify"
+            elif value["status"] == "result" and self.review_lane and value.get("candidate", {}).get("status") == "awaiting_full_checks":
                 lane = next((s for s in self.context["active_states"] if s.casefold() in {"verify", "проверка"}), None)
                 if lane:
                     value.update(result_lane=lane, check_lane=lane)
@@ -700,7 +907,8 @@ class Board:
             self._save(value)
             reason = session.FLASH_READINESS_REASONS.get(value.get("reason"))
             note = f"{reason}. Платных запросов к ведущему не было." if reason else RESULT_NOTE
-            self._hold(value, note, value.get("result_lane", "needs_human"))
+            self._hold(value, note, value.get("result_lane", "needs_human"),
+                       append_note=value["spec"].get("phase") != "plan" and not subtask)
         return self.show()
 
     def _stage(self, value, names):
@@ -725,8 +933,19 @@ def sync_checks(settings: Path, context: dict):
     if context.get("identifier") != "":
         raise BoardError("invalid_board_context")
     folder = Path(context["workflow"]).resolve(strict=True).parent / ".ours-state/api-team"
-    if not folder.is_dir() or session._decode(settings.read_bytes()).get("cloud_check") != cloud.PROFILE:
+    if not folder.is_dir():
         return {}
+    local_checks = []
+    for path in sorted(folder.glob("*/subtasks.json")):
+        try:
+            board = Board(settings, {**context, "identifier": path.parent.name})
+            if board.sync_subtasks():
+                local_checks.append(board.identifier)
+        except (BoardError, api_plan.PlanError, session.SessionError, OSError, ValueError):
+            continue
+    result = {"local_checks": local_checks} if local_checks else {}
+    if session._decode(settings.read_bytes()).get("cloud_check") != cloud.PROFILE:
+        return result
     profile = _digest([str(settings.resolve()), context["agent_kind"]])[:24]
     path = session._path(_directory(folder) / f"cloud-index-{profile}.json")
     with session._lock(path):
@@ -741,6 +960,8 @@ def sync_checks(settings: Path, context: dict):
             try:
                 board = Board(settings, {**context, "identifier": child.name})
                 value = board._load()
+                if value and (value.get("subtask") or value["spec"].get("phase") == "plan" and not value.get("aggregate")):
+                    continue
                 if (value and (value.get("release_accept") or "group_review" in value or group.receipt(board, value))
                         and delivery.reconcile_completion(board)):
                     continue
@@ -755,7 +976,7 @@ def sync_checks(settings: Path, context: dict):
                     OSError, ValueError, KeyError, TypeError, AttributeError):
                 continue
         if not targets:
-            return {}
+            return result
         # Reserve the next visit before I/O, including across a restart. At
         # most one new receipt per tick; discovery pages are shared by cards.
         scan["next"] = now + 240
@@ -774,7 +995,7 @@ def sync_checks(settings: Path, context: dict):
         except cloud.CloudError as exc:
             scan["next"] = max(now + 600, exc.retry_at)
         session._save(path, scan)
-    return {}
+    return result
 
 
 def keychain_credentials(spec):
@@ -807,7 +1028,7 @@ def cli(argv=None):
     parser.add_argument("--settings", required=True)
     parser.add_argument("--action", required=True, choices=["prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run", "team-options", "set-team-default", "publish-check", "accept", "submit",
         "permission-show", "permission-prepare", "permission-authorize", "permission-revoke",
-        "settings-preview", "settings-save", "gemini-quota"])
+        "settings-preview", "settings-save", "gemini-quota", "prepare-subtasks", "start-subtasks", "check-local-final"])
     args = parser.parse_args(argv)
     def interrupted(*_):
         raise Interrupted("board_process_interrupted")
@@ -866,6 +1087,14 @@ def cli(argv=None):
             if set(payload) != {"confirmation_token"}:
                 raise BoardError("invalid_board_payload")
             result = board.confirm(payload["confirmation_token"])
+        elif args.action == "prepare-subtasks":
+            if payload or message.get("run_id") is not None:
+                raise BoardError("invalid_board_payload")
+            result = board.prepare_subtasks()
+        elif args.action == "start-subtasks":
+            if set(payload) != {"confirmation_token"} or message.get("run_id") is not None:
+                raise BoardError("invalid_board_payload")
+            result = board.start_subtasks(payload["confirmation_token"])
         elif args.action == "submit":
             if set(payload) != {"authorization_id", "card_digest"} or message.get("run_id") is not None:
                 raise BoardError("invalid_board_payload")
@@ -881,11 +1110,18 @@ def cli(argv=None):
         elif args.action in {"publish-check", "accept"}:
             if set(payload) != {"offer"} or message.get("run_id") is not None:
                 raise BoardError("invalid_board_payload")
+            if (board._load() or {}).get("subtask"):
+                raise BoardError("api_subtask_local_only")
             try:
                 delivery.act(board, args.action, payload["offer"])
             except (deliver.Failed, deliver.Refused):
                 raise BoardError("release_remote_unavailable") from None
             result = board.show()
+        elif args.action == "check-local-final":
+            if payload or message.get("run_id") is not None:
+                raise BoardError("invalid_board_payload")
+            owner = os.getppid()
+            result = board.check_local_final(lambda: os.getppid() != owner)
         elif args.action == "run":
             if payload:
                 raise BoardError("invalid_board_payload")
@@ -905,10 +1141,11 @@ def cli(argv=None):
             result = getattr(board, args.action)()
         print(json.dumps(result, ensure_ascii=False, allow_nan=False))
         return 0
-    except (BoardError, cloud.CloudError, candidate.CandidateError, session.SessionError, project.ProjectError, OSError, ValueError, KeyError) as exc:
+    except (BoardError, api_plan.PlanError, cloud.CloudError, candidate.CandidateError, session.SessionError,
+            project.ProjectError, OSError, ValueError, KeyError) as exc:
         # Detailed provider/OS error bodies may contain credentials. This is a
         # fixed bridge error, not a swallowed success or a license to retry.
-        code = str(exc) if isinstance(exc, (BoardError, cloud.CloudError, session.SessionError)) else "api_board_action_refused"
+        code = str(exc) if isinstance(exc, (BoardError, api_plan.PlanError, cloud.CloudError, session.SessionError)) else "api_board_action_refused"
         print(json.dumps({"error": code}))
         return 2
 

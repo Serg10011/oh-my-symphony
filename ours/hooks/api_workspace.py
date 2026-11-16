@@ -78,11 +78,18 @@ def granted_paths(spec):
 
 
 def scope_instructions(spec):
-    return ("Task-copy scope (relative paths or directories, including names not yet created): "
+    text = ("Task-copy scope (relative paths or directories, including names not yet created): "
             + json.dumps(granted_paths(spec), ensure_ascii=False)
             + ". list_project_files shows existing files only. For new files use an exact granted name "
               "or a file below a granted directory. Board protections still apply, including to existing tests. "
               "Shell commands have the same scope; do not use a shell to bypass a refusal.")
+    if "write_paths" in spec["execution"]:
+        text += " Change files only in these subtask scopes: " + json.dumps(writable_paths(spec), ensure_ascii=False) + "."
+    return text
+
+
+def writable_paths(spec):
+    return spec["execution"].get("write_paths", granted_paths(spec))
 
 
 def path_denial(spec, args):
@@ -96,8 +103,8 @@ def path_denial(spec, args):
                        "Use the relative scopes in your instructions; shell edits cannot extend them."}
 
 
-def validate(raw: dict) -> dict:
-    if (not isinstance(raw, dict) or set(raw) != {"python", "read_roots"}
+def validate(raw: dict, source: dict | None = None) -> dict:
+    if (not isinstance(raw, dict) or set(raw) - {"write_paths"} != {"python", "read_roots"}
             or not isinstance(raw["python"], str) or not isinstance(raw["read_roots"], list)
             or not 1 <= len(raw["read_roots"]) <= 8):
         raise WorkspaceError("invalid_execution_spec")
@@ -105,7 +112,16 @@ def validate(raw: dict) -> dict:
     if any(not isinstance(p, str) or not Path(p).is_absolute() or ".." in Path(p).parts
            or len(p) > 4096 or any(ord(c) < 32 for c in p) for p in values):
         raise WorkspaceError("invalid_execution_spec")
-    return {"python": raw["python"], "read_roots": sorted(set(raw["read_roots"]))}
+    result = {"python": raw["python"], "read_roots": sorted(set(raw["read_roots"]))}
+    if "write_paths" in raw:
+        if source is None:
+            raise WorkspaceError("invalid_execution_spec")
+        scopes = project.validate({**source, "paths": raw["write_paths"]})["paths"]
+        if any(scope == ".tmp" or scope.startswith(".tmp/") or not project._in_scope(scope, source["paths"])
+               for scope in scopes):
+            raise WorkspaceError("workspace_path_denied")
+        result["write_paths"] = scopes
+    return result
 
 
 def _sha(data: bytes) -> str:
@@ -409,6 +425,8 @@ def _mutate(spec: dict, value: dict, name: str, args: dict) -> dict:
         if len(data) > project.MAX_FILE_BYTES:
             raise WorkspaceError("workspace_file_too_large")
     path = _path(spec, args["path"])
+    if not project._in_scope(path, writable_paths(spec)):
+        raise WorkspaceError("workspace_path_denied")
     with _parent(value["root"], path, create=not expected) as (fd, leaf):
         try:
             previous, mode = _read_at(fd, leaf)

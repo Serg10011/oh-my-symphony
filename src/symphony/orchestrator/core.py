@@ -390,6 +390,7 @@ class Orchestrator:
         # it. `_spawn_supervised` is the only sanctioned way to fire one.
         self._background_tasks: set[asyncio.Task[None]] = set()
         self._cloud_check_task: asyncio.Task[None] | None = None
+        self._api_final_check_task: asyncio.Task[None] | None = None
         self._next_cloud_check = 0.0
 
         # Continuous-improvement heartbeat (plan §4). Default-off, config
