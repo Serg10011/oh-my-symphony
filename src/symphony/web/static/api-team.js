@@ -182,20 +182,24 @@
       if (groupReady) status.textContent = 'Готова к общему выпуску';
       const draft = data.plan_draft === true;
       const launch = data.plan?.launch;
+      const retry = launch?.retry;
       launchHint.hidden = draft;
       if (data.phase === 'plan') launchHint.textContent += ' На этапе Plan работает только ведущий.';
       if (data.phase === 'plan' && data.status === 'running') status.textContent = 'Ведущий готовит план';
       if (data.plan?.status === 'ready') status.textContent = `План проверен. Черновиков подзадач — ${data.plan.cards.length}.`;
       if (launch?.status !== 'prepared') planToken = null;
-      planPrepare.hidden = !['unassigned', 'prepared'].includes(launch?.status) || Boolean(planToken);
+      planPrepare.textContent = retry ? 'Посмотреть повтор подзадачи' : 'Посмотреть запуск подзадач';
+      planStart.textContent = retry ? 'Подтвердить повтор подзадачи' : 'Подтвердить запуск подзадач';
+      planPrepare.hidden = !(['unassigned', 'prepared'].includes(launch?.status) || retry) || Boolean(planToken);
       planStart.hidden = launch?.status !== 'prepared' || !planToken;
       if (launch?.status === 'prepared' && planToken) {
         const cap = launch.budget ? `Остаток общего лимита — ${launch.budget.max_usd} USD.` : 'Отдельного денежного потолка нет.';
-        launchHint.textContent = `Подзадач — ${launch.total}. Ведущий — ${model(launch.profiles.lead)}. Исполнитель — ${model(launch.profiles.worker)}. ${cap} Пределы запросов и ответов действуют на каждую подзадачу.`;
+        const subject = retry ? `Повтор ${retry.identifier} на базе ${retry.base_commit.slice(0, 12)}. Уже проверено частей — ${launch.checked}.` : `Подзадач — ${launch.total}.`;
+        launchHint.textContent = `${subject} Ведущий — ${model(launch.profiles.lead)}. Исполнитель — ${model(launch.profiles.worker)}. ${cap} Пределы запросов и ответов действуют на каждую подзадачу.`;
       }
       if (launch?.status === 'active') status.textContent = `Проверено подзадач — ${launch.checked} из ${launch.total}. Текущая — ${launch.next}.`;
       if (launch?.status === 'complete') status.textContent = 'Все подзадачи проверены. Общий результат ждёт итоговой проверки.';
-      if (launch?.status === 'stopped') status.textContent = 'Выполнение подзадач остановлено. ' + (reasons[launch.reason] || 'Посмотри отчёт текущей подзадачи.');
+      if (launch?.status === 'stopped' || (retry && launch.status === 'prepared')) status.textContent = 'Выполнение подзадач остановлено. ' + (reasons[launch.reason] || 'Посмотри отчёт текущей подзадачи.');
       const final = data.final;
       if (final?.status === 'checking') status.textContent = final.method === 'cloud'
         ? 'Общая версия готова к проверке на Linux' : 'Итоговая проверка общей версии';
@@ -325,8 +329,9 @@
         }
       }
       const lane = data.board_stages?.at(-1);
-      if (lastStatus !== null && (lastStatus !== data.status || lastLane !== lane)) onTransition?.();
-      lastStatus = data.status;
+      const pollingStatus = launch?.status === 'active' ? 'running' : data.status;
+      if (lastStatus !== null && (lastStatus !== pollingStatus || lastLane !== lane)) onTransition?.();
+      lastStatus = pollingStatus;
       lastLane = lane;
     }
     async function operation(fn) {

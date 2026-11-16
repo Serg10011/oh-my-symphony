@@ -105,7 +105,6 @@ class Board:
             raise BoardError("api_state_directory_invalid")
         self.root = _directory(_directory(state / "api-team") / self.identifier)
         self.path = self.root / "assignment.json"
-        self.session_path = self.root / "session.json"
         self.stop_path = self.root / "stop-requested"
         self.teams = models.Teams(self.settings, self.context)
         self.permission = permission_api.Permission(self.settings, self.context)
@@ -132,6 +131,18 @@ class Board:
         fields = {k: v for k, v in front.items() if k not in {"state", "updated_at", "last_agent_kind"}}
         return _digest({"front": fields, "body": body})
 
+    def session_file(self, assignment):
+        attempt = (assignment or {}).get("attempt_id")
+        if attempt is None:
+            return self.root / "session.json"
+        if not (assignment.get("subtask") and isinstance(attempt, str) and re.fullmatch(r"[0-9a-f]{32}", attempt)):
+            raise BoardError("invalid_api_assignment")
+        return self.root / f"session-{attempt}.json"
+
+    @property
+    def session_path(self):
+        return self.session_file(self._load())
+
     def _base_commit(self):
         base = self.context["base_branch"] or "HEAD"
         return project._git(str(self.repo), ["rev-parse", "--verify", "--end-of-options",
@@ -145,7 +156,7 @@ class Board:
     def cloud_profile(self):
         return board_config.load_settings(self.settings).get("cloud_check")
 
-    def proposal(self, team=None) -> dict:
+    def proposal(self, team=None, *, base_commit=None) -> dict:
         base_settings = board_config.load_settings(self.settings)
         raw, revision = self.teams.work_settings(base_settings)
         front, body = self.card()
@@ -190,7 +201,7 @@ class Board:
             options["execution"] = raw["execution"]
         spec = session.validate_spec({**options, "task": str(front.get("title", "")) + "\n\n" + body,
                                       "project": {"root": str(self.repo), "paths": raw["paths"],
-                                                  "commit": self._base_commit()}})
+                                                  "commit": self._base_commit() if base_commit is None else base_commit}})
         session._path(self.session_path)
         spec["project"], snapshot = project.snapshot(spec["project"])
         if spec["lead_profile"] == "deepseek-lead" and raw.get("context_paths"):
@@ -459,6 +470,13 @@ class Board:
         if spec.get("phase") == "plan" and value.get("plan_errors"):
             result["report_text"] = (result.get("report_text", "") + "\n\nПроверка плана\n"
                                      + "\n".join(f"- {problem}" for problem in value["plan_errors"]))
+        if spec.get("phase") == "plan" and not value.get("final_document"):
+            spend = api_subtasks.previous_spend(api_subtasks._load(self) or {})
+            if spend:
+                rows = [f"{label} · {model} · запросов {row['calls']} · {session._model_cost_line(row)}"
+                        for label, models in spend.items() for model, row in models.items()]
+                result["report_text"] = (result.get("report_text", "") + "\n\nРасход предыдущих попыток подзадач\n"
+                                         + ("\n".join(rows) if rows else "Запросов к моделям не было."))
         if value.get("subtask_check"):
             proof = value["subtask_check"]
             verdict = "пройдена" if proof["status"] == "passed" else "не пройдена"

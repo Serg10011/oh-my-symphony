@@ -283,6 +283,7 @@ def document(board, value, subject, proof):
         run = subtasks._load(board)
         phases = [("Plan", board), *((row["identifier"], subtasks._board(board, row["identifier"])) for row in run["checked"])]
         spend = {label: session.spend_report(session._load(task.session_path))["by_model"] for label, task in phases}
+        spend.update(subtasks.previous_spend(run))
         changes = delivery.file_delta(board, subject["base_commit"], subject["commit"])
         session._save(path, {"version": 1, **evidence, "parts": run["checked"], "files": changes, "spend": spend})
     saved = _read(path)

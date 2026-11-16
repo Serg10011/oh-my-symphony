@@ -131,11 +131,12 @@ def _plan_cards(board, subtasks):
              "blocked_by": [ids[key] for key in part.blocked_by]} for part in subtasks]
 
 
-def frozen_parts(board, assignment: dict) -> list[dict]:
+def frozen_parts(board, assignment: dict, *, previous_parts=None) -> list[dict]:
     front, body = board.card()
     _parent(board, assignment, front, body)
     batch = assignment.get("plan_batch", {})
-    if front["state"] != "Subtasks" or batch.get("status") != "ready":
+    waiting = {"Subtasks", "needs_human"} if previous_parts is not None else {"Subtasks"}
+    if front["state"] not in waiting or batch.get("status") != "ready":
         raise PlanError("api_plan_not_ready")
     outcome = session.show(board.session_path)
     if outcome["status"] != "dialogue_complete":
@@ -151,9 +152,12 @@ def frozen_parts(board, assignment: dict) -> list[dict]:
         if path is None:
             raise PlanError("api_plan_subtask_changed")
         description = plan.render_body(board.identifier, number, len(subtasks), part)
-        digest = _verify_draft(board, path, card, part, description)
+        digest = (_verify_draft(board, path, card, part, description) if previous_parts is None
+                  else board.card_digest(*parse_ticket_file(path)))
         parts.append({**card, "card_digest": digest, "paths": list(part.paths), "check": part.check,
                       "task": part.title + "\n\n" + description})
+    if previous_parts is not None and parts != previous_parts:
+        raise PlanError("api_plan_subtask_changed")
     return parts
 
 
