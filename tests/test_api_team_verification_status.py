@@ -24,11 +24,14 @@ def verify_board(request):
     entry.agent_kind = "api-team"
     record = path.parent / ".ours-state/api-team/MT-1/assignment.json"
     record.parent.mkdir(parents=True)
-    def save(phase=None, status="result"):
+    def save(phase=None, status="result", subtask=False):
         data = {"identifier": "MT-1", "status": status, "check_lane": "Verify",
                 "candidate": {"status": "awaiting_full_checks"}}
         if phase:
             data["cloud_seen"] = {"phase": phase}
+        if subtask:
+            data.pop("check_lane")
+            data.update(subtask={"parent": "MT"}, subtask_check={"status": "passed"})
         record.write_text(json.dumps(data))
         record.chmod(0o600)
     save()
@@ -52,6 +55,18 @@ async def test_finished_run_shows_the_external_check_and_never_becomes_dispatcha
         assert orch.is_paused(issue.id) and not api_team.confirmed_in_queue(cfg, issue.identifier)
     save(status="stopped")
     assert orch.issue_attention(issue)["kind"] == "paused"
+
+
+@pytest.mark.asyncio
+async def test_checked_subtask_waits_for_local_result_collection_without_pause_badge(verify_board):
+    orch, cfg, entry, save = verify_board
+    issue = entry.issue
+    save(subtask=True)
+    orch._running[issue.id] = entry
+    await orch._on_worker_exit(issue.id, "api_team_finished", None)
+    assert orch.issue_attention(issue)["label"] == "Ожидает результата"
+    assert orch._eligibility_ownership_decision(issue, cfg, owning_retry=False).code == "api_verify_result"
+    assert not api_team.confirmed_in_queue(cfg, issue.identifier)
 
 
 @pytest.mark.asyncio

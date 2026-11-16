@@ -67,6 +67,11 @@ PUBLIC_ERRORS = {
     "api_plan_not_configured": "Для плана нужны колонки Plan и Subtasks и настройки проекта.",
     "api_plan_subtask_draft": "Это черновик подзадачи из принятого плана.",
     "api_plan_not_recoverable": "Готовый ответ ведущего для восстановления плана недоступен.",
+    "api_plan_not_ready": "Для запуска подзадач нужен проверенный план.",
+    "api_plan_subtask_changed": "Карточка подзадачи изменилась после подготовки плана.",
+    "api_subtasks_already_used": "Подзадачи этого плана уже получили допуск. Новый запуск потребует отдельного решения.",
+    "api_subtasks_budget_exhausted": "Достигнут общий предел бюджета или входных токенов составной задачи.",
+    "api_subtask_local_only": "Версия подзадачи хранится для сборки результата родительской карточки.",
     "invalid_api_confirmation": "Подтверждение недействительно. Посмотри назначение заново",
     "api_assignment_already_used": "Это назначение уже использовано. Обнови панель, чтобы увидеть результат",
     "api_result_not_ready": "Изменения будут доступны после завершения или остановки команды",
@@ -181,8 +186,12 @@ def verification_wait(cfg, issue, pause_reason: str | None) -> str | None:
             or not uses_board_queue(cfg, issue.agent_kind)):
         return None
     data = _read_assignment(cfg, issue.identifier)
-    if (not data or data.get("status") != "result" or data.get("check_lane") != issue.state
-            or not isinstance(candidate := data.get("candidate"), dict)
+    if not data or data.get("status") != "result":
+        return None
+    if data.get("subtask"):
+        check = data.get("subtask_check")
+        return "api_verify_result" if isinstance(check, dict) and check.get("status") == "passed" else None
+    if (data.get("check_lane") != issue.state or not isinstance(candidate := data.get("candidate"), dict)
             or candidate.get("status") != "awaiting_full_checks"):
         return None
     seen = data.get("cloud_seen")
@@ -218,7 +227,7 @@ async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
     if action not in {"prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run",
                       "team-options", "set-team-default", "publish-check", "accept", "submit",
                       "permission-show", "permission-prepare", "permission-authorize", "permission-revoke",
-                      "settings-preview", "settings-save", "gemini-quota"}:
+                      "settings-preview", "settings-save", "gemini-quota", "prepare-subtasks", "start-subtasks"}:
         raise SymphonyError("Неизвестное действие API-команды")
     profile = api_profile(cfg, kind)
     context = board_context(cfg, kind, identifier)
@@ -311,7 +320,7 @@ def _cloud_enabled(command: str) -> bool:
 
 
 def schedule_cloud_checks(orch, cfg: ServiceConfig) -> None:
-    """The service owns this read-only work, even with the board closed."""
+    """Reconcile verification and approved subtasks even with the browser closed."""
     now = time.monotonic()
     if cfg.tracker.kind != "file" or now < orch._next_cloud_check:
         return
@@ -319,12 +328,15 @@ def schedule_cloud_checks(orch, cfg: ServiceConfig) -> None:
         return
     orch._next_cloud_check = now + 60
     kinds = [kind for kind, p in cfg.agent.profiles.items() if p.format == FORMAT]
-    if not kinds or not (cfg.workflow_path.parent / ".ours-state/api-team").is_dir():
+    state = cfg.workflow_path.parent / ".ours-state/api-team"
+    if not kinds or not state.is_dir():
         return
 
     async def sync():
+        subtasks = await asyncio.to_thread(lambda: next(state.glob("*/subtasks.json"), None) is not None)
         for kind in kinds:
-            if not await asyncio.to_thread(_cloud_enabled, cfg.agent.profiles[kind].command):
+            command = cfg.agent.profiles[kind].command
+            if not (subtasks and supports_team_settings(command)) and not await asyncio.to_thread(_cloud_enabled, command):
                 continue
             try:
                 await invoke(cfg, kind, "", "sync-checks")

@@ -84,6 +84,8 @@ def _capture(state: dict, path: Path, cfg: check.Config) -> tuple[dict, dict, li
     problems, contents = [], {}
     is_test, allowed_test = check._matcher(cfg.test_globs), check._matcher(cfg.allow_modified_tests)
     for name in names:
+        if not project._in_scope(name, workspace.writable_paths(spec)):
+            problems.append({"code": "workspace_path_denied", "path": name})
         if check.forbidden_violations({name}, cfg):
             problems.append({"code": "protected_path", "path": name})
         if name in base_paths and name not in initial:
@@ -115,10 +117,7 @@ def _tree(path: Path, oid: str) -> dict:
     return {name: meta for row in raw.split(b"\0") if row for meta, name in [row.split(b"\t", 1)]}
 
 
-def _build(root: Path, state: dict, delta: dict, contents: dict, identifier: str, cancelled) -> dict:
-    spec = state["spec"]["project"]
-    path = root / "candidate.git"
-    path.mkdir(mode=0o700)  # Never reuse a partial or unrelated candidate.
+def init_repository(path: Path, spec: dict) -> None:
     algorithm = "sha1" if len(spec["commit"]) == 40 else "sha256"
     _git(path, "init", "--bare", "-q", "--template=", "--object-format=" + algorithm)
     common = project._git(spec["root"], ["rev-parse", "--path-format=absolute", "--git-common-dir"], 4096)
@@ -128,6 +127,19 @@ def _build(root: Path, state: dict, delta: dict, contents: dict, identifier: str
     # Existing immutable base objects are read through an alternate. New blobs,
     # index, tree, commit and the candidate ref exist only in this private repo.
     (path / "objects/info/alternates").write_text(objects + "\n")
+
+
+def _reference(identifier: str, shared: Path | None) -> str:
+    return "refs/heads/candidate" if shared is None else f"refs/symphony/subtasks/{identifier}"
+
+
+def _build(root: Path, state: dict, delta: dict, contents: dict, identifier: str, cancelled,
+           shared: Path | None) -> dict:
+    spec = state["spec"]["project"]
+    path = shared if shared is not None else root / "candidate.git"
+    if shared is None:
+        path.mkdir(mode=0o700)  # Never reuse a partial or unrelated candidate.
+        init_repository(path, spec)
     _git(path, "read-tree", spec["commit"])
     expected = _tree(path, spec["commit"])
     remove, add = [], []
@@ -149,11 +161,12 @@ def _build(root: Path, state: dict, delta: dict, contents: dict, identifier: str
         raise CandidateError("api_candidate_tree_changed")
     commit = _oid(_git(path, "commit-tree", tree, "-p", spec["commit"],
                        data=f"API candidate {identifier}\n".encode()))
-    _git(path, "update-ref", "refs/heads/candidate", commit, "0" * len(commit))
+    _git(path, "update-ref", _reference(identifier, shared), commit, "0" * len(commit))
     return {"repository": str(path), "commit": commit, "tree": tree}
 
 
-def prepare(path: Path, board: Path, identifier: str, expected_rules: dict, *, cancelled=None) -> dict:
+def prepare(path: Path, board: Path, identifier: str, expected_rules: dict, *, cancelled=None,
+            shared: Path | None = None) -> dict:
     """Free host-side capture after a completed dialogue; never claims tests passed."""
     report = {"version": 1, "status": "blocked", "identifier": identifier,
               "checks": {"static": "not_run", "full": "not_run"}, "issues": [],
@@ -171,7 +184,8 @@ def prepare(path: Path, board: Path, identifier: str, expected_rules: dict, *, c
                 raise CandidateError("api_result_not_complete")
             cfg = check.load_config(board)
             configured = check.pc.load_project(board)["project"]["repo"]
-            if Path(configured).resolve() != Path(state["spec"]["project"]["root"]).resolve():
+            expected_source = shared if shared is not None else Path(configured).resolve()
+            if expected_source != Path(state["spec"]["project"]["root"]).resolve():
                 raise CandidateError("api_check_project_changed")
             delta, contents, problems = _capture(state, path, cfg)
             report.update(base_commit=state["spec"]["project"]["commit"], **delta)
@@ -183,7 +197,7 @@ def prepare(path: Path, board: Path, identifier: str, expected_rules: dict, *, c
                 if rules_snapshot(board) != expected_rules:
                     raise CandidateError("api_check_rules_changed")
                 if delta["files"]:
-                    report.update(_build(path.parent, state, delta, contents, identifier, cancelled))
+                    report.update(_build(path.parent, state, delta, contents, identifier, cancelled, shared))
                 if rules_snapshot(board) != expected_rules:
                     raise CandidateError("api_check_rules_changed")
                 if cancelled and cancelled():
@@ -213,10 +227,10 @@ def public_report(value: dict) -> dict:
             "issues": value.get("issues", [])[:20]}
 
 
-def check_identity(path: Path, value: dict, state: dict) -> None:
+def check_identity(path: Path, value: dict, state: dict, *, shared: Path | None = None) -> None:
     """Match the reported result to the sealed workspace and the actual private ref."""
     report = value["candidate"]
-    repo = path.parent / "candidate.git"
+    repo = shared if shared is not None else path.parent / "candidate.git"
     saved = session._decode(session._read_state(path.parent / "candidate.json"))
     if (repo.resolve(strict=True) != repo or saved.get("repository") != str(repo)
             or public_report(saved) != report or saved["rules"] != value["rules"]
@@ -225,7 +239,8 @@ def check_identity(path: Path, value: dict, state: dict) -> None:
             or not state["execution_state"]["sealed"]):
         raise CandidateError("api_candidate_result_changed")
     workspace.validate_state(state["execution_state"], state["spec"], state["project_snapshot"], path)
-    commit = _oid(project._git(str(repo), ["rev-parse", "--verify", "refs/heads/candidate^{commit}"], 128))
+    ref = _reference(value["identifier"], shared)
+    commit = _oid(project._git(str(repo), ["rev-parse", "--verify", ref + "^{commit}"], 128))
     header = project._git(str(repo), ["cat-file", "commit", commit], 65536).split(b"\n\n", 1)[0].splitlines()
     parents = [line[7:].decode("ascii") for line in header if line.startswith(b"parent ")]
     trees = [line[5:].decode("ascii") for line in header if line.startswith(b"tree ")]

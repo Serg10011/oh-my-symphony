@@ -190,8 +190,12 @@ async def test_browser_shows_staged_subtasks_and_hides_their_launch(planning_boa
 
     async def invoke(cfg, kind, identifier, action, **kw):
         actions.append(action)
-        return (api_board.Board(board.settings, api_team.board_context(cfg, kind, identifier)).show()
-                if action == "show" else {})
+        selected = api_board.Board(board.settings, api_team.board_context(cfg, kind, identifier))
+        if action == "prepare-subtasks":
+            return selected.prepare_subtasks()
+        if action == "start-subtasks":
+            return selected.start_subtasks(kw["payload"]["confirmation_token"])
+        return selected.show() if action == "show" else {}
 
     monkeypatch.setattr(api_team, "invoke", invoke)
     async with TestClient(TestServer(app)) as client, playwright.async_playwright() as driver:
@@ -213,5 +217,13 @@ async def test_browser_shows_staged_subtasks_and_hides_their_launch(planning_boa
             await playwright.expect(panel).to_contain_text("Черновик подзадачи")
             await playwright.expect(panel.get_by_role("button", name="Посмотреть назначение")).to_be_hidden()
             assert actions.count("show") >= 2 and "prepare" not in actions and not errors
+            await page.keyboard.press("Escape")
+            await lane.locator(".card", has_text="Исправь функцию").click()
+            await panel.get_by_role("button", name="Посмотреть запуск подзадач").click()
+            await playwright.expect(panel).to_contain_text("Подзадач — 2. Ведущий")
+            assert "start-subtasks" not in actions
+            await panel.get_by_role("button", name="Подтвердить запуск подзадач").click()
+            await playwright.expect(panel).to_contain_text("Проверено подзадач — 0 из 2. Текущая — TEST-1-1.")
+            assert actions.count("start-subtasks") == 1 and "run" not in actions and not errors
         finally:
             await browser.close()

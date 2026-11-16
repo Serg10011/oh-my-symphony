@@ -27,6 +27,11 @@
     api_plan_staging_failed: 'Запись подзадач прервана. Сохранённый план можно восстановить.',
     api_plan_parent_changed: 'Исходная карточка или версия задачи изменились.',
     api_plan_subtask_changed: 'Номер подзадачи занят или черновик изменён.',
+    api_subtask_check_failed: 'Целевая проверка подзадачи не пройдена.',
+    api_subtask_check_changed_files: 'Проверка изменила файлы результата.',
+    api_subtask_result_changed: 'Версия ранее проверенной подзадачи изменилась.',
+    api_subtasks_budget_exhausted: 'Достигнут общий предел составной задачи.',
+    api_subtasks_not_active: 'Выполнение составной задачи остановлено.',
   };
   const number = value => Number.isFinite(value) ? value.toLocaleString('ru-RU') : 'не указан';
   const model = value => value ? `${value.model} · усилие ${value.effort}` : 'не назначен';
@@ -39,7 +44,7 @@
   }
 
   function mount({ el, identifier, request, isActive, onTransition, onProfiles, schedule = setInterval, unschedule = clearInterval }) {
-    let token = null, busy = false, timer = null, lastStatus = null;
+    let token = null, planToken = null, busy = false, timer = null, lastStatus = null;
     let selection = null, pickerKey = '', releaseChoice = null, lastLane = null;
     let nextCheckRead = 0;
     let submission = null;
@@ -76,6 +81,8 @@
     const prepare = button('Посмотреть назначение', () => act('prepare', pickerKey ? { team: selection } : {}));
     const confirm = button('Подтвердить платный запуск', () => act('confirm', { confirmation_token: token }));
     const submit = button('Передать в работу', () => { if (submission) act('submit', submission); });
+    const planPrepare = button('Посмотреть запуск подзадач', () => act('prepare-subtasks'));
+    const planStart = button('Подтвердить запуск подзадач', () => act('start-subtasks', { confirmation_token: planToken }));
     const stop = button('Остановить', () => act('stop'));
     const refresh = button('Обновить', () => load());
     const review = button('Посмотреть изменения файлов', () => loadReview(0));
@@ -95,8 +102,8 @@
     const cloud = el('div', { role: 'group', 'aria-label': 'Проверка файлов на Linux' },
       [el('strong', {}, 'Проверка файлов на Linux'), cloudStatus, workflowLink]);
     cloud.hidden = true;
-    [prepare, confirm, submit, stop, review, reportDetails, resultDetails].forEach(node => { node.hidden = true; });
-    const actions = el('div', { class: 'api-team-actions' }, [prepare, confirm, submit, stop, refresh, review]);
+    [prepare, confirm, submit, planPrepare, planStart, stop, review, reportDetails, resultDetails].forEach(node => { node.hidden = true; });
+    const actions = el('div', { class: 'api-team-actions' }, [prepare, confirm, submit, planPrepare, planStart, stop, refresh, review]);
     const launchHint = el('p', { class: 'form-hint' });
     const section = el('section', { class: 'api-team-panel', 'aria-label': 'API-команда' }, [
       el('div', { class: 'section-heading' }, 'API-команда'), status, route, error, selector, spend, assignment, actions,
@@ -166,10 +173,22 @@
         (data.delivered ? 'Версия принята, PR открыт' : 'Версия принята, ожидает создания PR');
       if (groupReady) status.textContent = 'Готова к общему выпуску';
       const draft = data.plan_draft === true;
+      const launch = data.plan?.launch;
       launchHint.hidden = draft;
       if (data.phase === 'plan') launchHint.textContent += ' На этапе Plan работает только ведущий.';
       if (data.phase === 'plan' && data.status === 'running') status.textContent = 'Ведущий готовит план';
       if (data.plan?.status === 'ready') status.textContent = `План проверен. Черновиков подзадач — ${data.plan.cards.length}.`;
+      if (launch?.status !== 'prepared') planToken = null;
+      planPrepare.hidden = !['unassigned', 'prepared'].includes(launch?.status) || Boolean(planToken);
+      planStart.hidden = launch?.status !== 'prepared' || !planToken;
+      if (launch?.status === 'prepared' && planToken) {
+        const cap = launch.budget ? `Остаток общего лимита — ${launch.budget.max_usd} USD.` : 'Отдельного денежного потолка нет.';
+        launchHint.textContent = `Подзадач — ${launch.total}. Ведущий — ${model(launch.profiles.lead)}. Исполнитель — ${model(launch.profiles.worker)}. ${cap} Пределы запросов и ответов действуют на каждую подзадачу.`;
+      }
+      if (launch?.status === 'active') status.textContent = `Проверено подзадач — ${launch.checked} из ${launch.total}. Текущая — ${launch.next}.`;
+      if (launch?.status === 'complete') status.textContent = 'Все подзадачи проверены. Общий результат ждёт итоговой проверки.';
+      if (launch?.status === 'stopped') status.textContent = 'Выполнение подзадач остановлено. ' + (reasons[launch.reason] || 'Посмотри отчёт текущей подзадачи.');
+      if (data.subtask?.check?.status === 'passed') status.textContent = 'Целевая проверка подзадачи пройдена';
       if (draft) status.textContent = 'Черновик подзадачи';
       if (data.stop_requested && data.status === 'running') status.textContent += '. Остановка запрошена; текущий ответ ещё может оплачиваться.';
       if (data.reason) status.textContent += ' ' + (reasons[data.reason] || 'Причина остановки указана в отчёте.');
@@ -212,7 +231,7 @@
           });
         }
       } else { pickerKey = ''; selection = null; }
-      stop.hidden = !['prepared', 'queued', 'running'].includes(data.status) || data.stop_requested;
+      stop.hidden = launch?.status !== 'active' && (!['prepared', 'queued', 'running'].includes(data.status) || data.stop_requested);
       review.hidden = !data.session?.execution || !['result', 'stopped'].includes(data.status);
       const check = data.cloud_check, receipt = check?.phase ? null : check?.receipt;
       cloud.hidden = !check || groupReady;
@@ -311,7 +330,8 @@
         const data = await request(identifier, action, payload);
         if (!active()) return;
         if (action === 'prepare') window.SymphonyApiModels?.invalidate();
-        token = data.confirmation_token || (action === 'prepare' ? null : token);
+        if (action === 'prepare-subtasks') planToken = data.confirmation_token || null;
+        else token = data.confirmation_token || (action === 'prepare' ? null : token);
         render(data);
       });
     }

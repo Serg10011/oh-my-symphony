@@ -276,8 +276,8 @@ def validate_spec(raw: dict) -> dict:
         if "project" not in result:
             raise SessionError("execution_requires_project")
         try:
-            result["execution"] = workspace.validate(raw["execution"])
-        except workspace.WorkspaceError as exc:
+            result["execution"] = workspace.validate(raw["execution"], result["project"])
+        except (workspace.WorkspaceError, project.ProjectError) as exc:
             raise SessionError(str(exc)) from None
     if "project_context" in raw:
         if lead != "deepseek-lead" or ("execution" not in result and not planning):
