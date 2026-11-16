@@ -32,6 +32,7 @@ import api_cloud_check as cloud
 import api_delivery as delivery
 import api_group_release as group
 import api_gemini_quota as gemini_quota
+import api_plan
 import api_project as project
 import api_project_context as project_context
 import api_session as session
@@ -141,6 +142,10 @@ class Board:
         pinned = front.get("agent_kind") or (front.get("agent") or {}).get("kind")
         if pinned != self.context["agent_kind"]:
             raise BoardError("api_card_agent_changed")
+        labels = front.get("labels") or []
+        if api_plan.DRAFT_LABEL in labels:
+            raise BoardError("api_plan_subtask_draft")
+        planning = api_plan.PLAN_LABEL in labels
         pinned_defaults = front.get("api_defaults")
         if pinned_defaults is not None:
             if not isinstance(pinned_defaults, dict) or pinned_defaults.get("policy") != models.policy_digest(raw):
@@ -159,16 +164,30 @@ class Board:
         if team is not None:
             roles = models.pair(team)
         options = board_config.session_options(raw, roles)
+        if planning:
+            context = options.get("context", "")
+            if not isinstance(context, str):
+                raise session.SessionError("invalid_context")
+            try:
+                brief = api_plan.plan_context(self, front, raw["paths"])
+            except api_plan.PlanError as exc:
+                raise BoardError(exc.reason) from None
+            options.update(phase="plan", worker_profile=None, context=context + brief)
+            if roles["worker_profile"] == api.FLASH_WORKER:
+                options.setdefault("lead_escalation", session.api_effort.POLICY)
+        else:
+            options["execution"] = raw["execution"]
         spec = session.validate_spec({**options, "task": str(front.get("title", "")) + "\n\n" + body,
                                       "project": {"root": str(self.repo), "paths": raw["paths"],
-                                                  "commit": self._base_commit()},
-                                      "execution": raw["execution"]})
+                                                  "commit": self._base_commit()}})
         session._path(self.session_path)
         spec["project"], snapshot = project.snapshot(spec["project"])
         if spec["lead_profile"] == "deepseek-lead" and raw.get("context_paths"):
             spec["project_context"] = project_context.capture(snapshot, self.teams.binding, raw["context_paths"])
         code = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in sorted(Path(__file__).parent.glob("api_*.py"))}
+        if planning:
+            code["plan.py"] = hashlib.sha256(Path(__file__).with_name("plan.py").read_bytes()).hexdigest()
         rules = candidate.rules_snapshot(self.workflow.parent)
         binding = {"card": self.card_digest(front, body), "spec": spec,
                    "snapshot": snapshot["digest"], "profiles": session._profiles(spec),
@@ -176,11 +195,15 @@ class Board:
                    "workflow_sha256": hashlib.sha256(self.workflow.read_bytes()).hexdigest(), "rules": rules}
         if revision is not None:
             binding["work_settings_revision"] = revision
+        if planning:
+            binding["planning_team"] = roles
         proposal = {"binding": _digest(binding), "card_digest": binding["card"], "spec": spec,
                     "profiles": binding["profiles"], "project_digest": snapshot["digest"], "rules": rules}
+        if planning:
+            proposal["planning_team"] = roles
         if "mode" in raw:
             proposal["mode"] = raw["mode"]
-        if "cloud_check" in raw:
+        if not planning and "cloud_check" in raw:
             proposal.update(cloud_profile=cloud.PROFILE,
                             check_config=_digest([base_settings, binding["workflow_sha256"]]),
                             result_card_digest=self.card_digest(front, _held_body(body, RESULT_NOTE).strip()))
@@ -290,13 +313,20 @@ class Board:
     def show(self) -> dict:
         value = self._load()
         if value is None:
+            view = self.permission_view()
             if self.tracker.find_path(self.identifier):
-                frozen = self.card()[0].get("api_defaults")
+                front, _ = self.card()
+                labels = front.get("labels") or []
+                if api_plan.PLAN_LABEL in labels:
+                    view["phase"] = "plan"
+                if api_plan.DRAFT_LABEL in labels:
+                    view["plan_draft"] = True
+                frozen = front.get("api_defaults")
                 if isinstance(frozen, dict):
-                    return {"version": 1, "status": "unassigned", "identifier": self.identifier, **self.permission_view(),
+                    return {"version": 1, "status": "unassigned", "identifier": self.identifier, **view,
                             "mode": frozen.get("mode"), "team_picker": {"default": models.pair(frozen.get("team")),
                                                                         "override": None, **models.catalog()}}
-            return {"version": 1, "status": "unassigned", "identifier": self.identifier, **self.permission_view(),
+            return {"version": 1, "status": "unassigned", "identifier": self.identifier, **view,
                     "team_picker": {"default": self.teams.default(), "override": None, **models.catalog()}}
         if value["status"] == "running":
             # The lifetime lock survives HTTP disconnects but is released by
@@ -311,28 +341,35 @@ class Board:
                             value.update(status="stopped", reason="board_execution_failed",
                                          finished_at=session._now())
                             self._save(value)
-                            self._hold(value, "Процесс API-команды прерван. Автоматического платного повтора нет.")
+                            self._hold(value, "Процесс API-команды прерван. Автоматического платного повтора нет.",
+                                       append_note=value["spec"].get("phase") != "plan")
             except session.SessionError as exc:
                 if str(exc) != "session_busy":
                     raise
         release = None
-        try:
-            value = delivery.refresh(self, value)
-            release = delivery.offer(self, value)
-        except (BoardError, delivery.ReleaseError, cloud.CloudError, session.SessionError, candidate.CandidateError,
-                pc.ProjectError, OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
-            code = str(exc) if isinstance(exc, (BoardError, session.SessionError)) else "release_target_changed"
-            release = {"stage": "blocked", "reason": code}
+        if value["spec"].get("phase") != "plan":
+            try:
+                value = delivery.refresh(self, value)
+                release = delivery.offer(self, value)
+            except (BoardError, delivery.ReleaseError, cloud.CloudError, session.SessionError, candidate.CandidateError,
+                    pc.ProjectError, OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+                code = str(exc) if isinstance(exc, (BoardError, session.SessionError)) else "release_target_changed"
+                release = {"stage": "blocked", "reason": code}
         spec = value["spec"]
         result = {"version": 1, "identifier": self.identifier, "status": value["status"],
                   **self.permission_view(),
                   "profiles": value["profiles"], "task": spec["task"], "limits": spec["limits"],
                   "budget": spec.get("budget"), "project": spec["project"],
-                  "execution": spec["execution"],
+                  "execution": spec.get("execution"),
                   "process_timeout_seconds": self.context["process_timeout_seconds"],
                   "reason": value.get("reason"), "run_id": value.get("run_id"),
                   "stop_requested": self.stop_path.exists(), "accepted": False, "delivered": False,
                   "delivery_status": "not_configured"}
+        if spec.get("phase") == "plan":
+            batch = value.get("plan_batch") or {}
+            result.update(phase="plan", plan={"status": batch.get("status", value["status"]),
+                                             "cards": batch.get("cards", []),
+                                             "errors": value.get("plan_errors", [])})
         if "project_context" in spec:
             result["project_context"] = project_context.metadata(spec["project_context"])
         if "lead_escalation" in spec:
@@ -354,6 +391,9 @@ class Board:
             state = session._load(self.session_path)
             result["session"] = session.summary(state)
             result["report_text"] = session.render_report(session.spend_report(state))
+        if spec.get("phase") == "plan" and value.get("plan_errors"):
+            result["report_text"] = (result.get("report_text", "") + "\n\nПроверка плана\n"
+                                     + "\n".join(f"- {problem}" for problem in value["plan_errors"]))
         if value.get("candidate"):
             result["candidate"] = candidate.public_report(value["candidate"])
             result["delivery_status"] = value["candidate"]["status"]
@@ -567,7 +607,7 @@ class Board:
                     self._hold(value, "Запуск отменён до обращения к моделям.", self._cancel_lane())
         return self.show()
 
-    def _hold(self, value, text, lane="needs_human"):
+    def _hold(self, value, text, lane="needs_human", *, append_note=True):
         moved = False
         def mutate(front, body):
             nonlocal moved
@@ -578,7 +618,7 @@ class Board:
             front["state"] = lane
             moved = True
             front["updated_at"] = session._now()
-            return front, _held_body(body, text)
+            return front, _held_body(body, text) if append_note else body
         self.tracker._mutate_ticket(self.identifier, mutate)
         if moved and "board_stages" in value and value["board_stages"][-1] != lane:
             value["board_stages"].append(lane)
@@ -606,6 +646,40 @@ class Board:
             return self._run(run_id, credentials=credentials, transport=transport,
                              cancelled=cancelled, on_checkpoint=on_checkpoint)
 
+    def _finish_plan(self, value, text):
+        with session._lock(self.path):
+            try:
+                if not self.permission.allows(value):
+                    raise api_plan.PlanError("api_permission_revoked")
+                if self.proposal(value["planning_team"])["binding"] != value["binding"]:
+                    raise api_plan.PlanError("api_plan_parent_changed")
+                receipt = api_plan.materialize(self, value, text)
+            except (api_plan.PlanError, BoardError, SymphonyError, session.SessionError, project.ProjectError,
+                    candidate.CandidateError, OSError, ValueError) as exc:
+                reason = exc.reason if isinstance(exc, api_plan.PlanError) else "api_plan_staging_failed"
+                value.update(status="stopped", reason=reason, finished_at=session._now(),
+                             plan_errors=exc.problems if isinstance(exc, api_plan.PlanError) else [])
+                self._save(value)
+                self._hold(value, "", append_note=False)
+                return
+            if value["board_stages"][-1] != "Subtasks":
+                value["board_stages"].append("Subtasks")
+            value.pop("plan_errors", None)
+            value.update(status="result", reason=None, plan_batch=receipt, finished_at=session._now())
+            self._save(value)
+
+    def recover_plan(self):
+        with session._lock(self.root / "owner"):
+            value = self._load()
+            if not value or value["spec"].get("phase") != "plan" or not self.session_path.exists():
+                raise BoardError("api_plan_not_recoverable")
+            if value.get("plan_batch", {}).get("status") != "ready":
+                outcome = session.show(self.session_path)
+                if outcome["status"] != "dialogue_complete":
+                    raise BoardError("api_plan_not_recoverable")
+                self._finish_plan(value, outcome["result"])
+        return self.show()
+
     def _run(self, run_id, *, credentials=None, transport=None, cancelled=None, on_checkpoint=None):
         with session._lock(self.path):
             value = self._load()
@@ -615,7 +689,8 @@ class Board:
             try:
                 # An approved run keeps its team when the board default changes.
                 # Repository, raw settings, task and permissions are still revalidated.
-                unchanged = self.proposal(models.from_spec(value["spec"]))["binding"] == value["binding"]
+                team = value.get("planning_team") or models.from_spec(value["spec"])
+                unchanged = self.proposal(team)["binding"] == value["binding"]
             except (BoardError, candidate.CandidateError, session.SessionError, project.ProjectError, OSError, ValueError):
                 unchanged = False
             if not unchanged:
@@ -639,7 +714,8 @@ class Board:
             value.update(status="running", run_id=run_id, started_at=session._now())
             self._save(value)
         try:
-            self._stage(value, ("In Progress", "В работе"))
+            planning = value["spec"].get("phase") == "plan"
+            self._stage(value, ("Plan",) if planning else ("In Progress", "В работе"))
             self._save(value)
             session.create(self.session_path, value["spec"])
             def should_stop():
@@ -668,9 +744,14 @@ class Board:
             outcome = session.run(self.session_path, transport=transport, cancelled=should_stop,
                                   credential_loader=credentials or keychain_credentials, on_checkpoint=on_checkpoint,
                                   request_guard=admit_request)
-            value.update(status="result" if outcome["status"] == "dialogue_complete" else "stopped",
-                         reason=outcome["stop_reason"])
-            if outcome["status"] == "dialogue_complete":
+            complete = outcome["status"] == "dialogue_complete"
+            if planning and complete:
+                if should_stop():
+                    raise Interrupted()
+                self._finish_plan(value, outcome["result"])
+                return self.show()
+            value.update(status="result" if complete else "stopped", reason=outcome["stop_reason"])
+            if complete:
                 self._stage(value, ("Verify", "Проверка"))
                 value["candidate"] = candidate.public_report(candidate.prepare(self.session_path, self.workflow.parent,
                     self.identifier, value["rules"], cancelled=should_stop))
@@ -700,7 +781,8 @@ class Board:
             self._save(value)
             reason = session.FLASH_READINESS_REASONS.get(value.get("reason"))
             note = f"{reason}. Платных запросов к ведущему не было." if reason else RESULT_NOTE
-            self._hold(value, note, value.get("result_lane", "needs_human"))
+            self._hold(value, note, value.get("result_lane", "needs_human"),
+                       append_note=value["spec"].get("phase") != "plan")
         return self.show()
 
     def _stage(self, value, names):

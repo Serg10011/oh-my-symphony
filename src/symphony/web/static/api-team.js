@@ -22,6 +22,11 @@
     flash_quota_exhausted: 'По последнему снимку квота Gemini исчерпана.',
     flash_output_limit: 'Ответ Flash превысил порог выходных токенов.',
     workspace_command_outside_scope: 'Команда записала файл вне разрешённых путей. Её изменения отклонены.',
+    api_plan_invalid: 'План отклонён. Причины указаны в отчёте.',
+    api_plan_not_configured: 'Проверь колонки Plan и Subtasks и настройки проекта.',
+    api_plan_staging_failed: 'Запись подзадач прервана. Сохранённый план можно восстановить.',
+    api_plan_parent_changed: 'Исходная карточка или версия задачи изменились.',
+    api_plan_subtask_changed: 'Номер подзадачи занят или черновик изменён.',
   };
   const number = value => Number.isFinite(value) ? value.toLocaleString('ru-RU') : 'не указан';
   const model = value => value ? `${value.model} · усилие ${value.effort}` : 'не назначен';
@@ -160,6 +165,12 @@
       if (data.accepted) status.textContent = release?.completion?.message ||
         (data.delivered ? 'Версия принята, PR открыт' : 'Версия принята, ожидает создания PR');
       if (groupReady) status.textContent = 'Готова к общему выпуску';
+      const draft = data.plan_draft === true;
+      launchHint.hidden = draft;
+      if (data.phase === 'plan') launchHint.textContent += ' На этапе Plan работает только ведущий.';
+      if (data.phase === 'plan' && data.status === 'running') status.textContent = 'Ведущий готовит план';
+      if (data.plan?.status === 'ready') status.textContent = `План проверен. Черновиков подзадач — ${data.plan.cards.length}.`;
+      if (draft) status.textContent = 'Черновик подзадачи';
       if (data.stop_requested && data.status === 'running') status.textContent += '. Остановка запрошена; текущий ответ ещё может оплачиваться.';
       if (data.reason) status.textContent += ' ' + (reasons[data.reason] || 'Причина остановки указана в отчёте.');
       if (data.gemini_wait_until) {
@@ -169,12 +180,12 @@
       if (data.session?.execution?.review_source === 'before_command')
         status.textContent += ' Можно посмотреть правки, сохранённые до этой команды.';
       if (data.status !== 'prepared') token = null;
-      prepare.hidden = !['unassigned', 'prepared'].includes(data.status);
+      prepare.hidden = draft || !['unassigned', 'prepared'].includes(data.status);
       confirm.hidden = data.status !== 'prepared' || !token;
-      submit.hidden = !permitted || !submission || !['unassigned','prepared'].includes(data.status) || Boolean(selection);
+      submit.hidden = draft || !permitted || !submission || !['unassigned','prepared'].includes(data.status) || Boolean(selection);
       if (!submit.hidden) confirm.hidden = true;
       const choices = data.team_picker;
-      selector.hidden = !choices || !['unassigned','prepared'].includes(data.status);
+      selector.hidden = draft || !choices || !['unassigned','prepared'].includes(data.status);
       if (!selector.hidden && window.SymphonyApiModels) {
         const key = JSON.stringify(choices);
         if (key !== pickerKey) {
