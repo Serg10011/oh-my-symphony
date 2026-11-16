@@ -235,10 +235,13 @@ class Conversation:
                     except protocol.ProtocolError:
                         pass
                 error = result.get("error")
-                if result.get("status") == "ERROR" and isinstance(error, str) and re.search(
-                        r"\b(?:quota exhausted|quota limit exceeded|rate limit exceeded|RESOURCE_EXHAUSTED)\b",
-                        error[:4096], re.IGNORECASE):
-                    raise TransportError("flash_capacity_unavailable")
+                if result.get("status") == "ERROR" and isinstance(error, str):
+                    message = error[:4096]
+                    if re.search(r"\buser location is not supported for the api\b", message, re.IGNORECASE):
+                        raise TransportError("flash_region_unsupported")
+                    if re.search(r"\b(?:quota exhausted|quota limit exceeded|rate limit exceeded|RESOURCE_EXHAUSTED)\b",
+                                 message, re.IGNORECASE):
+                        raise TransportError("flash_capacity_unavailable")
                 raise TransportError("flash_worker_stopped")
             if (not isinstance(identifier, str) or not identifier
                     or self.conversation_id is not None and identifier != self.conversation_id):

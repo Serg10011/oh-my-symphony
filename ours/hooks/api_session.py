@@ -918,6 +918,7 @@ REPORT_STOP_REASONS = {
     "flash_gate_unverified": "проверка ограничений Flash не прошла",
     "flash_cleanup_unconfirmed": "завершение процесса Flash не подтверждено",
     "flash_capacity_unavailable": "Antigravity сообщил об ограничении квоты или доступности Flash",
+    "flash_region_unsupported": "Google отклонил запрос Flash по региону подключения",
     "incomplete_response": "получен незавершённый ответ",
     "model_refusal": "модель отказалась выполнять запрос",
     "invalid_tool_batch": "некорректный пакет вызовов инструментов",
@@ -1371,7 +1372,7 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport,
         if exc.usage is not None:
             call["usage"] = exc.usage
         reason = ("operator_stopped" if code == "flash_cancelled" else code if code in {
-            "flash_capacity_unavailable", "flash_gate_rejected", "flash_gate_unverified",
+            "flash_capacity_unavailable", "flash_region_unsupported", "flash_gate_rejected", "flash_gate_unverified",
             "flash_cleanup_unconfirmed"} else "flash_worker_failed")
         _stop(path, state, reason)
         return None
