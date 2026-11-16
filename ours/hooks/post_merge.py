@@ -28,6 +28,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import project_config as pc  # noqa: E402
+import release_verification  # noqa: E402
 
 BIN_DIR = Path(__file__).resolve().parents[1] / "bin"
 BRANCH = "our-main"
@@ -185,6 +186,7 @@ class ProjectPlan:
     baseline_rule: Callable[[str], bool] | None = None
     # Why the project.toml cannot be used; the project then gets nothing done.
     refusal: str = ""
+    verified_release: Path | None = None
 
     @property
     def needed(self) -> bool:
@@ -206,7 +208,8 @@ class ProjectPlan:
         if self.refusal:
             return [f"ОТКАЗ: {self.refusal}"]
         if self.doctor:
-            return ["остановить службу → project-doctor → запустить службу"]
+            doctor = "project-doctor с сохранённой проверкой" if self.verified_release else "project-doctor"
+            return [f"остановить службу → {doctor} → запустить службу"]
         out = []
         if self.render:
             out.append("project-render (служба подхватит сама, без перезапуска)")
@@ -425,8 +428,13 @@ def apply_project(plan: ProjectPlan, ops: Ops, root: Path, say: Callable[[str], 
             stopped = True
         ok = False
         try:
-            say("  запускаю project-doctor (может занять много времени)")
-            ok = ops.run_script("project-doctor", [plan.name, *root_args]) == 0
+            doctor_args = [plan.name, *root_args]
+            if plan.verified_release:
+                doctor_args += ["--verified-release", str(plan.verified_release)]
+                say("  запускаю project-doctor с сохранённым отчётом выпуска")
+            else:
+                say("  запускаю project-doctor (может занять много времени)")
+            ok = ops.run_script("project-doctor", doctor_args) == 0
         finally:
             if stopped and not start_and_wait(ops, plan, say):
                 ok = False
@@ -476,6 +484,8 @@ def run(argv: list[str] | None = None, ops: Ops | None = None) -> int:
     parser.add_argument("--root", default=str(pc.DEFAULT_ROOT))
     parser.add_argument("--main", default=None, help="основная папка форка")
     parser.add_argument("--state", default=None, help="файл состояния")
+    parser.add_argument("--verified-release", type=Path, metavar="ОТЧЁТ",
+                        help="использовать сохранённую проверку точного выпуска для одного проекта")
     args = parser.parse_args(argv)
 
     def say(text: str = "") -> None:
@@ -532,15 +542,33 @@ def _run_locked(args, ops: Ops, main: Path, root: Path, state_path: Path, say) -
             say(f"- {r}")
         return EXIT_FAIL
 
-    # Step 2: fetch / pull.
+    verified = None
+    if args.verified_release is not None:
+        try:
+            if len(plans) != 1 or plans[0].refusal:
+                raise pc.ProjectError("выбери один подходящий проект с помощью --project")
+            plan = plans[0]
+            plan.verified_release = args.verified_release.expanduser().absolute()
+            verified = release_verification.read(plan.verified_release)
+            release_verification.verify_board(verified, plan.board, BRANCH)
+        except pc.ProjectError as exc:
+            say(f"ОТКАЗ — отчёт выпуска: {exc}")
+            return EXIT_FAIL
+
+    # Step 2: fetch / pull (a verified release is advanced only after all checks).
     applied = load_state(state_path)
     for t in targets.values():
         t.before = git_out(t.path, "rev-parse", "HEAD")
-        fetched = git(t.path, "fetch")
+        fetch_args = ["fetch"]
+        if verified is not None:
+            fetch_args += ["origin", f"refs/heads/{BRANCH}:refs/remotes/origin/{BRANCH}"]
+        fetched = git(t.path, *fetch_args)
         if fetched.returncode != 0:
             say(f"\nОШИБКА: git fetch в {t.path}: {fetched.stderr.strip()}")
             return EXIT_FAIL
-        if dry:
+        if verified is not None:
+            t.head = git_out(t.path, "rev-parse", "--verify", f"refs/remotes/origin/{BRANCH}")
+        elif dry:
             t.head = git_out(t.path, "rev-parse", f"origin/{BRANCH}") or t.before
         else:
             pulled = git(t.path, "pull", "--ff-only")
@@ -549,6 +577,19 @@ def _run_locked(args, ops: Ops, main: Path, root: Path, state_path: Path, say) -
                     "Это не простое «догнать» (ветки разошлись?) — разберитесь вручную. Ничего не применено.")
                 return EXIT_FAIL
             t.head = git_out(t.path, "rev-parse", "HEAD")
+
+    if verified is not None:
+        try:
+            if len({t.head for t in targets.values()}) != 1:
+                raise pc.ProjectError("удалённая версия различается у рабочих копий")
+            for t in targets.values():
+                release_verification.verify_revision(verified, t.path, t.head)
+                if git(t.path, "merge-base", "--is-ancestor", t.before, t.head).returncode:
+                    raise pc.ProjectError(f"{t.label}: нет простого продвижения к проверенной версии")
+        except pc.ProjectError as exc:
+            say(f"ОТКАЗ — отчёт выпуска: {exc}")
+            return EXIT_FAIL
+        say(f"Сохранённая проверка подтверждает выпуск {verified['commit'][:12]}")
 
     # Step 3: what changed since the last handled commit.
     for t in targets.values():
@@ -590,6 +631,21 @@ def _run_locked(args, ops: Ops, main: Path, root: Path, state_path: Path, say) -
             say(f"  пропущено: {s}")
         say("\nИтог: --dry-run, ничего не изменено (кроме ссылок fetch).")
         return EXIT_OK
+
+    if verified is not None:
+        plan = plans[0]
+        if plan.doctor or plan.restart:
+            state = ops.api_state(plan.port)
+            if state is not None and busy_cards(state) != 0:
+                say(f"ОТЛОЖЕНО: очередь {plan.name} занята или её состояние неизвестно. "
+                    "Повтори установку с тем же отчётом после освобождения очереди.")
+                return EXIT_DEFERRED
+        # Use the revisions already checked above; a second fetch could move our-main.
+        for t in targets.values():
+            pulled = git(t.path, "merge", "--ff-only", t.head)
+            if pulled.returncode:
+                say(f"ОШИБКА: {t.label}: {pulled.stderr.strip() or pulled.stdout.strip()}")
+                return EXIT_FAIL
 
     # Steps 5-6: do it.
     for plan in plans:

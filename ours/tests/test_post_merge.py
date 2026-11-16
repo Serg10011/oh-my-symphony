@@ -9,6 +9,7 @@ Run: python -m pytest ours/tests -q
 
 from __future__ import annotations
 
+import hashlib
 import http.server
 import json
 import os
@@ -55,6 +56,7 @@ class FakeOps:
         self.api = api
         self.doctor_rc = doctor_rc
         self.calls: list[str] = []
+        self.script_args: list[list[str]] = []
 
     def ops(self) -> pm.Ops:
         return pm.Ops(
@@ -71,6 +73,7 @@ class FakeOps:
 
     def _script(self, name: str, args: list[str]) -> int:
         self.calls.append(name)
+        self.script_args.append(args)
         return self.doctor_rc if name == "project-doctor" else 0
 
 
@@ -414,3 +417,96 @@ def test_command_dry_run_with_fake_api(env: Env) -> None:
     assert done.returncode == 0, done.stdout + done.stderr
     assert "ПЛАН" in done.stdout and "перезапуск службы" in done.stdout
     assert snapshot(env) == before
+
+
+def saved_release(env: Env) -> Path:
+    first_run(env)
+    board = env.root / "oms"
+    setup = write(board / "setup.sh", "true\n")
+    test = write(board / "test.sh", "echo 'PIPELINE_TESTS passed=3 skipped=0 failed=0'\n")
+    write(board / "launchd.plist", "<plist/>")
+    git(env.work, "switch", "-q", "-c", "checked-release")
+    write(env.work / "tests/test_new.py", "def test_new(): pass\n")
+    git(env.work, "add", "tests/test_new.py")
+    git(env.work, "commit", "-qm", "tested release")
+    commit = env.head(env.work)
+    tree = git(env.work, "rev-parse", "HEAD^{tree}")
+    proof = {
+        "commit": commit, "tree": tree, "tree_after": tree, "attempt": 1,
+        "tracked_files_clean": True, "test_exit_code": 0, "passed": True,
+        "test_script": str(test.resolve()),
+        "test_script_sha256": hashlib.sha256(test.read_bytes()).hexdigest(),
+        "setup_script_sha256": hashlib.sha256(setup.read_bytes()).hexdigest(),
+        "counts": {"passed": 3, "skipped": 0, "failed": 0},
+    }
+    git(env.work, "switch", "-q", BRANCH)
+    git(env.work, "merge", "--no-ff", "--no-edit", "-q", "checked-release")
+    git(env.work, "push", "-q", "origin", BRANCH)
+    return write(env.tmp / "verification.json", json.dumps(proof))
+
+
+def test_verified_release_is_applied_and_doctor_gets_the_saved_report(env: Env) -> None:
+    proof = saved_release(env)
+    fake = FakeOps(api=idle())
+    before = snapshot(env)
+    args = ["--project", "oms", "--verified-release", str(proof)]
+    assert env.run(fake, *args, dry=True) == pm.EXIT_OK
+    assert snapshot(env) == before and fake.calls == []
+    assert env.run(fake, *args) == pm.EXIT_OK
+    assert fake.calls == ["launchctl bootout", "project-doctor", "launchctl bootstrap"]
+    assert fake.script_args == [["oms", "--root", str(env.root), "--verified-release", str(proof)]]
+    assert env.head(env.main) == env.head(env.clone) == env.head(env.work)
+    assert env.applied() == {str(repo): env.head(env.work) for repo in (env.main, env.clone)}
+
+
+@pytest.mark.parametrize("changed", ["report tree", "test script", "remote head"])
+def test_verified_release_mismatch_keeps_both_checkouts_and_services(env: Env, changed: str) -> None:
+    proof = saved_release(env)
+    if changed == "report tree":
+        content = json.loads(proof.read_text())
+        content.update(tree="1" * 40, tree_after="1" * 40)
+        proof.write_text(json.dumps(content))
+    elif changed == "test script":
+        write(env.root / "oms" / "test.sh", "exit 2\n")
+    else:
+        env.push({"docs/d.md": "updated after verification\n"})
+    fake = FakeOps(api=idle())
+    before = snapshot(env)
+    assert env.run(fake, "--project", "oms", "--verified-release", str(proof)) == pm.EXIT_FAIL
+    assert fake.calls == [] and snapshot(env) == before
+
+
+def test_verified_release_can_be_retried_after_a_busy_queue_and_doctor_error(env: Env) -> None:
+    proof = saved_release(env)
+    args = ["--project", "oms", "--verified-release", str(proof)]
+    before = snapshot(env)
+    busy = FakeOps(api=idle(retrying=1))
+    assert env.run(busy, *args) == pm.EXIT_DEFERRED
+    assert busy.calls == [] and snapshot(env) == before
+    previous = env.applied()
+    failed = FakeOps(api=idle(), doctor_rc=1)
+    assert env.run(failed, *args) == pm.EXIT_FAIL
+    assert failed.calls[-1] == "launchctl bootstrap"
+    assert env.applied()[str(env.clone)] == previous[str(env.clone)]
+    succeeding = FakeOps(api=idle())
+    assert env.run(succeeding, *args) == pm.EXIT_OK
+    assert succeeding.script_args[0][-2:] == ["--verified-release", str(proof)]
+    assert env.applied()[str(env.clone)] == env.head(env.work)
+
+
+def test_saved_targeted_recheck_must_cover_each_original_failure(env: Env) -> None:
+    proof = saved_release(env)
+    original = json.loads(proof.read_text())
+    original.update(passed=False, test_exit_code=1, counts={"passed": 1, "skipped": 0, "failed": 2})
+    proof.write_text(json.dumps(original))
+    cases = ["tests/test_a.py::test_a[1]", "tests/test_b.py::test_b"]
+    write(env.tmp / "full-run.log", f"FAILED {cases[0]} - assertion\nERROR {cases[1]}\n"
+          "PIPELINE_TESTS passed=1 skipped=0 failed=2\n")
+    retry = dict(original, case_ids=cases, passed=True, test_exit_code=0,
+                 counts={"passed": 2, "skipped": 0, "failed": 0})
+    path = write(env.tmp / "targeted-verification.json", json.dumps(retry))
+    assert pm.release_verification.read(proof)["counts"]["failed"] == 2
+    retry["case_ids"] = [cases[0], "tests/test_c.py::test_c"]
+    path.write_text(json.dumps(retry))
+    with pytest.raises(pm.pc.ProjectError, match="не подтверждает все ошибки"):
+        pm.release_verification.read(proof)

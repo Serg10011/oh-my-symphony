@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -458,3 +459,49 @@ def test_doctor_recomputes_the_stall_watchdog_with_the_timeouts(doc: Doc) -> Non
     assert again.returncode == 0, again.stdout + again.stderr
     assert "PASS  stall_timeout_ms = 1020000" in again.stdout
     assert "stall_timeout_ms: 1020000\n" in (doc.board / "WORKFLOW.md").read_text()
+
+
+def test_release_report_measures_the_candidate_once_and_install_reuses_it(doc: Doc) -> None:
+    test_marker = doc.tmp / "test-ran"
+    doc.ready(
+        setup=f"echo setup >> {shlex.quote(str(doc.setup_marker))}\n",
+        test=f"test -f README.md || exit 4\necho test >> {shlex.quote(str(test_marker))}\n" + GOOD_TEST,
+    )
+    candidate = git(doc.code, "rev-parse", "HEAD")
+    tree = git(doc.code, "rev-parse", "HEAD^{tree}")
+    command = [sys.executable, str(PROJECT_DOCTOR), "demo", "--root", str(doc.root)]
+    receipt = doc.tmp / "verification.json"
+    board_files = [doc.toml, doc.board / "WORKFLOW.md", doc.baseline]
+    before = [(path.read_bytes() if path.exists() else None) for path in board_files]
+    recording = [*command, "--record-release", str(receipt)]
+    result = subprocess.run(recording, cwd=doc.code, env=doc.env(), capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    saved = json.loads(receipt.read_text())
+    assert saved["commit"] == candidate and saved["tree"] == tree
+    assert saved["counts"] == {"passed": 2, "skipped": 1, "failed": 0}
+    assert before == [(path.read_bytes() if path.exists() else None) for path in board_files]
+    again = subprocess.run(recording, cwd=doc.code, env=doc.env(), capture_output=True, text=True)
+    assert again.returncode == 1 and json.loads(receipt.read_text()) == saved
+
+    git(doc.code, "switch", "dev")
+    git(doc.code, "merge", "--no-ff", "--no-edit", "main")
+    applied = git(doc.code, "rev-parse", "HEAD")
+    assert applied != candidate and git(doc.code, "rev-parse", "HEAD^{tree}") == tree
+    checking = [*command, "--verified-release", str(receipt)]
+    setup_script = doc.board / "setup.sh"
+    original_script = setup_script.read_bytes()
+    setup_script.write_bytes(original_script + b"echo different\n")
+    refused = subprocess.run(checking, env=doc.env(), capture_output=True, text=True)
+    assert refused.returncode == 1 and "скрипты проверки изменились" in refused.stdout
+    assert before == [(path.read_bytes() if path.exists() else None) for path in board_files]
+    setup_script.write_bytes(original_script)
+
+    accepted = subprocess.run(checking, env=doc.env(), capture_output=True, text=True)
+    assert accepted.returncode == 0, accepted.stdout + accepted.stderr
+    assert "использован отчёт выпуска" in accepted.stdout
+    assert "symphony doctor: проверок ядра пройдено" in accepted.stdout
+    baseline = json.loads(doc.baseline.read_text())
+    assert baseline["base_sha"] == applied and baseline["measured_commit"] == candidate
+    assert baseline["tests_s"] == saved["measurement"]["tests_s"]
+    assert doc.setup_marker.read_text() == "setup\n" and test_marker.read_text() == "test\n"
+    doc.assert_clean_repo()
