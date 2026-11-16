@@ -54,6 +54,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "hooks"))
 
 import project_config as pc  # noqa: E402
 import project_trial  # noqa: E402
+import release_verification  # noqa: E402
 from project_trial import SCRIPT_LIMIT_S, TAIL_BYTES, run_script, script_env  # noqa: E402
 
 TOOL_TIMEOUT_S = 60
@@ -301,10 +302,17 @@ def check_scripts(report: Report, board: Path) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def trial(report: Report, board: Path, project: dict) -> dict | None:
-    """Measure setup.sh and test.sh on refs/heads/<base>; baseline or None."""
-    repo, base = Path(project["project"]["repo"]), project["project"]["base_branch"]
-    sha = git(repo, "rev-parse", "--verify", f"refs/heads/{base}^{{commit}}").stdout.strip()
+def trial(report: Report, board: Path, project: dict, *,
+          source: Path | None = None, commit: str | None = None) -> dict | None:
+    """Measure setup.sh and test.sh on the base or a pinned release commit."""
+    repo = source if source is not None else Path(project["project"]["repo"])
+    base = project["project"]["base_branch"]
+    ref = commit or f"refs/heads/{base}"
+    resolved = git(repo, "rev-parse", "--verify", f"{ref}^{{commit}}")
+    sha = resolved.stdout.strip()
+    if resolved.returncode != 0 or not pc.is_sha(sha):
+        report.add("FAIL", f"не удалось определить коммит проверки {ref}")
+        return None
     tmp = Path(tempfile.mkdtemp(prefix="ours-doctor-")).resolve()
     workdir = tmp / "worktree"
     added = False
@@ -312,7 +320,7 @@ def trial(report: Report, board: Path, project: dict) -> dict | None:
         if inside(tmp, board) or inside(tmp, repo):
             report.add("FAIL", f"временная папка {tmp} внутри доски или кода; задай TMPDIR")
             return None
-        add = git(repo, "worktree", "add", "--detach", str(workdir), f"refs/heads/{base}")
+        add = git(repo, "worktree", "add", "--detach", str(workdir), sha)
         if add.returncode != 0:
             report.add("FAIL", f"пробная рабочая копия не создана: {add.stderr.strip()[:300]}")
             return None
@@ -339,6 +347,12 @@ def trial(report: Report, board: Path, project: dict) -> dict | None:
             report.detail(tail)
             report.detail(f"подсказка: {PATH_HINT}")
             return None
+        if commit is not None:
+            head = git(workdir, "rev-parse", "HEAD")
+            changes = git(workdir, "status", "--porcelain", "--untracked-files=no")
+            if head.returncode or head.stdout.strip() != sha or changes.returncode or changes.stdout:
+                report.add("FAIL", "скрипты проверки изменили коммит или отслеживаемые файлы")
+                return None
         assert summary is not None
         return {
             "base_branch": base,
@@ -361,6 +375,41 @@ def write_atomic(path: Path, text: str) -> None:
     tmp = path.with_name(f".{path.name}.tmp")
     tmp.write_text(text, encoding="utf-8")
     tmp.replace(path)
+
+
+def record_release(report: Report, board: Path, project: dict, path: Path) -> int:
+    """Record the one full run without rendering or writing the board's baseline."""
+    if not check_scripts(report, board):
+        return 1
+    repo = Path.cwd()
+    try:
+        commit, tree, _ = release_verification.revision(repo, "HEAD")
+        changes = git(repo, "status", "--porcelain", "--untracked-files=no")
+        if changes.returncode or changes.stdout:
+            raise pc.ProjectError("для проверки выпуска нужна чистая рабочая копия")
+        hashes = release_verification.script_digests(board)
+        with path.open("x", encoding="utf-8") as output:
+            measure = trial(report, board, project, source=repo, commit=commit)
+            if measure is None:
+                json.dump({"commit": commit, "tree": tree, "passed": False}, output)
+                output.write("\n")
+                return 1
+            if release_verification.script_digests(board) != hashes:
+                raise pc.ProjectError("скрипты проверки изменились во время прогона")
+            receipt = {
+                "commit": commit, "tree": tree, "tree_after": tree,
+                "attempt": 1, "passed": True, "test_exit_code": 0, "tracked_files_clean": True,
+                "test_script": str(board.resolve() / "test.sh"),
+                "test_script_sha256": hashes["test.sh"], "setup_script_sha256": hashes["setup.sh"],
+                "counts": {key: measure[key] for key in pc.SUMMARY_KEYS}, "measurement": measure,
+            }
+            json.dump(receipt, output, ensure_ascii=False, indent=2)
+            output.write("\n")
+    except (OSError, pc.ProjectError) as exc:
+        report.add("FAIL", f"отчёт выпуска не записан: {exc}")
+        return 1
+    report.add("PASS", f"проверка выпуска {commit[:12]} сохранена в {path}")
+    return 0
 
 
 def update_history(report: Report, board: Path, baseline: dict) -> None:
@@ -477,6 +526,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="project-doctor", description=__doc__.splitlines()[0])
     parser.add_argument("name")
     parser.add_argument("--root", default=str(pc.DEFAULT_ROOT))
+    release = parser.add_mutually_exclusive_group()
+    release.add_argument("--record-release", type=Path, metavar="ОТЧЁТ",
+                         help="проверить HEAD рабочей копии и сохранить отчёт")
+    release.add_argument("--verified-release", type=Path, metavar="ОТЧЁТ",
+                         help="сверить установленную версию с отчётом без нового прогона")
     args = parser.parse_args(argv)
     if not pc.NAME_RE.match(args.name):
         print(f"FAIL  имя {args.name!r} некорректно")
@@ -494,6 +548,19 @@ def main(argv: list[str] | None = None) -> int:
         report.add("FAIL", f"{pc.PROJECT_FILE}: {exc}")
         return 1
     report.add("PASS", f"{pc.PROJECT_FILE} разобран")
+    if args.record_release is not None:
+        return record_release(report, board, project, args.record_release.expanduser())
+
+    verified = None
+    if args.verified_release is not None:
+        try:
+            verified = release_verification.read(args.verified_release.expanduser())
+            base = project["project"]["base_branch"]
+            release_verification.verify_board(verified, board, base)
+            installed = release_verification.verify_revision(verified, Path(project["project"]["repo"]), "HEAD")
+        except pc.ProjectError as exc:
+            report.add("FAIL", f"проверка выпуска: {exc}")
+            return 1
 
     tools_ok = check_tools(report, project["tools"], api_only=bool(project.get("api_team", {}).get("default")))
     repo_ok = check_repo(report, project["project"])
@@ -502,6 +569,7 @@ def main(argv: list[str] | None = None) -> int:
     if repo_ok:
         check_rule_files(report, project)
     check_key_env(report, board)
+    baseline = None
     if project.get("api_team", {}).get("default"):
         import api_board_config
         import api_session
@@ -515,16 +583,22 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 report.add("SKIP", "API-команда: полный прогон выполняется отдельно в облаке; setup.sh и test.sh на хосте не запускаются")
     elif check_scripts(report, board) and tools_ok and repo_ok and report.fails == 0:
-        baseline = trial(report, board, project)
-        if baseline is not None:
-            pc.ensure_state_dir(board)
-            update_history(report, board, baseline)  # before baseline.json: it is the old measure
-            write_atomic(pc.baseline_path(board),
-                         json.dumps(baseline, ensure_ascii=False, indent=2) + "\n")
-            report.add("PASS", f"замер базы записан в {pc.baseline_path(board)}")
-            apply_timeouts(report, board, project, baseline)
+        if verified is None:
+            baseline = trial(report, board, project)
+        else:
+            report.add("SKIP", f"setup.sh и test.sh: использован отчёт выпуска {verified['commit'][:12]}")
+            if "measurement" in verified:
+                baseline = {**verified["measurement"], "base_sha": installed,
+                            "measured_commit": verified["commit"]}
     else:
         report.add("SKIP", "пробный прогон setup.sh и test.sh: сначала исправь FAIL выше")
+
+    if baseline is not None:
+        pc.ensure_state_dir(board)
+        update_history(report, board, baseline)  # before baseline.json: it is the old measure
+        write_atomic(pc.baseline_path(board), json.dumps(baseline, ensure_ascii=False, indent=2) + "\n")
+        report.add("PASS", f"замер базы записан в {pc.baseline_path(board)}")
+        apply_timeouts(report, board, project, baseline)
 
     rendered = render(report, args.name, root)
     if rendered:

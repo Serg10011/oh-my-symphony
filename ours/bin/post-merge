@@ -2,6 +2,7 @@
 """Update the fork and its projects after a PR merge (TASK-S4-01).
 
     post-merge [--project NAME ...] [--dry-run] [--root DIR] [--main DIR] [--state FILE]
+               [--verified-release REPORT]
 
 Exit codes: 0 done or nothing to do, 1 refusal or error, 2 some actions
 deferred because cards are in work. The logic lives in ours/hooks/post_merge.py.
