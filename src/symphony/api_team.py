@@ -191,6 +191,8 @@ def verification_wait(cfg, issue, pause_reason: str | None) -> str | None:
     if data.get("subtask"):
         check = data.get("subtask_check")
         return "api_verify_result" if isinstance(check, dict) and check.get("status") == "passed" else None
+    if data.get("aggregate", {}).get("method") == "local":
+        return "api_verify_result"
     if (data.get("check_lane") != issue.state or not isinstance(candidate := data.get("candidate"), dict)
             or candidate.get("status") != "awaiting_full_checks"):
         return None
@@ -227,7 +229,8 @@ async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
     if action not in {"prepare", "confirm", "show", "stop", "review", "attach-check", "sync-checks", "run",
                       "team-options", "set-team-default", "publish-check", "accept", "submit",
                       "permission-show", "permission-prepare", "permission-authorize", "permission-revoke",
-                      "settings-preview", "settings-save", "gemini-quota", "prepare-subtasks", "start-subtasks"}:
+                      "settings-preview", "settings-save", "gemini-quota", "prepare-subtasks", "start-subtasks",
+                      "check-local-final"}:
         raise SymphonyError("Неизвестное действие API-команды")
     profile = api_profile(cfg, kind)
     context = board_context(cfg, kind, identifier)
@@ -278,7 +281,7 @@ async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
             raise SymphonyError(PUBLIC_ERRORS.get(code, f"Действие API-команды отклонено (код: {code})"), reason=code)
         return reply
     task = asyncio.create_task(exchange())
-    timeout = profile.turn_timeout_ms / 1000 if action == "run" else 60
+    timeout = profile.turn_timeout_ms / 1000 if action in {"run", "check-local-final"} else 60
     if action == "sync-checks":
         timeout = 120
     elif action in {"publish-check", "accept"}:
@@ -332,6 +335,14 @@ def schedule_cloud_checks(orch, cfg: ServiceConfig) -> None:
     if not kinds or not state.is_dir():
         return
 
+    async def check_local(kind, identifier):
+        try:
+            await invoke(cfg, kind, identifier, "check-local-final")
+        except (OSError, SymphonyError, TimeoutError) as exc:
+            get_logger().warning("api_team_local_final_unavailable", profile=kind, error_type=type(exc).__name__)
+        finally:
+            orch.request_refresh()
+
     async def sync():
         subtasks = await asyncio.to_thread(lambda: next(state.glob("*/subtasks.json"), None) is not None)
         for kind in kinds:
@@ -339,9 +350,14 @@ def schedule_cloud_checks(orch, cfg: ServiceConfig) -> None:
             if not (subtasks and supports_team_settings(command)) and not await asyncio.to_thread(_cloud_enabled, command):
                 continue
             try:
-                await invoke(cfg, kind, "", "sync-checks")
+                result = await invoke(cfg, kind, "", "sync-checks")
             except (OSError, SymphonyError, TimeoutError) as exc:
                 get_logger().warning("api_team_cloud_sync_unavailable", profile=kind, error_type=type(exc).__name__)
+                continue
+            ids = result.get("local_checks", []) if isinstance(result, dict) else []
+            task = getattr(orch, "_api_final_check_task", None)
+            if ids and (task is None or task.done()):
+                orch._api_final_check_task = orch._spawn_supervised(check_local(kind, ids[0]), name="api-team-local-final")
 
     orch._cloud_check_task = orch._spawn_supervised(sync(), name="api-team-cloud-checks")
 

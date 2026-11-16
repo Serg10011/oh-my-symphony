@@ -32,6 +32,13 @@
     api_subtask_result_changed: 'Версия ранее проверенной подзадачи изменилась.',
     api_subtasks_budget_exhausted: 'Достигнут общий предел составной задачи.',
     api_subtasks_not_active: 'Выполнение составной задачи остановлено.',
+    api_final_result_changed: 'Закреплённая версия, база или исходная карточка изменились.',
+    api_final_settings_changed: 'Настройки итоговой проверки изменились.',
+    api_final_test_interrupted: 'Итоговая проверка была прервана.',
+    api_final_tests_unavailable: 'Команда проверки проекта недоступна в изоляции.',
+    api_final_tests_failed: 'Общий результат не прошёл итоговую проверку.',
+    api_final_test_copy_changed: 'Итоговая проверка изменила отслеживаемые файлы.',
+    api_final_review_lane_required: 'На доске нужна колонка Human Review для передачи результата.',
   };
   const number = value => Number.isFinite(value) ? value.toLocaleString('ru-RU') : 'не указан';
   const model = value => value ? `${value.model} · усилие ${value.effort}` : 'не назначен';
@@ -188,6 +195,12 @@
       if (launch?.status === 'active') status.textContent = `Проверено подзадач — ${launch.checked} из ${launch.total}. Текущая — ${launch.next}.`;
       if (launch?.status === 'complete') status.textContent = 'Все подзадачи проверены. Общий результат ждёт итоговой проверки.';
       if (launch?.status === 'stopped') status.textContent = 'Выполнение подзадач остановлено. ' + (reasons[launch.reason] || 'Посмотри отчёт текущей подзадачи.');
+      const final = data.final;
+      if (final?.status === 'checking') status.textContent = final.method === 'cloud'
+        ? 'Общая версия готова к проверке на Linux' : 'Итоговая проверка общей версии';
+      if (final?.status === 'failed') status.textContent = reasons[final.reason] || 'Итоговая проверка требует внимания.';
+      if (final?.status === 'ready') status.textContent = 'Общий результат проверен и ждёт твоей приёмки';
+      if (final && data.accepted) status.textContent = release?.completion?.message || 'Общий результат принят';
       if (data.subtask?.check?.status === 'passed') status.textContent = 'Целевая проверка подзадачи пройдена';
       if (draft) status.textContent = 'Черновик подзадачи';
       if (data.stop_requested && data.status === 'running') status.textContent += '. Остановка запрошена; текущий ответ ещё может оплачиваться.';
@@ -232,7 +245,7 @@
         }
       } else { pickerKey = ''; selection = null; }
       stop.hidden = launch?.status !== 'active' && (!['prepared', 'queued', 'running'].includes(data.status) || data.stop_requested);
-      review.hidden = !data.session?.execution || !['result', 'stopped'].includes(data.status);
+      review.hidden = !(data.session?.execution || final?.commit) || !['result', 'stopped'].includes(data.status);
       const check = data.cloud_check, receipt = check?.phase ? null : check?.receipt;
       cloud.hidden = !check || groupReady;
       workflowLink.hidden = !receipt;

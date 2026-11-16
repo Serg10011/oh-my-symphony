@@ -136,7 +136,13 @@ def _result_identity(board, value, allowed_states=None):
             or board.card_digest(front, body) != value["result_card_digest"]
             or value["spec"]["project"]["root"] != str(board.repo)):
         raise ReleaseError("group_release_card_changed")
-    candidate.check_identity(board.session_path, value, session._load(board.session_path))
+    if value.get("aggregate"):
+        final = value.get("final_document", {})
+        subject = value.get("check_target") or value["candidate"]
+        if (front["state"] != board.review_lane or value.get("final_error")
+                or any(final.get(key) != subject[key] for key in ("commit", "tree", "base_commit"))):
+            raise ReleaseError("group_release_card_changed")
+    board.verify_result(value)
     return _identity(value)
 
 

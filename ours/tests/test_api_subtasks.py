@@ -32,7 +32,7 @@ def children(board):
 
 
 def tick(board):
-    api_board.sync_checks(board.settings, {**board.context, "identifier": ""})
+    return api_board.sync_checks(board.settings, {**board.context, "identifier": ""})
 
 
 def make_plan(board, *, check="test -s src/memo.md"):
@@ -109,7 +109,9 @@ def test_one_approval_hands_checked_commit_to_dependent_card(planning_board, che
     assert "workspace_path_denied" in str(requests[2]["body"]["input"])
     tick(board)
     assert result["subtask"]["check"]["status"] == "passed"
-    assert board.show()["plan"]["launch"]["status"] == "complete" and board.card()[0]["state"] == "Subtasks"
+    status = board.show()
+    assert status["plan"]["launch"]["status"] == "complete" and board.card()[0]["state"] == "Verify"
+    assert status["final"]["status"] == "checking"
     assert second.card()[0]["state"] == "Done" and len(checks) == 2
     shared = board.root / "subtasks.git"
     assert git(shared, "show", result["candidate"]["commit"] + ":src/memo.md").decode().strip() == "Проверенная памятка"
