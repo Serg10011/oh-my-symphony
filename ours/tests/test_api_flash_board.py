@@ -100,6 +100,11 @@ for turn, line in enumerate(sys.stdin.buffer, 1):
         emit("result", {"status": "ERROR", "error": "RESOURCE_EXHAUSTED", "usage": usage(1),
                         "conversation_id": cid})
         break
+    if MODE == "region_denied":
+        emit("result", {"status": "ERROR",
+                        "error": "403 Forbidden: User location is not supported for the API. Private service detail",
+                        "usage": usage(0), "conversation_id": cid})
+        break
     assert hook("PreToolUse")["decision"] == "allow"
     if turn == 1:
         assert messages == [{"assignment": "Prepare the test."}]
@@ -221,6 +226,7 @@ def test_confirmed_flash_edits_only_the_task_copy_and_is_billed_separately(board
 @pytest.mark.parametrize(("mode", "reason", "tokens"), [
     ("lost", "flash_worker_failed", None),
     ("limited", "flash_capacity_unavailable", 15),
+    ("region_denied", "flash_region_unsupported", 0),
     ("oversized", "flash_output_limit", 2012),
 ])
 def test_flash_failure_preserves_known_usage_or_uncertainty_without_retry(board, tmp_path, monkeypatch,
@@ -233,8 +239,11 @@ def test_flash_failure_preserves_known_usage_or_uncertainty_without_retry(board,
     transport, sent = lead_frames(sol(calls=[assignment(message="Prepare the test.")]))
     result = board.run("a" * 32, credentials=lambda _: KEYS, transport=transport)
     assert result["status"] == "stopped" and result["reason"] == reason
+    assert f"причина остановки: {session.REPORT_STOP_REASONS[reason]}" in result["report_text"]
     assert result["session"]["usage"][api.FLASH_WORKER]["total_tokens"] == tokens
-    assert not session._load(board.session_path)["file_calls"]
+    stored = session._load(board.session_path)
+    assert not stored["file_calls"]
+    assert "Private service detail" not in json.dumps(stored)
     assert len(sent) == len(log.read_text().splitlines()) == 1
     assert not list(board.root.glob("symphony-flash-*"))
     report = session.report(board.session_path)
