@@ -176,6 +176,7 @@ async def _on_tick(self: Orchestrator) -> None:
     for issue in candidates:
         self._blocked_rca_source_ids.discard(issue.id)
         self._history_recovery_attempted.discard(issue.id)
+        _resume_confirmed_subtask_retry(self, issue, cfg)
 
     dependency_edge_count = sum(len(issue.blocked_by) for issue in candidates)
     dependency_graph_within_bounds = (
@@ -504,6 +505,35 @@ async def _on_tick(self: Orchestrator) -> None:
     self._maybe_schedule_continuous_improvement(cfg)
 
     await self._notify_observers()
+
+
+def _resume_confirmed_subtask_retry(self: Orchestrator, issue: Issue, cfg: ServiceConfig) -> None:
+    from ..api_team import FINISHED_HOLD, confirmed_subtask_retry
+
+    registry = self._run_registry
+    if (registry is None or self._pause_reasons.get(issue.id) != FINISHED_HOLD
+            or not self.is_paused(issue.id) or issue.id in self._in_flight_ids()):
+        return
+    approved = confirmed_subtask_retry(cfg, issue)
+    if approved is None:
+        return
+    flags = self._registry_guard("get_api_retry_hold", lambda: registry.get_issue_flags(issue.id), None)
+    if flags is None or not flags.paused or flags.pause_reason != FINISHED_HOLD:
+        return
+    recent = self._registry_guard("get_api_retry_run", lambda: registry.recent_runs(issue.id, limit=1), [])
+    if not recent or recent[0].issue_id != issue.id or recent[0].completed_at is None:
+        return
+    previous_id, confirmed_at = approved
+    last = recent[0]
+    # A runner can exit before changing the queued assignment. Its newer
+    # lease must keep its hold on that very same approval, including on restart.
+    if previous_id is not None:
+        if last.run_id != previous_id:
+            return
+    elif last.started_at is None or last.started_at >= confirmed_at:
+        return
+    self.resume_worker(issue.id)
+    log.info("confirmed_api_subtask_retry_resumed", issue_id=issue.id, identifier=issue.identifier)
 
 
 async def _dispatch_fifo_without_schedule_projection(
@@ -1398,6 +1428,12 @@ def _dispatch(
     if acquisition is None:
         return False
     run_id = acquisition.run_id
+    if not run_id:
+        from ..api_team import uses_board_queue
+
+        # The board runner needs this durable id to enter the paid session.
+        if uses_board_queue(cfg, agent_kind):
+            return False
     if acquisition.checkpoint is not None:
         resolved_attempt_kind = "recovery"
     if release_authority.gate is not None:
