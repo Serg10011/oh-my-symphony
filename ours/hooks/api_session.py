@@ -139,12 +139,18 @@ agreed checks you use. Explain taking on suitable worker implementation even
 if you make that decision before the first handoff.
 """
 _FLASH_BATCH_POLICY = 5
+_SOL_REVIEW_POLICY = 6
+_EARLY_HANDOFF = """Once a suitable task's goal, constraints and way to check it are clear,
+delegate it to Flash. Leave routine source discovery to the worker. Investigate
+first when an uncertainty would change the assignment or its acceptance.
+"""
 _EXECUTION_LEAD_POLICIES = {
     1: EXECUTION_LEAD_ROLES_V1,
     2: EXECUTION_LEAD_ROLES_V2,
     3: EXECUTION_LEAD_ROLES_V1 + _PLAN_CHANGE_REPORT,
     4: EXECUTION_LEAD_ROLES_V2 + _PLAN_CHANGE_REPORT,
     _FLASH_BATCH_POLICY: EXECUTION_LEAD_ROLES_V2 + _PLAN_CHANGE_REPORT,
+    _SOL_REVIEW_POLICY: EXECUTION_LEAD_ROLES_V2 + _PLAN_CHANGE_REPORT + _EARLY_HANDOFF,
 }
 EXECUTION_WORKER_ROLES_V1 = """Implement the coherent part assigned by the lead and
 verify your work with appropriate checks. Choose the implementation within the
@@ -379,6 +385,14 @@ def _read_state(path: Path) -> bytes:
     return raw
 
 
+def _new_role_policy(spec):
+    if spec["worker_profile"] != api.FLASH_WORKER:
+        return 3
+    if spec["lead_profile"] == api.SOL_62_LEAD and spec["lead_effort"] == "high":
+        return _SOL_REVIEW_POLICY
+    return _FLASH_BATCH_POLICY
+
+
 def _load(path: Path, *, raw: bytes | None = None) -> dict:
     if raw is None:
         raw = _read_state(path)
@@ -396,7 +410,8 @@ def _load(path: Path, *, raw: bytes | None = None) -> dict:
     role_policy = state.get("role_policy_version", 0)
     if (type(role_policy) is not int or role_policy not in (0, *_EXECUTION_LEAD_POLICIES)
             or (role_policy and "execution" not in spec)
-            or (role_policy in (2, 4, _FLASH_BATCH_POLICY) and spec["worker_profile"] != api.FLASH_WORKER)):
+            or (role_policy in (2, 4, _FLASH_BATCH_POLICY) and spec["worker_profile"] != api.FLASH_WORKER)
+            or (role_policy == _SOL_REVIEW_POLICY and _new_role_policy(spec) != role_policy)):
         raise SessionError("invalid_role_policy")
     if "output_limits" in state:
         pinned = state["output_limits"]
@@ -539,7 +554,7 @@ def create(path, spec: dict) -> dict:
         os.close(fd)
         if "execution" in spec:
             try:
-                state["role_policy_version"] = _FLASH_BATCH_POLICY if spec["worker_profile"] == api.FLASH_WORKER else 3
+                state["role_policy_version"] = _new_role_policy(spec)
                 state["execution_state"] = workspace.create(path, spec, state["project_snapshot"])
             except (workspace.WorkspaceError, sandbox.SandboxError, project.ProjectError) as exc:
                 path.unlink()  # Only the empty file just created exclusively above.
@@ -1222,21 +1237,22 @@ def _build_request(state, history, cap, resources, *, part_id=None, request_vers
                         "Use a stable part_id and at most one targeted correction for that same part. Review worker results."
                         if part_id is None else "Carry out the coherent part assigned by the lead and report evidence and limitations.")
         role_policy = state.get("role_policy_version")
+        lead_review = part_id is None and role_policy == _SOL_REVIEW_POLICY
         lead_policy = _EXECUTION_LEAD_POLICIES.get(role_policy)
         if lead_policy is not None:
             instructions = lead_policy if part_id is None else EXECUTION_WORKER_ROLES_V1
-        instructions += "\n" + workspace.INSTRUCTIONS
+        instructions += "\n" + (workspace.LEAD_REVIEW_INSTRUCTIONS if lead_review else workspace.INSTRUCTIONS)
         instructions += "\nAvailable Python: " + spec["execution"]["python"]
         instructions += "\nLimits: " + json.dumps(limits)
         if part_id is None:
             instructions += "\nProject context:\n" + spec["context"]
         instructions += "\nUse the task's language. Search before reading many files; follow returned cursors."
         request["instructions"] = instructions
-        request["tools"] = list(workspace.TOOLS) + (delegate if part_id is None else [])
+        request["tools"] = (workspace.LEAD_REVIEW_TOOLS if lead_review else workspace.TOOLS) + (delegate if part_id is None else [])
         if flash_worker:
             request["instructions"] += ("\n" + FLASH_PART_INSTRUCTIONS if part_id is not None else
                                         "\nThe worker is Gemini Flash. Use delegate_worker for its assignments.")
-            if part_id is not None and role_policy == _FLASH_BATCH_POLICY:
+            if part_id is not None and role_policy in (_FLASH_BATCH_POLICY, _SOL_REVIEW_POLICY):
                 request["instructions"] += "\n" + FLASH_BATCH_INSTRUCTIONS
     # Append transient counters after the stable context; never accumulate them in history.
     if part_id is None and api_effort.enabled(spec):
@@ -1317,19 +1333,27 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport,
         _stop(path, state, "output_limit")
         return None
     resources = _resources(state, cap, worker=part_id is not None)
-    request = _build_request(state, history, cap, resources, part_id=part_id)
-    try:
-        if subscription:
-            message, encoded = flash.prepare(request, part_id, resources)
+    lead_review = part_id is None and state.get("role_policy_version") == _SOL_REVIEW_POLICY
+    while True:
+        request = _build_request(state, history, cap, resources, part_id=part_id)
+        try:
+            if subscription:
+                message, encoded = flash.prepare(request, part_id, resources)
+            else:
+                _, body = api.prepare(profile, request)
+                encoded = _encode(body)
+        except (api.ExecutorError, flash_protocol.ProtocolError) as exc:
+            if not (lead_review and str(exc) == "request_too_large"):
+                _stop(path, state, "request_size_limit" if str(exc) == "flash_payload_too_large" else "invalid_request")
+                return None
         else:
-            _, body = api.prepare(profile, request)
-            encoded = _encode(body)
-    except (api.ExecutorError, flash_protocol.ProtocolError) as exc:
-        _stop(path, state, "request_size_limit" if str(exc) == "flash_payload_too_large" else "invalid_request")
-        return None
-    if len(encoded) > limits["request_bytes"]:
-        _stop(path, state, "request_size_limit")
-        return None
+            if len(encoded) <= limits["request_bytes"]:
+                break
+        # Fold only unsolicited diffs that have never reached the lead. This
+        # local size check runs before a provider call or budget measurement.
+        if not lead_review or not _defer_unsent_handoff_diffs(state, history):
+            _stop(path, state, "request_size_limit")
+            return None
     reservation = None
     if "budget" in spec and not subscription:
         probe = {"profile": profile, "request_sha256": hashlib.sha256(encoded).hexdigest(), "status": "in_flight"}
@@ -1442,18 +1466,23 @@ def _tool_names(state):
     return workspace.TOOL_NAMES if "execution" in state["spec"] else project.TOOL_NAMES
 
 
-def _project_answer(state, call, *, deferred=False, before_command=None):
+def _project_answer(state, call, *, part_id=None, deferred=False, before_command=None):
     if deferred:
         return {"error": "project_batch_deferred", "message": "Retry this tool call in the next response; this batch reached its local execution allowance."}, False
     args = {}
     try:
         args = _decode(call["arguments"])
         if "execution" in state["spec"]:
+            if part_id is None and state.get("role_policy_version") == _SOL_REVIEW_POLICY and call["name"] == "project_changes":
+                return workspace.lead_changes(state["spec"], state["execution_state"],
+                                              state["project_snapshot"], args), False
             return workspace.call(state["spec"], state["execution_state"], call["name"],
                                   args, before_command=before_command,
                                   cancelled=_CANCELLATION.get()), False
         return project.call(state["project_snapshot"], call["name"], args), False
     except (workspace.WorkspaceError, sandbox.SandboxError) as exc:
+        if str(exc) == "workspace_diff_cursor_stale":
+            return {"error": str(exc), "restart": workspace.DIFF_START}, False
         if str(exc) == "workspace_path_denied":
             return workspace.path_denial(state["spec"], args), False
         recoverable = {"invalid_workspace_query", "workspace_edit_conflict",
@@ -1479,7 +1508,7 @@ def _project_call(path, state, call, history, *, part_id=None, deferred=False, p
     state["file_calls"].append(record)
     _save(path, state)
     output, fatal = prepared if prepared is not None else _project_answer(
-        state, call, deferred=deferred, before_command=lambda: _save(path, state))
+        state, call, part_id=part_id, deferred=deferred, before_command=lambda: _save(path, state))
     record.update(status="error" if "error" in output else "completed", finished_at=_now(),
                   reply_bytes=len(_encode(output)))
     if "error" in output:
@@ -1521,6 +1550,46 @@ def _worker(path, state, part_id, part, *, environ, transport, flash=None, parti
             return None
         return _WorkerOutcome(response["output_text"])
     return None
+
+
+def _handoff_outputs(history):
+    handoffs = set()
+    for item in history:
+        if item.get("type") == "function_call" and item["name"] == "delegate_worker":
+            handoffs.add(item["call_id"])
+        elif item.get("type") == "function_call_output" and item["call_id"] in handoffs:
+            yield item, _decode(item["output"])
+
+
+def _defer_unsent_handoff_diffs(state, history):
+    sent = next((call["history_items"] - 1 for call in reversed(state["calls"]) if call["part_id"] is None), 0)
+    deferred = set()
+    for item, output in _handoff_outputs(history[sent:]):
+        page = output.get("workspace_changes", {})
+        if page.get("files") or page.get("same_as") in deferred:
+            page.pop("files", None)
+            page.pop("same_as", None)
+            page["next"] = {**workspace.DIFF_START, "revision": page["revision"], "max_chars": project.MAX_CHARS}
+            item["output"] = json.dumps(output, ensure_ascii=False)
+            deferred.add(item["call_id"])
+    return bool(deferred)
+
+
+def _handoff_diff(state, output):
+    """Attach controller evidence to the worker result without another model turn."""
+    change_query = {"name": "project_changes", "arguments": json.dumps(workspace.DIFF_START)}
+    page, fatal = _project_answer(state, change_query)
+    output["workspace_changes"] = page
+    if not page.get("files") or page["next"] is not None:
+        return fatal
+
+    for item, prior in _handoff_outputs(state["lead_history"]):
+        previous = prior.get("workspace_changes", {})
+        if previous.get("files") and previous.get("revision") == page["revision"] and previous["next"] is None:
+            del page["files"]
+            page["same_as"] = item["call_id"]
+            break
+    return fatal
 
 
 def _dispatch(path, state, calls, *, environ, transport, flash=None, resumed_part=None):
@@ -1576,8 +1645,16 @@ def _dispatch(path, state, calls, *, environ, transport, flash=None, resumed_par
                 if worker.error:
                     output.update(error=worker.error, partial=True)
                     state["tool_errors"].append({"call_id": call["call_id"], "error": worker.error})
+        fatal = False
+        if state.get("role_policy_version") == _SOL_REVIEW_POLICY and "text" in output and "error" not in output:
+            fatal = _handoff_diff(state, output)
+            if "error" in output["workspace_changes"]:
+                state["tool_errors"].append({"call_id": call["call_id"], "error": output["workspace_changes"]["error"]})
         state["lead_history"].append({"type": "function_call_output", "call_id": call["call_id"],
                                       "output": json.dumps(output, ensure_ascii=False)})
+        if fatal:
+            _stop(path, state, "project_tool_error")
+            return
         _save(path, state)
 
 

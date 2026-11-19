@@ -1,0 +1,229 @@
+"""A Sol lead reviews the controller's actual changes when Flash hands work back."""
+
+import json
+from pathlib import Path
+
+import pytest
+
+from test_api_board import board as board
+from test_api_flash_board import TEAM, approve_flash, assignment, fake_worker, lead_frames, sol
+from test_api_session import KEYS
+from test_api_workspace import portable_offline_policy as portable_offline_policy, prepared, state, tool
+
+import api_executor as api
+import api_session as session
+import api_workspace as workspace
+
+
+def tool_result(request, call_id):
+    result = next(i for i in request["input"] if i.get("type") == "function_call_output" and i["call_id"] == call_id)
+    return json.loads(result["output"][0]["text"])
+
+
+def test_completed_handoff_includes_the_checked_diff_in_the_next_lead_request(board, tmp_path, monkeypatch):
+    wire = fake_worker(tmp_path, monkeypatch, "batch_discovery")
+    approve_flash(board, {**TEAM, "lead_profile": api.SOL_62_LEAD})
+    model = api.SOL_62_MODEL
+    transport, sent = lead_frames(
+        sol(calls=[assignment(call_id="hand", message="Prepare the test.")], model=model),
+        sol(calls=[assignment(call_id="amend", kind="correction", message="Confirm the result.")], model=model),
+        sol("Reviewed", model=model), model=model)
+    assert board.run("a" * 32, credentials=lambda _: KEYS, transport=transport)["status"] == "result"
+    assert len(sent) == 3
+    assert session._EARLY_HANDOFF in sent[0]["input"][0]["content"]
+    assert session._PLAN_CHANGE_REPORT in sent[0]["input"][0]["content"]
+    returned = tool_result(sent[1], "hand")
+    assert returned["text"] == "Ready"
+    first = returned["workspace_changes"]
+    actual = board.review()
+    assert first["revision"] == actual["revision"] and first["base_commit"] == actual["base_commit"]
+    assert first["next"] is None and first["total"] == 1
+    assert first["files"][0] == {**actual["files"][0], "diff_offset": 0}
+    assert "+assert 2 + 2 == 4" in first["files"][0]["diff"]
+    assert tool_result(sent[2], "amend")["workspace_changes"] == {
+        "revision": first["revision"], "base_commit": first["base_commit"], "total": 1, "same_as": "hand", "next": None}
+    assert "workspace_changes" not in wire.read_text()
+    saved = session._load(board.session_path)
+    assert saved["role_policy_version"] == 6
+    assert all(item["role_policy_version"] == 6 for item in saved["calls"])
+    assert all(item["name"] != "project_changes" for item in saved["file_calls"])
+
+
+@pytest.fixture
+def review_copy(tmp_path, portable_offline_policy):
+    path, _ = prepared(tmp_path, lead_profile=api.SOL_62_LEAD, worker_profile=api.FLASH_WORKER)
+    return state(path)
+
+
+def changes(saved, cursor):
+    return workspace.lead_changes(saved["spec"], saved["execution_state"], saved["project_snapshot"], cursor)
+
+
+def test_pages_reconstruct_the_operator_diff_including_unicode_deletions_and_binary(review_copy):
+    saved = review_copy
+    root = Path(saved["execution_state"]["root"])
+    assert changes(saved, workspace.DIFF_START)["total"] == 0
+    (root / "README.md").unlink()
+    (root / "src/main.py").write_text("пример" * 50)
+    (root / "src/binary").write_bytes(b"\x00\xff")
+    (root / "src/added").write_text("new\n")
+    (root / "src/added").chmod(0o755)
+    expected = workspace.review(saved["spec"], saved["execution_state"], saved["project_snapshot"])
+    assembled = {}
+    cursor = {**workspace.DIFF_START, "max_chars": 45}
+    seen = set()
+    while cursor is not None:
+        key = (cursor["offset"], cursor["diff_offset"])
+        assert key not in seen
+        seen.add(key)
+        page = changes(saved, cursor)
+        assert page["revision"] == expected["revision"] and page["total"] == 4
+        assert sum(len(row["diff"] or "") for row in page["files"]) <= 45
+        for row in page["files"]:
+            path = row["path"]
+            if path not in assembled:
+                assembled[path] = {k: v for k, v in row.items() if k != "diff_offset"}
+                assert row["diff_offset"] == 0
+            else:
+                assert row["diff_offset"] == len(assembled[path]["diff"])
+                assembled[path]["diff"] += row["diff"]
+        cursor = page["next"]
+    assert list(assembled.values()) == expected["files"]
+    assert assembled["README.md"]["change"] == "deleted" and assembled["src/binary"]["diff"] is None
+
+
+def test_stale_page_cannot_mix_revisions_and_returns_a_restart(review_copy):
+    saved = review_copy
+    root = Path(saved["execution_state"]["root"])
+    (root / "src/main.py").write_text("x = 1\n")
+    cursor = changes(saved, {**workspace.DIFF_START, "max_chars": 5})["next"]
+    (root / "src/main.py").write_text("print('committed')\n")
+    output, fatal = session._project_answer(saved, tool("project_changes", "page", **cursor))
+    assert not fatal and output == {"error": "workspace_diff_cursor_stale", "restart": workspace.DIFF_START}
+    assert changes(saved, output["restart"])["files"] == []
+
+
+def test_files_with_no_text_diff_remain_visible_across_the_file_page_boundary(review_copy):
+    root = Path(review_copy["execution_state"]["root"])
+    (root / "README.md").chmod(0o755)
+    for i in range(21):
+        (root / f"src/empty-{i:02d}").touch()
+    first = changes(review_copy, workspace.DIFF_START)
+    second = changes(review_copy, first["next"])
+    rows = first["files"] + second["files"]
+    assert first["total"] == 22 and second["next"] is None
+    assert len({row["path"] for row in rows}) == 22
+    assert all(row["diff"] == "" for row in rows)
+    assert rows[0]["before"]["mode"] == 0o644 and rows[0]["after"]["mode"] == 0o755
+
+
+def test_worker_and_saved_policy_keep_the_original_changes_tool(review_copy):
+    saved = review_copy
+    for version, part in [(5, None), (6, "worker")]:
+        saved["role_policy_version"] = version
+        request = session._build_request(saved, [], 100, {}, part_id=part)
+        original = next(item for item in request["tools"] if item["name"] == "project_changes")
+        assert original["parameters"]["required"] == ["offset"]
+        assert session._EARLY_HANDOFF not in request["instructions"]
+        output, fatal = session._project_answer(saved, tool("project_changes", "old", offset=0), part_id=part)
+        assert not fatal and output["changes"] == [] and "files" not in output
+
+
+@pytest.mark.parametrize(("lead", "worker", "effort", "version"), [
+    (api.SOL_62_LEAD, api.FLASH_WORKER, "max", 5),
+    ("sol-lead", api.FLASH_WORKER, "high", 5),
+    (api.SOL_62_LEAD, None, "high", 3),
+])
+def test_new_policy_is_scoped_to_the_assigned_pair_and_starting_effort(tmp_path, portable_offline_policy,
+                                                                      lead, worker, effort, version):
+    path, _ = prepared(tmp_path, lead_profile=lead, worker_profile=worker, lead_effort=effort)
+    saved = state(path)
+    assert saved["role_policy_version"] == version
+    saved["role_policy_version"] = 6
+    with pytest.raises(session.SessionError, match="invalid_role_policy"):
+        session._load(path, raw=json.dumps(saved).encode())
+
+
+def test_correction_with_new_edits_delivers_the_new_diff(review_copy):
+    saved = review_copy
+    source = Path(saved["execution_state"]["root"]) / "src/main.py"
+    source.write_text("first = True\n")
+    first = {}
+    assert not session._handoff_diff(saved, first)
+    saved["lead_history"].extend([
+        assignment(call_id="first"),
+        {"type": "function_call_output", "call_id": "first", "output": json.dumps(first)}])
+    source.write_text("corrected = True\n")
+    second = {}
+    assert not session._handoff_diff(saved, second)
+    page = second["workspace_changes"]
+    assert page["revision"] != first["workspace_changes"]["revision"] and "same_as" not in page
+    assert "+corrected = True" in page["files"][0]["diff"]
+
+
+def test_automatic_diff_can_be_deferred_before_sending_a_size_limited_lead_request(board, tmp_path, monkeypatch):
+    fake_worker(tmp_path, monkeypatch)
+    raw = json.loads(board.settings.read_text())
+    raw["session"]["limits"] = {"request_bytes": 20_000}
+    board.settings.write_text(json.dumps(raw))
+    approve_flash(board, {**TEAM, "lead_profile": api.SOL_62_LEAD})
+
+    def large_change(path, saved, *args, **kwargs):
+        (Path(saved["execution_state"]["root"]) / "src/main.py").write_text("#" + "Ж" * 11_000 + "\n")
+        return session._WorkerOutcome("Edit complete")
+
+    monkeypatch.setattr(session, "_worker", large_change)
+    model = api.SOL_62_MODEL
+    short_page = tool("project_changes", "short", **{**workspace.DIFF_START, "max_chars": 256})
+    transport, sent = lead_frames(sol(calls=[assignment(call_id="large")], model=model),
+                                  sol(calls=[short_page], model=model),
+                                  sol("Final report", model=model), model=model)
+    assert board.run("b" * 32, credentials=lambda _: KEYS, transport=transport)["status"] == "result"
+    assert len(sent) == 3
+    evidence = tool_result(sent[1], "large")["workspace_changes"]
+    assert evidence["total"] == 1 and "files" not in evidence
+    assert evidence["next"] == {**workspace.DIFF_START, "revision": evidence["revision"],
+                                "max_chars": session.project.MAX_CHARS}
+    returned = tool_result(sent[2], "short")
+    assert returned["revision"] == evidence["revision"] and returned["next"]["diff_offset"] == 256
+    assert "+#ЖЖ" in returned["files"][0]["diff"]
+
+
+def test_deferral_keeps_sent_evidence_and_fixes_references_in_an_unsent_batch(review_copy):
+    saved = review_copy
+    (Path(saved["execution_state"]["root"]) / "src/main.py").write_text("x = 1\n")
+    page = changes(saved, workspace.DIFF_START)
+    history = saved["lead_history"]
+
+    def handoff(call_id, evidence):
+        history.extend([assignment(call_id=call_id),
+                        {"type": "function_call_output", "call_id": call_id,
+                         "output": json.dumps({"workspace_changes": evidence})}])
+
+    handoff("sent", page)
+    sent_output = history[-1]["output"]
+    saved["calls"] = [{"part_id": None, "history_items": len(history) + 1}]
+    handoff("pending", page)
+    handoff("duplicate", {"revision": page["revision"], "same_as": "pending", "next": None})
+    assert session._defer_unsent_handoff_diffs(saved, history)
+    assert history[2]["output"] == sent_output
+    for item in (history[4], history[6]):
+        deferred = json.loads(item["output"])["workspace_changes"]
+        assert deferred["next"]["revision"] == page["revision"]
+        assert "files" not in deferred and "same_as" not in deferred
+    assert not session._defer_unsent_handoff_diffs(saved, history)
+
+
+def test_cursor_rejects_ungranted_paths_and_unsealed_data(review_copy):
+    saved = review_copy
+    for extra in ({"path": "private.txt"}, {"offset": True}, {"diff_offset": 1}, {"revision": "other"},
+                  {"max_chars": False}, {"max_chars": workspace.LEAD_DIFF_CHARS + 1}):
+        with pytest.raises(workspace.WorkspaceError, match="invalid_workspace_query"):
+            changes(saved, {**workspace.DIFF_START, **extra})
+    root = Path(saved["execution_state"]["root"])
+    (root / "private.txt").write_text("outside the grant")
+    with pytest.raises(workspace.WorkspaceError, match="workspace_scope_changed"):
+        changes(saved, workspace.DIFF_START)
+    saved["execution_state"]["sealed"] = False
+    with pytest.raises(workspace.WorkspaceError, match="workspace_result_not_sealed"):
+        changes(saved, workspace.DIFF_START)
