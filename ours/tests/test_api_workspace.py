@@ -68,6 +68,30 @@ def invoke(journal, name, **args):
     return workspace.call(value["spec"], value["execution_state"], name, args)
 
 
+def test_optional_node_setting_reaches_the_runtime_policy_and_task_instructions(tmp_path):
+    node = tmp_path / "node"
+    node.touch(mode=0o700)
+    config = {"python": str(Path(sys.executable).resolve()), "read_roots": [str(Path(sys.base_prefix).resolve())]}
+    without_node = workspace.validate(config)
+    assert without_node == config
+    path, _ = prepared(tmp_path, execution=config | {"node": str(node)})
+    saved = state(path)
+    spec = saved["spec"]
+    assert spec["execution"] == without_node | {"node": str(node)}
+    policy = workspace.policy(spec, saved["execution_state"])
+    assert policy.node == node
+    assert policy.read_roots == tuple(Path(root) for root in without_node["read_roots"])
+    assert '"$SYMPHONY_NODE"' in workspace.scope_instructions(spec)
+    assert "SYMPHONY_NODE" not in workspace.scope_instructions({**spec, "execution": without_node})
+
+
+@pytest.mark.parametrize("node", [None, "node", "/runtime/../node", "/node\u0000"])
+def test_invalid_node_setting_is_rejected_as_a_configuration_error(node):
+    base = {"python": "/runtime/python", "read_roots": ["/runtime"]}
+    with pytest.raises(workspace.WorkspaceError, match="invalid_execution_spec"):
+        workspace.validate(base | {"node": node})
+
+
 def test_snapshot_is_independent_and_current_reads_include_new_tests(tmp_path):
     path, root = prepared(tmp_path)
     before = subprocess.check_output(["git", "-C", str(root), "status", "--porcelain"])
