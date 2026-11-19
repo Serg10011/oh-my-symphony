@@ -283,8 +283,11 @@ def offer(board, value):
     if value and value.get("release_done"):
         return completed(board, value)
     if record := group.receipt(board, value):
-        return {"stage": "delivered", "commit": record["commit"], "pr": record["pr"], "accepted": True,
-                "group_release": True, "completion": completion.view(board, value, record)}
+        result = {"stage": "delivered", "commit": record["commit"], "pr": record["pr"], "accepted": True,
+                  "group_release": True, "completion": completion.view(board, value, record)}
+        if "verified_release" in record:
+            result["verified_release"] = record["verified_release"]
+        return result
     if record := group.review_receipt(board, value):
         return {"stage": "group-ready", "commit": record["identity"]["source_commit"],
                 "checks": record["checks"], "checked_at": record["checked_at"]}

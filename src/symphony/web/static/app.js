@@ -1814,6 +1814,159 @@
     scrollEl.appendChild(panel);
   }
 
+  // ------------------------------------------------------------------
+  // Board: Attention Queue Summary (OMS-18/2)
+  // ------------------------------------------------------------------
+
+  function classifyAttentionState(state) {
+    if (typeof state !== 'string') return '';
+    const words = state.trim().toLowerCase().replace(/[_-]/g, ' ').replace(/\s+/g, ' ');
+    if (words === 'needs human' || words === 'нужна помощь') return 'needs_human';
+    if (words === 'blocked' || words === 'заблокирован' || words === 'заблокирована' || words === 'заблокировано') return 'blocked';
+    return words;
+  }
+
+  function buildAttentionQueueEl(queue) {
+    const section = el('section', {
+      class: 'attention-queue',
+      'data-board-scroll': 'attention-queue',
+      'aria-label': t('board.attentionQueue'),
+    });
+
+    if (!Array.isArray(queue)) {
+      // Legacy server contract or missing/malformed field: not an array -> unknown, NOT an empty queue!
+      const unknownEl = el('div', {
+        class: 'attention-queue-unknown',
+        role: 'status',
+        'aria-live': 'polite',
+      }, [
+        el('span', { class: 'attention-queue-unknown-badge' }, t('board.attentionQueueUnknown')),
+        el('span', { class: 'attention-queue-unknown-text' }, t('board.attentionQueueUnknownText')),
+      ]);
+      const header = el('div', { class: 'attention-queue-header' }, [
+        el('div', { class: 'attention-queue-heading' }, [
+          el('span', { class: 'attention-queue-badge-icon', 'aria-hidden': 'true' }, '⚠'),
+          el('h2', { class: 'attention-queue-title' }, t('board.attentionQueue')),
+        ]),
+      ]);
+      section.appendChild(header);
+      section.appendChild(unknownEl);
+      return section;
+    }
+
+    const totalCount = queue.length;
+    const header = el('div', { class: 'attention-queue-header' }, [
+      el('div', { class: 'attention-queue-heading' }, [
+        el('span', { class: 'attention-queue-badge-icon', 'aria-hidden': 'true' }, '⚠'),
+        el('h2', { class: 'attention-queue-title' }, t('board.attentionQueue')),
+        el('span', { class: 'attention-queue-total-count' }, String(totalCount)),
+      ]),
+    ]);
+    section.appendChild(header);
+
+    if (totalCount === 0) {
+      const emptyEl = el('div', {
+        class: 'attention-queue-empty',
+        role: 'status',
+        'aria-live': 'polite',
+      }, t('board.attentionQueueEmpty'));
+      section.appendChild(emptyEl);
+    }
+
+    const needsHumanItems = [];
+    const blockedItems = [];
+    for (const item of queue) {
+      if (!item || typeof item !== 'object') continue;
+      const key = classifyAttentionState(item.state);
+      if (key === 'needs_human') {
+        needsHumanItems.push(item);
+      } else {
+        blockedItems.push(item);
+      }
+    }
+
+    const groupsEl = el('div', { class: 'attention-queue-groups' }, [
+      buildAttentionGroupEl('needs_human', t('board.attentionQueueNeedsHuman'), needsHumanItems),
+      buildAttentionGroupEl('blocked', t('board.attentionQueueBlocked'), blockedItems),
+    ]);
+    section.appendChild(groupsEl);
+
+    return section;
+  }
+
+  function buildAttentionGroupEl(groupKey, groupTitle, items) {
+    const groupEl = el('div', { class: `attention-queue-group attention-group-${groupKey.replace('_', '-')}` });
+    const header = el('div', { class: 'attention-group-header' }, [
+      el('div', { class: 'attention-group-title-wrap' }, [
+        el('span', { class: `attention-group-dot ${groupKey === 'needs_human' ? 'needs-human' : 'blocked'}` }),
+        el('h3', { class: 'attention-group-title' }, groupTitle),
+      ]),
+      el('span', { class: 'attention-group-count' }, String(items.length)),
+    ]);
+    groupEl.appendChild(header);
+
+    if (!items.length) {
+      groupEl.appendChild(el('div', { class: 'attention-group-empty' }, t('board.attentionQueueGroupEmpty')));
+    } else {
+      const list = el('ul', { class: 'attention-queue-items', role: 'list' });
+      for (const item of items) {
+        list.appendChild(buildAttentionItemEl(item));
+      }
+      groupEl.appendChild(list);
+    }
+    return groupEl;
+  }
+
+  function buildAttentionItemEl(item) {
+    const id = item.identifier || '';
+    const activate = () => {
+      if (boardIsStale()) return;
+      openDrawer(id);
+    };
+
+    const row = el('li', {
+      class: 'attention-item-row',
+      onClick: () => {
+        activate();
+      },
+    });
+
+    const top = el('div', { class: 'attention-item-top' });
+    const idBtn = el('button', {
+      type: 'button',
+      class: 'attention-item-id-btn',
+      'aria-label': t('board.attentionOpenTicketAria', { id }),
+      onClick: (e) => {
+        e.stopPropagation();
+        activate();
+      },
+    }, id);
+    top.appendChild(idBtn);
+
+    if (item.parent_identifier) {
+      const parentEl = el('span', {
+        class: 'attention-item-parent',
+        title: t('board.attentionParentTitle', { parent: item.parent_identifier }),
+      }, t('board.attentionParentPrefix', { parent: item.parent_identifier }));
+      top.appendChild(parentEl);
+    }
+
+    if (item.state) {
+      const stateBadge = el('span', {
+        class: `attention-item-state-badge state-${classifyAttentionState(item.state)}`,
+      }, item.state);
+      top.appendChild(stateBadge);
+    }
+    row.appendChild(top);
+
+    const rawReason = typeof item.reason === 'string' ? item.reason.trim() : '';
+    const reasonText = rawReason || t('board.attentionFallbackReason');
+    const reasonEl = el('div', { class: 'attention-item-reason' }, reasonText);
+    row.appendChild(reasonEl);
+
+    return row;
+  }
+
   function renderBoardColumns(scrollEl) {
     if (!scrollEl) return;
     clearNode(scrollEl);
@@ -1821,7 +1974,7 @@
       scrollEl.appendChild(buildBoardSkeleton());
       return;
     }
-    const { columns, issues, live, board } = state.board;
+    const { columns, issues, live, board, attention_queue } = state.board;
     const query = state.search.trim().toLowerCase();
     const filtered = query ? issues.filter((issue) => matchesSearch(issue, query)) : issues;
     const byColumn = new Map(columns.map((c) => [c.name, []]));
@@ -1832,6 +1985,7 @@
     const visibleColumns = visibleBoardColumns(columns);
     const mobileSingleLane = isMobileBoardViewport() && state.boardScope !== 'all';
     const layout = el('div', { class: `board-layout${state.boardScope === 'all' ? ' all-columns' : ''}${mobileSingleLane ? ' mobile-single-lane' : ''}` });
+    layout.appendChild(buildAttentionQueueEl(attention_queue));
     const grid = el('div', { class: 'board-columns' });
     if (mobileSingleLane) layout.appendChild(buildMobileLaneTabs(visibleColumns));
     const columnsToRender = mobileSingleLane

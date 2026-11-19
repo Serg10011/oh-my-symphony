@@ -20,7 +20,9 @@ from symphony import api_team
 from symphony.orchestrator import Orchestrator
 from symphony.server import build_app
 from symphony.workflow import WorkflowState
+from test_api_completion import local_git
 from test_api_delivery import FakeGitHub, action, attest
+from test_api_group_release import another_card, mark_installed, merged_release, visit
 from test_api_plan import basic_board as basic_board
 from test_api_plan import planning_board as planning_board
 from test_api_project import git
@@ -31,8 +33,11 @@ from tests.test_webapi import _StubOrchestrator
 
 import api_board
 import api_cloud_check as cloud
+import api_completion
 import api_final
+import api_group_release as group
 import api_session as session
+import release_verification
 
 NATIVE_RUN = session.sandbox.run
 PASSING_SCRIPT = """\
@@ -155,14 +160,18 @@ def test_composed_documentation_uses_targeted_check_and_skips_full_suite(plannin
     assert json.loads((board.root / "final-local.json").read_text())["tests"] == "targeted"
 
 
-def test_cloud_board_reuses_normal_publication_offer_and_verified_run(planning_board, final_runs, monkeypatch, tmp_path):
-    board = planning_board
+def configure_cloud(board):
     raw = json.loads(board.settings.read_text())
     board.settings.write_text(json.dumps({**raw, "cloud_check": cloud.PROFILE}))
     config = board.workflow.parent / "project.toml"
     with config.open("a") as stream:
         stream.write(f'\n[delivery]\nrepo = "{cloud.REPO}"\nbase = "our-main"\n')
     git(board.repo, "remote", "add", "origin", f"https://github.com/{cloud.REPO}.git")
+
+
+def test_cloud_board_reuses_normal_publication_offer_and_verified_run(planning_board, final_runs, monkeypatch, tmp_path):
+    board = planning_board
+    configure_cloud(board)
     with monkeypatch.context() as startup:
         startup.setattr(cloud, "discover", lambda *a: {})
         assert finish_parts(board) == {}
@@ -176,6 +185,79 @@ def test_cloud_board_reuses_normal_publication_offer_and_verified_run(planning_b
     assert ready["final"]["status"] == "ready" and ready["final"]["commit"] == initial["commit"]
     assert ready["board_stages"][-3:] == ["Verify", "Document", "Human Review"]
     assert len(hub.pushes) == 1 and hub.pr is None and not final_runs
+
+
+@pytest.mark.parametrize("fixes", [False, True])
+def test_composed_card_uses_the_checked_common_release(planning_board, final_runs, monkeypatch, tmp_path, fixes):
+    board = planning_board
+    configure_cloud(board)
+    scripts = board.workflow.parent
+    (scripts / "setup.sh").write_text("exit 0\n")
+    (scripts / "test.sh").write_text(PASSING_SCRIPT)
+    monkeypatch.setattr(cloud, "discover", lambda *a: {})
+    finish_parts(board)
+    other = another_card(board, "print('updated')\n", path="src/main.py")
+    assert other.card()[0]["state"] == "Verify"
+    source = tmp_path / "service-source"
+    local_git(tmp_path, "clone", "--quiet", "--branch", "our-main", str(board.repo), str(source))
+    monkeypatch.setattr(api_completion, "SOURCE_ROOT", source)
+    candidate = board._load()["candidate"]
+    memo_text = git(board.root / "candidate.git", "show", f"{candidate['commit']}:src/memo.md").decode()
+    head, merge, remote, _ = merged_release(board, {"README.md": "[Мануал](src/memo.md)\n",
+                                                  "src/memo.md": memo_text, "src/main.py": "print('updated')\n"},
+                                            fixes={"src/memo.md": memo_text + "\nУточнение.\n"} if fixes else None)
+    before = git(board.repo, "rev-parse", f"{head}^").decode().strip() if fixes else None
+    cards = [board, other]
+    path = tmp_path / "release.json"
+    _, tree, _ = release_verification.revision(board.repo, head)
+    hashes = release_verification.script_digests(scripts)
+    proof = {"commit": head, "tree": tree, "tree_after": tree, "tracked_files_clean": True,
+             "attempt": 1, "passed": True, "test_exit_code": 0,
+             "test_script": str(scripts / "test.sh"), "test_script_sha256": hashes["test.sh"],
+             "setup_script_sha256": hashes["setup.sh"], "counts": {"passed": 2, "skipped": 0, "failed": 0}}
+    with pytest.raises(group.ReleaseError, match="group_release_card_changed"):
+        group.preview(cards, 21, head, publisher=remote)
+    for wrong in ({"commit": candidate["commit"]}, {"tree": candidate["tree"], "tree_after": candidate["tree"]},
+                  {"test_script_sha256": "0" * 64}, {"passed": False}):
+        path.write_text(json.dumps({**proof, **wrong}))
+        with pytest.raises(group.ReleaseError, match="group_release_verification_invalid"):
+            group.preview(cards, 21, head, publisher=remote, verified_release=path)
+    path.write_text(json.dumps(proof))
+    if fixes:
+        with pytest.raises(group.ReleaseError, match="group_release_missing_changes"):
+            group.preview(cards, 21, head, publisher=remote, verified_release=path)
+        with pytest.raises(group.ReleaseError, match="group_release_fixes_invalid"):
+            group.preview(cards, 21, head, publisher=remote, verified_release=path,
+                          before_fixes=proof["commit"])
+    original = board._load()
+    board._save({**original, "release_check": {"published": True}})
+    with pytest.raises(group.ReleaseError, match="group_release_card_changed"):
+        group.preview(cards, 21, head, publisher=remote, verified_release=path, before_fixes=before)
+    board._save(original)
+
+    shown = group.preview(cards, 21, head, publisher=remote, verified_release=path, before_fixes=before)
+    if fixes:
+        amendment = shown["release"]["reviewed_fixes"]
+        assert amendment["before_commit"] == before and list(amendment["files"]) == ["src/memo.md"]
+    assert group.record(cards, 21, head, shown["offer"], publisher=remote, verified_release=path,
+                        before_fixes=before) == shown
+    grouped = board.show()
+    assert grouped["final"] == {"status": "ready", "method": "release", "commit": head, "tree": tree}
+    assert grouped["release"]["completion"]["status"] == "waiting_installation"
+    assert "Тесты прошли — 2" in grouped["report_text"]
+    assert "cloud_check" not in grouped
+    with pytest.raises(api_board.BoardError, match="cloud_not_enabled"):
+        board.attach_check("12345")
+    assert board.card()[0]["state"] == "Verify"
+
+    mark_installed(board, source, merge)
+    visit(board)
+    assert all(card.card()[0]["state"] == "Done" for card in cards)
+    assert board.show()["release"]["completion"]["status"] == "done"
+    review = board.review()
+    assert review["commit"] == candidate["commit"] and review["source"] == "original_candidate"
+    assert [file["path"] for file in review["files"]] == ["README.md", "src/memo.md"]
+    assert not final_runs
 
 
 @pytest.mark.asyncio

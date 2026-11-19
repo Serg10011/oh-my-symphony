@@ -32,6 +32,7 @@ from ..workflow import (
 from ..workflow.mutate import WorkflowMutationError
 from .context import _Ctx
 from .payloads import (
+    _attention_queue_payload,
     _columns_payload,
     _issue_card,
     _json_safe,
@@ -180,17 +181,27 @@ def _register_issue_routes(
     async def handle_board(_request: web.Request) -> web.Response:
         cfg = ctx.config()
         issues: list[dict[str, Any]] = []
+        attention_queue: list[dict[str, Any]] = []
         read_only = cfg.tracker.kind != "file"
         if not read_only:
             tracker = FileBoardTracker(cfg.tracker)
-            all_states = list(_valid_states(cfg).values())
+            # Persisted attention cards must remain visible even if an operator
+            # has since removed their lane from the workflow configuration.
+            all_states = list(dict.fromkeys([
+                *_valid_states(cfg).values(), "needs_human", "Needs Human", "Blocked",
+                "Нужна помощь", "Нужна_помощь", "Заблокирована", "Заблокирован", "Заблокировано",
+            ]))
             fetched = await asyncio.to_thread(
                 tracker.fetch_issues_by_states, all_states
             )
+            sorted_issues = sorted(fetched, key=registration_order_key)
             issues = [
                 _issue_card(i, attention=orchestrator.issue_attention(i))
-                for i in sorted(fetched, key=registration_order_key)
+                for i in sorted_issues
             ]
+            attention_queue = await asyncio.to_thread(
+                _attention_queue_payload, sorted_issues, cfg
+            )
         return web.json_response(
             {
                 "board": {
@@ -208,6 +219,7 @@ def _register_issue_routes(
                 "columns": _columns_payload(cfg),
                 "issues": issues,
                 "live": _live_by_identifier(orchestrator),
+                "attention_queue": attention_queue,
             }
         )
 

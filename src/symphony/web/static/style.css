@@ -2374,3 +2374,310 @@ a { color: inherit; }
 .api-team-spend-incomplete { border-color: var(--warning); }
 .api-team-spend dd[data-incomplete="true"] { font-weight: 600; }
 .api-team-spend .form-hint[data-incomplete="true"] { color: var(--danger); }
+
+/* ------------------------------------------------------------------ */
+/* Page: Board — Attention Queue (OMS-18/2)                           */
+/* ------------------------------------------------------------------ */
+
+.attention-queue {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8889rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 1rem 1.1852rem;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.attention-queue-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7407rem;
+  flex-wrap: wrap;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.attention-queue-heading {
+  display: flex;
+  align-items: center;
+  gap: 0.5926rem;
+  min-width: 0;
+}
+
+.attention-queue-badge-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: var(--radius-sm);
+  background: var(--warning);
+  color: #ffffff;
+  font-weight: 700;
+  font-size: 0.85rem;
+  flex-shrink: 0;
+}
+
+.attention-queue-title {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.2;
+}
+
+.attention-queue-total-count {
+  display: inline-block;
+  padding: 0.1rem 0.5rem;
+  border-radius: 9999px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.attention-queue-unknown {
+  display: flex;
+  align-items: center;
+  gap: 0.5926rem;
+  padding: 0.5926rem 0.8889rem;
+  background: var(--surface-2);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 0.8889rem;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.attention-queue-unknown-badge {
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--surface-3);
+  padding: 0.15rem 0.45rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  flex-shrink: 0;
+}
+
+.attention-queue-unknown-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.attention-queue-empty {
+  padding: 0.5926rem 0.8889rem;
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 0.8889rem;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.attention-queue-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.1852rem;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.attention-queue-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5926rem;
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  padding: 0.7407rem;
+  border: 1px solid var(--border);
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.attention-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+.attention-group-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.attention-group-dot {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.attention-group-dot.needs-human {
+  background: var(--warning);
+}
+
+.attention-group-dot.blocked {
+  background: var(--danger);
+}
+
+.attention-group-title {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.attention-group-count {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.attention-group-empty {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  padding: 0.5rem 0.3rem;
+  font-style: italic;
+}
+
+.attention-queue-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.attention-item-row {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.6rem 0.75rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  user-select: text;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.attention-item-row:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+
+.attention-item-top {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.attention-item-id-btn {
+  font-family: inherit;
+  font-size: 0.88rem;
+  font-weight: 700;
+  color: var(--accent);
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.attention-item-id-btn:hover {
+  color: var(--accent-hover);
+}
+
+.attention-item-id-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  border-radius: var(--radius-sm);
+}
+
+.attention-item-parent {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.05rem 0.35rem;
+}
+
+.attention-item-state-badge {
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.05rem 0.35rem;
+  border-radius: var(--radius-sm);
+  margin-left: auto;
+}
+
+.attention-item-state-badge.state-needs_human {
+  background: var(--p1-bg);
+  color: var(--p1);
+}
+
+.attention-item-state-badge.state-blocked {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.attention-item-reason {
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  white-space: pre-wrap;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* Mobile responsive layout */
+@media (max-width: 768px) {
+  .attention-queue-groups {
+    grid-template-columns: 1fr;
+  }
+  .attention-queue {
+    padding: 0.75rem;
+  }
+}
+
+.attention-item-top > * {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}

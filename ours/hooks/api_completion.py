@@ -69,7 +69,8 @@ def view(board, value, record):
     elif state.get("reason"):
         status = "blocked"
     else:
-        status = "waiting_installation" if "merge_commit" in state else "waiting_merge"
+        merged = "merge_commit" in state or record.get("kind") == "group_release"
+        status = "waiting_installation" if merged else "waiting_merge"
     reason = state.get("reason") if status == "blocked" else None
     return {"status": status, "message": MESSAGES[reason or status],
             **({"reason": reason} if reason else {}),
