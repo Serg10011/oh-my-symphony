@@ -7,7 +7,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, ROUND_CEILING
 import re
 
-from api_executor import FLASH_WORKER
+from api_executor import FLASH_WORKER, SOL_62_MODEL
 
 CATALOG = {
     "version": "2026-11-03-standard-peak-v2", "verified_on": "2026-11-03", "valid_until": "2026-11-10",
@@ -20,6 +20,14 @@ CATALOG = {
                        "long_context": True, "regional_factor": "1.1"},
         "gpt-6.1-sol": {"input": "2", "cached": "0.10", "write": "5", "output": "10",
                         "long_context": True, "regional_factor": "1.1"},
+    },
+}
+SOL_62_CATALOG = {
+    "version": "2026-11-19-sol-6.2-standard-v1", "verified_on": "2026-11-19", "valid_until": "2026-11-26",
+    "models": {
+        SOL_62_MODEL: {"input": "2", "cached": "0.10", "write": "5", "output": "10",
+                       "long_context": True, "regional_factor": "1.1"},
+        "gpt-6-luna": dict(CATALOG["models"]["gpt-6-luna"]),
     },
 }
 MONEY = re.compile(r"(?:0|[1-9][0-9]{0,5})(?:\.[0-9]{1,6})?\Z")
@@ -54,13 +62,18 @@ def validate(raw) -> dict:
     return {"max_usd": display(amount), "input_tokens_total": tokens}
 
 
-def snapshot() -> dict:
-    fresh(CATALOG)
-    return deepcopy(CATALOG)
+def catalog_for(model: str | None) -> dict:
+    return SOL_62_CATALOG if model == SOL_62_MODEL else CATALOG
+
+
+def snapshot(model: str | None = None) -> dict:
+    catalog = catalog_for(model)
+    fresh(catalog)
+    return deepcopy(catalog)
 
 
 def fresh(catalog: dict) -> None:
-    if catalog != CATALOG:
+    if catalog not in (CATALOG, SOL_62_CATALOG):
         raise BudgetError("tariff_snapshot_changed")
     if not date.fromisoformat(catalog["verified_on"]) <= today() <= date.fromisoformat(catalog["valid_until"]):
         raise BudgetError("tariff_expired")

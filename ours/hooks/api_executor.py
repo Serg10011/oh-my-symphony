@@ -19,9 +19,12 @@ from api_flash_probe import MODEL as FLASH_MODEL
 MAX_REQUEST_BYTES = 16 * 1024 * 1024
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 DEFAULT_OUTPUT_TOKENS = 4096
-# Published provider limits, verified 2026-11-04; Pro is retained for history.
+SOL_62_MODEL = "gpt-6.2-sol"
+SOL_62_LEAD = "sol-62-lead"
+SOL_LEAD_PROFILES = ("sol-lead", SOL_62_LEAD)
+# Published provider limits; Sol 6.2 verified 2026-11-19. Pro is retained for history.
 MODEL_OUTPUT_LIMITS = {"deepseek-flash": 393216, "deepseek-v4-pro": 393216,
-                       "gpt-6-luna": 128000, "gpt-6.1-sol": 128000}
+                       "gpt-6-luna": 128000, "gpt-6.1-sol": 128000, SOL_62_MODEL: 128000}
 MAX_OUTPUT_TOKENS = max(MODEL_OUTPUT_LIMITS.values())
 TIMEOUT_SECONDS = 120
 GENERATION_READ_TIMEOUT_SECONDS = 600
@@ -45,6 +48,8 @@ PROFILES = {
                            "https://api.openai.com/v1/responses", "OPENAI_API_KEY"),
     "sol-lead": Profile("sol-lead", "openai", "gpt-6.1-sol", "medium",
                         "https://api.openai.com/v1/responses", "OPENAI_API_KEY"),
+    SOL_62_LEAD: Profile(SOL_62_LEAD, "openai", SOL_62_MODEL, "high",
+                         "https://api.openai.com/v1/responses", "OPENAI_API_KEY"),
 }
 FLASH_WORKER = "flash-worker"
 FLASH_PROFILE = Profile(FLASH_WORKER, "antigravity", FLASH_MODEL, "high", None, None)
@@ -162,9 +167,17 @@ def prepare(name: str, request: dict) -> tuple[Profile, dict]:
             raise ExecutorError("invalid_reasoning_context")
         body["reasoning"]["context"] = "all_turns"
     if "instructions" in request:
-        if not isinstance(request["instructions"], str):
+        instructions = request["instructions"]
+        if not isinstance(instructions, str):
             raise ExecutorError("invalid_instructions")
-        body["instructions"] = request["instructions"]
+        if profile.model != SOL_62_MODEL:
+            body["instructions"] = instructions
+        elif instructions:
+            # GPT-6.2 bills top-level instructions as uncached input on every turn.
+            history = body["input"]
+            if isinstance(history, str):
+                history = [{"role": "user", "content": history}]
+            body["input"] = [{"role": "developer", "content": instructions}, *history]
     tools = request.get("tools", [])
     if not isinstance(tools, list):
         raise ExecutorError("invalid_tools")

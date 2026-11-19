@@ -32,6 +32,21 @@ def test_choices_are_free_and_old_confirmation_cannot_buy_a_different_pair(board
     assert board.teams.directory([board.identifier])["assignments"][board.identifier] == SOL_PAIR
 
 
+def test_selecting_sol_62_for_new_cards_preserves_old_sol_assignments(board):
+    previous = {"lead_profile": "sol-lead", "worker_profile": "flash-worker"}
+    replacement = {**previous, "lead_profile": "sol-62-lead"}
+    original = board.prepare(previous)
+    board.confirm(original["confirmation_token"])
+
+    board.teams.save(replacement)
+    directory = board.teams.directory([board.identifier])
+
+    assert directory["default"] == replacement
+    assert directory["assignments"][board.identifier] == previous
+    assert directory["models"]["sol-lead"] == "gpt-6.1-sol"
+    assert directory["models"]["sol-62-lead"] == "gpt-6.2-sol"
+
+
 def test_one_assignment_moves_through_real_stages_and_keeps_approved_team(board, monkeypatch):
     board.context["active_states"] = ["Todo", "In Progress", "Verify", "Document"]
     config = json.loads(board.settings.read_text())
