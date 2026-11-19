@@ -2,7 +2,7 @@
 
 import asyncio
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 import hashlib
 import json
 import os
@@ -17,6 +17,7 @@ import pytest
 
 from symphony import api_team
 from symphony.orchestrator import Orchestrator
+from symphony.orchestrator.entries import RunningEntry
 from symphony.server import build_app
 from symphony.trackers.file import write_ticket_atomic
 from symphony.workflow import WorkflowState
@@ -177,7 +178,8 @@ def test_restart_repairs_partially_queued_card_and_never_replays_interrupted_chi
         first.run("f" * 32)
 
 
-def stopped_flash_part(board, tmp_path, monkeypatch, *, checked_first=False, legacy=False):
+def stopped_flash_part(board, tmp_path, monkeypatch, *, checked_first=False, legacy=False, claim=None,
+                       quota_exhausted=False):
     settings = json.loads(board.settings.read_text())
     settings.update(session={"lead_profile": "sol-lead", "worker_profile": api_board.api.FLASH_WORKER}, mode="economy")
     if checked_first:
@@ -212,9 +214,16 @@ def stopped_flash_part(board, tmp_path, monkeypatch, *, checked_first=False, leg
 
         monkeypatch.setattr(session, "_stop", stop)
     transport, requests = lead_frames(sol(calls=[assignment(message="Prepare the test.")]))
-    result = child.run("f" * 32, credentials=lambda _: KEYS, transport=transport)
-    assert result["reason"] == ("flash_worker_failed" if legacy else "flash_region_unsupported"), result
-    assert len(requests) == 1
+    run_id = claim(child) if claim else "f" * 32
+    with monkeypatch.context() as worker:
+        if quota_exhausted:
+            worker.setattr(api_board.gemini_quota, "blocked_until", lambda _: datetime.now(timezone.utc) + timedelta(hours=1))
+        result = child.run(run_id, credentials=lambda _: KEYS, transport=transport)
+    reason = "flash_worker_failed" if legacy else "flash_region_unsupported"
+    if quota_exhausted:
+        reason = "flash_quota_exhausted"
+    assert result["reason"] == reason, result
+    assert len(requests) == (0 if quota_exhausted else 1)
     tick(board)
     assert board.card()[0]["state"] == "needs_human"
     return first, second, token
@@ -300,6 +309,108 @@ def test_confirmed_retry_reuses_saved_plan_and_cost_history(planning_board, chec
     assert api_subtasks._load(board)["status"] == "complete"
     assert board.card()[0]["state"] == "Verify" and len(checks) == 2
     assert board._load()["candidate"]["base_commit"] == original_base
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["complete", "early_failure", "quota", "operator_pause", "cancelled"])
+async def test_dispatches_a_confirmed_retry_once_after_restart(planning_board, checks, tmp_path, monkeypatch, outcome):
+    board = planning_board
+    board.workflow.write_text(board.workflow.read_text().replace("\nagent:\n", "\nlevels:\n  simple: {}\nagent:\n", 1))
+    workflow = WorkflowState(board.workflow)
+    cfg, error = workflow.reload()
+    assert cfg and not error
+    orch = Orchestrator(workflow)
+    orch._ensure_run_registry(cfg)
+    registry = orch._run_registry
+    assert registry is not None
+
+    def claim(child):
+        issue = child.tracker.fetch_issue_full_by_id(child.identifier)
+        assert issue is not None
+        run_id = registry.acquire_run(issue, workspace_path=tmp_path, attempt=None,
+                                      attempt_kind="initial", agent_kind="api-team")
+        assert run_id
+        orch._running[issue.id] = RunningEntry(issue, datetime.now(timezone.utc), None, None, tmp_path,
+                                               agent_kind="api-team", execution_mode="api-team-v1", run_id=run_id)
+        return run_id
+
+    first, child, _ = stopped_flash_part(board, tmp_path, monkeypatch, checked_first=True, claim=claim,
+                                         quota_exhausted=outcome == "quota")
+    issue = child.tracker.fetch_issue_full_by_id(child.identifier)
+    assert issue is not None
+    if outcome == "operator_pause":
+        assert orch.pause_worker(issue.id)
+    await orch._on_worker_exit(issue.id, "api_team_finished", None)
+    assert orch.is_paused(issue.id)
+    saved_session = child.session_path
+    old_bytes = saved_session.read_bytes() if saved_session.exists() else None
+    first_bytes = first.path.read_bytes()
+    token = board.prepare_subtasks()["confirmation_token"]
+    assert not api_team.confirmed_subtask_retry(cfg, issue)
+    board.start_subtasks(token)
+    if outcome == "cancelled":
+        board.stop()
+    registry.close()
+
+    resumed = Orchestrator(workflow)
+    resumed._ensure_run_registry(cfg)
+    assert resumed._run_registry is not None and resumed.is_paused(issue.id)
+    calls = []
+
+    async def invoke(cfg, kind, identifier, action, **kw):
+        if action == "sync-checks":
+            return tick(board)
+        assert action == "run" and kind == "api-team" and identifier == child.identifier
+        calls.append(kw["run_id"])
+        if outcome in {"early_failure", "quota"}:
+            raise TimeoutError("runner exited before opening the paid session")
+        digest = hashlib.sha256((board.repo / "README.md").read_bytes()).hexdigest()
+        write = tool("write_project_file", "link", path="README.md", text="[Мануал](src/memo.md)\n",
+                     expected_sha256=digest)
+        transport, requests = lead_frames(sol(calls=[write]), sol("Готово"))
+        result = child.run(kw["run_id"], credentials=lambda _: KEYS, transport=transport)
+        assert result["subtask"]["check"]["status"] == "passed" and len(requests) == 2
+        return result
+
+    monkeypatch.setattr(api_team, "invoke", invoke)
+    try:
+        if outcome == "early_failure":
+            with monkeypatch.context() as unavailable:
+                unavailable.setattr(resumed, "_try_acquire_run_lease", lambda **_: SimpleNamespace(run_id=""))
+                await resumed._on_tick()
+            assert not calls and issue.id not in resumed._running
+        await resumed._on_tick()
+        if outcome in {"operator_pause", "cancelled"}:
+            assert issue.id not in resumed._running and resumed.is_paused(issue.id) and not calls
+            return
+        if running := resumed._running.get(issue.id):
+            assert running.worker_task
+            await asyncio.wait_for(running.worker_task, 10)
+        if resumed._cloud_check_task:
+            await resumed._cloud_check_task
+        assert len(calls) == 1 and resumed.is_paused(issue.id)
+        run_id = calls[0]
+        if outcome in {"early_failure", "quota"}:
+            assert child._load()["status"] == "queued" and not child.session_path.exists()
+        else:
+            tick(board)
+            assert child.card()[0]["state"] == "Done" and board.card()[0]["state"] == "Verify"
+        board.start_subtasks(token)
+        resumed._run_registry.close()
+        resumed = Orchestrator(workflow)
+        resumed._ensure_run_registry(cfg)
+        assert resumed.is_paused(issue.id)
+        await resumed._on_tick()
+        if resumed._cloud_check_task:
+            await resumed._cloud_check_task
+        assert calls == [run_id] and issue.id not in resumed._running
+        assert (saved_session.read_bytes() if saved_session.exists() else None) == old_bytes
+        assert first.path.read_bytes() == first_bytes
+    finally:
+        if resumed._cloud_check_task:
+            await resumed._cloud_check_task
+        if resumed._run_registry is not None:
+            resumed._run_registry.close()
 
 
 def test_retry_refuses_changed_card_after_preview(planning_board, tmp_path, monkeypatch):

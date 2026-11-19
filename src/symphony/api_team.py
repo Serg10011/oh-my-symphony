@@ -638,6 +638,48 @@ def confirmed_in_queue(cfg: ServiceConfig, identifier: str) -> bool:
     return bool(data and data.get("status") == "queued" and data.get("confirmed_at"))
 
 
+def confirmed_subtask_retry(cfg: ServiceConfig, issue: Issue) -> tuple[str | None, datetime] | None:
+    """Identify the stopped run that a queued retry is approved to replace."""
+    if (not cfg.tracker.active_states or issue.state.casefold() != cfg.tracker.active_states[0].casefold()
+            or not uses_board_queue(cfg, cfg.agent.kind_for_state(issue.state, issue.agent_kind))):
+        return None
+    data = _read_assignment(cfg, issue.identifier)
+    if not data or data.get("status") != "queued":
+        return None
+    attempt, link, confirmed = (data.get(key) for key in ("attempt_id", "subtask", "confirmed_at"))
+    if (not isinstance(attempt, str) or not re.fullmatch(r"[0-9a-f]{32}", attempt)
+            or not isinstance(link, dict) or not isinstance(confirmed, str) or len(confirmed) > 48):
+        return None
+    parent = link.get("parent")
+    if not isinstance(parent, str):
+        return None
+    plan = _read_subtasks(cfg, parent)
+    if not plan or plan.get("status") != "active" or plan.get("confirmed_at") != confirmed:
+        return None
+    retry, history = plan.get("retry"), plan.get("previous_attempts")
+    if (not isinstance(retry, dict) or retry.get("identifier") != issue.identifier
+            or retry.get("attempt_id") != attempt or retry.get("restore_pending") is not False
+            or not plan.get("fingerprint") or plan["fingerprint"] != link.get("fingerprint")
+            or not isinstance(history, list) or not history):
+        return None
+    previous = history[-1]
+    if not isinstance(previous, dict) or previous.get("identifier") != issue.identifier:
+        return None
+    run_id = previous.get("run_id")
+    if run_id is None:
+        if previous.get("reason") != "flash_quota_exhausted":
+            return None
+    elif not isinstance(run_id, str) or not re.fullmatch(r"[0-9a-f]{32}", run_id):
+        return None
+    try:
+        confirmed_at = datetime.fromisoformat(confirmed)
+    except ValueError:
+        return None
+    if confirmed_at.utcoffset() is None:
+        return None
+    return run_id, confirmed_at
+
+
 def verification_wait(cfg, issue, pause_reason: str | None) -> str | None:
     """Describe the free check of a finished API run; never grant dispatch or acceptance."""
     if (pause_reason != FINISHED_HOLD or cfg is None or issue.state.casefold() not in {"verify", "проверка"}
