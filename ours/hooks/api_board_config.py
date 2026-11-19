@@ -54,12 +54,12 @@ def session_options(raw, roles):
     lead = options.get("lead_profile", "deepseek-lead")
     configured_lead = raw["session"].get("lead_profile", "deepseek-lead")
     flash_worker = options.get("worker_profile") == api.FLASH_WORKER
-    if lead != configured_lead and lead != "sol-lead":
+    if lead != configured_lead and lead not in api.SOL_LEAD_PROFILES:
         options.pop("lead_escalation", None)
     if "mode" in raw:
         if "lead_effort" in raw["session"]:
             raise session.SessionError("invalid_api_board_settings")
-        if lead not in ("deepseek-lead", "sol-lead"):
+        if lead not in ("deepseek-lead", *api.SOL_LEAD_PROFILES):
             raise session.SessionError("invalid_composition")
         ordinary = "high" if "lead_escalation" in options or flash_worker else api.profile_for(lead).effort
         options["lead_effort"] = "max" if raw["mode"] == "productivity" else ordinary

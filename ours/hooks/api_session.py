@@ -212,7 +212,7 @@ def _text(value, limit: int, *, empty: bool = False) -> bool:
 
 
 def validate_composition(lead, worker):
-    if (lead not in ("deepseek-lead", "sol-lead") or worker not in (None, "luna-worker", api.FLASH_WORKER)
+    if (lead not in ("deepseek-lead", *api.SOL_LEAD_PROFILES) or worker not in (None, "luna-worker", api.FLASH_WORKER)
             or (lead == "deepseek-lead" and worker != "luna-worker")):
         raise SessionError("invalid_composition")
 
@@ -259,7 +259,7 @@ def validate_spec(raw: dict) -> dict:
     if planning:
         result["phase"] = "plan"
     if "lead_escalation" in raw or flash_worker:
-        if escalation != api_effort.POLICY or lead != "sol-lead" or effort not in {"high", "max"}:
+        if escalation != api_effort.POLICY or lead not in api.SOL_LEAD_PROFILES or effort not in {"high", "max"}:
             raise SessionError("invalid_lead_escalation")
         result["lead_escalation"] = api_effort.POLICY
     if "budget" in raw:
@@ -520,7 +520,7 @@ def create(path, spec: dict) -> dict:
             raise SessionError(str(exc)) from None
     if "budget" in spec:
         try:
-            state.update(budget_catalog=budget.snapshot(), preflights=[])
+            state.update(budget_catalog=budget.snapshot(state["profiles"]["lead"]["model"]), preflights=[])
             if any(p["model"] not in state["budget_catalog"]["models"]
                    for p in state["profiles"].values() if p and p["name"] != api.FLASH_WORKER):
                 raise budget.BudgetError("unpriced_model")
@@ -662,7 +662,7 @@ def _tariff(state: dict) -> tuple[dict, str]:
             and isinstance(pinned.get("models"), dict)):
         return pinned, "session_snapshot"
     # Freshness is not asserted here: an old session stays readable after tariff expiry.
-    return deepcopy(budget.CATALOG), "builtin_catalog"
+    return deepcopy(budget.catalog_for(state["profiles"]["lead"]["model"])), "builtin_catalog"
 
 
 def _request_usage(call: dict) -> dict:

@@ -1,7 +1,7 @@
 /* Names come from the saved assignment; choices are limited by the board catalog. */
 (function (root) {
   'use strict';
-  const names = { 'deepseek-flash': 'DeepSeek Flash 4.1', 'gpt-6.1-sol': 'Sol 6.1', 'gpt-6-luna': 'Luna',
+  const names = { 'deepseek-flash': 'DeepSeek Flash 4.1', 'gpt-6.1-sol': 'Sol 6.1', 'gpt-6.2-sol': 'Sol 6.2', 'gpt-6-luna': 'Luna',
     'gemini-3.8-flash-high': 'Gemini 3.8 Flash' };
   const name = id => names[id] || id;
   const cache = new Map();

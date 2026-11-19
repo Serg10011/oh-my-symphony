@@ -259,7 +259,9 @@ def test_cli_entry_point_from_another_directory(tmp_path):
     result = subprocess.run([sys.executable, str(ROOT / "ours/bin/api-executor"), "profiles"],
                             cwd=tmp_path, capture_output=True, text=True, timeout=15)
     assert result.returncode == 0 and result.stderr == ""
-    assert {p["model"] for p in json.loads(result.stdout)["profiles"]} == {"deepseek-flash", "gpt-6-luna", "gpt-6.1-sol"}
+    assert {p["model"] for p in json.loads(result.stdout)["profiles"]} == {
+        "deepseek-flash", "gpt-6-luna", "gpt-6.1-sol", "gpt-6.2-sol",
+    }
 
 
 def test_cli_bad_json_and_missing_file_are_clean_errors(tmp_path, capsys):

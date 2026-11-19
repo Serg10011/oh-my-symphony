@@ -27,6 +27,7 @@ def offline(monkeypatch):
     ("deepseek-lead", "deepseek-flash", 393216),
     ("luna-worker", "gpt-6-luna", 128000),
     ("sol-lead", "gpt-6.1-sol", 128000),
+    ("sol-62-lead", "gpt-6.2-sol", 128000),
 ])
 def test_provider_boundary_is_sent_exactly_and_excess_is_rejected_before_network(profile, model, cap):
     transport, sent = exchange([frame(model=model)])

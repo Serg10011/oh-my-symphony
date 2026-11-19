@@ -137,8 +137,8 @@ for turn, line in enumerate(sys.stdin.buffer, 1):
 '''
 
 
-def approve_flash(board):
-    preview = board.prepare(TEAM)
+def approve_flash(board, team=TEAM):
+    preview = board.prepare(team)
     assert preview["profiles"]["worker"]["provider"] == "antigravity"
     assert preview["profiles"]["lead"]["effort"] == "high" and preview["lead_escalation"] == "high-to-max"
     return board.confirm(preview["confirmation_token"])
@@ -153,14 +153,14 @@ def fake_worker(tmp_path, monkeypatch, mode="normal"):
     return log
 
 
-def lead_frames(*frames):
+def lead_frames(*frames, model="gpt-6.1-sol"):
     replies, recorded = iter(frames), []
 
     def handler(request):
         assert request.url.host == "api.openai.com"
         assert request.headers["authorization"] == "Bearer " + KEYS["OPENAI_API_KEY"]
         body = json.loads(request.content)
-        assert body["model"] == "gpt-6.1-sol"
+        assert body["model"] == model
         if request.url.path.endswith("/input_tokens"):
             return httpx.Response(200, json={"object": "response.input_tokens", "input_tokens": 80})
         recorded.append(body)
@@ -169,32 +169,38 @@ def lead_frames(*frames):
     return httpx.MockTransport(handler), recorded
 
 
-def sol(text=None, calls=()):
-    return frame(text, calls, model="gpt-6.1-sol", service_tier="default")
+def sol(text=None, calls=(), *, model="gpt-6.1-sol"):
+    return frame(text, calls, model=model, service_tier="default")
 
 
 def assignment(**kwargs):
     return delegate(name="delegate_worker", **kwargs)
 
 
-def test_confirmed_flash_edits_only_the_task_copy_and_is_billed_separately(board, tmp_path, monkeypatch):
+@pytest.mark.parametrize("lead", ["sol-lead", api.SOL_62_LEAD])
+def test_confirmed_flash_edits_only_the_task_copy_and_is_billed_separately(board, tmp_path, monkeypatch, lead):
     path = fake_worker(tmp_path, monkeypatch)
     raw = json.loads(board.settings.read_text())
     raw["session"] = {"context": "Lead-only context", "limits": {"output_tokens_per_call": 1024},
                       "budget": {"max_usd": "1", "input_tokens_total": 1000}}
+    raw["mode"] = "economy"
     board.settings.write_text(json.dumps(raw))
     (board.repo / "private.txt").write_text("Private sentinel")
     git(board.repo, "add", "private.txt")
     git(board.repo, "commit", "-qm", "fixture denied file")
     git(board.repo, "branch", "-f", "our-main", "HEAD")
-    monkeypatch.setattr(budget, "today", lambda: datetime.fromisoformat(budget.CATALOG["verified_on"]).date())
-    assert approve_flash(board)["status"] == "queued"
+    lead_model = api.profile_for(lead).model
+    tariff = budget.catalog_for(lead_model)
+    monkeypatch.setattr(budget, "today", lambda: datetime.fromisoformat(tariff["verified_on"]).date())
+    assert approve_flash(board, {**TEAM, "lead_profile": lead})["status"] == "queued"
     transport, sent = lead_frames(
-        sol(calls=[assignment(message="Prepare the test.")]),
+        sol(calls=[assignment(message="Prepare the test.")], model=lead_model),
         sol(calls=[tool("read_project_file", "verify", path="tests/test_flash.py", offset=0, max_chars=4096),
-                   tool("raise_lead_effort", "raise", reason="Review the complete change")]),
-        sol(calls=[assignment(call_id="correction", kind="correction", message="Confirm the result.")]),
-        sol("Проверен тест в копии задачи."),
+                   tool("raise_lead_effort", "raise", reason="Review the complete change")], model=lead_model),
+        sol(calls=[assignment(call_id="correction", kind="correction", message="Confirm the result.")],
+            model=lead_model),
+        sol("Проверен тест в копии задачи.", model=lead_model),
+        model=lead_model,
     )
 
     def credentials(_):
@@ -204,6 +210,10 @@ def test_confirmed_flash_edits_only_the_task_copy_and_is_billed_separately(board
     result = board.run("a" * 32, credentials=credentials, transport=transport)
     assert result["status"] == "result", result.get("report_text")
     assert [request["reasoning"]["effort"] for request in sent] == ["high", "high", "max", "max"]
+    if lead == api.SOL_62_LEAD:
+        prefix = sent[0]["input"][0]
+        assert prefix["role"] == "developer" and "Lead-only context" in prefix["content"]
+        assert all("instructions" not in body and body["input"][0] == prefix for body in sent)
     assert "assert 2 + 2 == 4" in json.dumps(sent[2]["input"])
     assert result["session"]["parts"] == {"part_1": {"attempts": 2}}
     assert result["session"]["budget"]["preflight_requests"] == 4
@@ -212,6 +222,8 @@ def test_confirmed_flash_edits_only_the_task_copy_and_is_billed_separately(board
     report = session.report(board.session_path)
     assert report["cost"]["estimate_complete"] and report["cost"]["estimated_requests"] == 4
     assert report["cost"]["requests_without_estimate"] == 0
+    assert report["cost"]["tariff"]["version"] == tariff["version"]
+    assert report["by_model"][lead_model]["estimated_requests"] == 4
     assert report["by_model"][api.FLASH_MODEL]["estimated_usd"] is None
     rows = [json.loads(line) for line in path.read_text().splitlines()]
     flash_calls = [row for row in session._load(board.session_path)["calls"] if row["profile"] == api.FLASH_WORKER]

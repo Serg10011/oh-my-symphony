@@ -26,7 +26,11 @@ board = board_fixture
 @pytest.mark.browser_e2e
 @pytest.mark.skipif(os.environ.get("SYMPHONY_BROWSER_E2E") != "1", reason="requires local Chromium")
 @pytest.mark.asyncio
-async def test_settings_card_override_and_historical_names_in_chromium(board, tmp_path):
+@pytest.mark.parametrize(("lead", "worker", "label"), [
+    ("sol-lead", None, "Sol 6.1"),
+    ("sol-62-lead", "flash-worker", "Sol 6.2 + Gemini 3.8 Flash"),
+])
+async def test_settings_card_override_and_historical_names_in_chromium(board, tmp_path, lead, worker, label):
     pw = pytest.importorskip("playwright.async_api")
     cmd = shlex.join([sys.executable, "-B", str(Path(__file__).resolve().parents[1] / "hooks/api_board.py"),
                       "--settings", str(board.settings)])
@@ -78,10 +82,10 @@ async def test_settings_card_override_and_historical_names_in_chromium(board, tm
             await page.add_init_script("localStorage.setItem('symphony.lang','ru')")
             await page.goto(str(client.make_url("/#/settings")), wait_until="networkidle")
             settings = page.get_by_role("region", name="Команда по умолчанию")
-            await settings.get_by_label("Ведущий", exact=True).select_option("sol-lead")
-            await settings.get_by_label("Исполнитель", exact=True).select_option("")
+            await settings.get_by_label("Ведущий", exact=True).select_option(lead)
+            await settings.get_by_label("Исполнитель", exact=True).select_option(worker or "")
             await settings.get_by_role("button", name="Сохранить команду доски").click()
-            await pw.expect(settings.get_by_role("status")).to_contain_text("Сохранено")
+            await pw.expect(settings.get_by_role("status").filter(has_text="Сохранено")).to_be_visible()
             await settings.screenshot(path=tmp_path/"models-settings.png")
             await page.goto(str(client.make_url("/#/board")), wait_until="networkidle")
             if not await page.locator(".card", has_text="TEST-1").count():
@@ -89,7 +93,7 @@ async def test_settings_card_override_and_historical_names_in_chromium(board, tm
             old = page.locator(".card",has_text="TEST-1")
             new = page.locator(".card",has_text="TEST-2")
             await pw.expect(old.locator(".chip-agent")).to_have_text("api-team — DeepSeek Flash 4.1 + Luna")
-            await pw.expect(new.locator(".chip-agent")).to_have_text("api-team — Sol 6.1 (по умолчанию)")
+            await pw.expect(new.locator(".chip-agent")).to_have_text(f"api-team — {label} (по умолчанию)")
             await new.click()
             panel = page.get_by_role("region", name="API-команда")
             await panel.get_by_label("Другая команда для этой карточки").check()
@@ -98,9 +102,9 @@ async def test_settings_card_override_and_historical_names_in_chromium(board, tm
             await panel.get_by_role("button",name="Посмотреть назначение").click()
             await pw.expect(panel.get_by_role("button",name="Подтвердить платный запуск")).to_be_visible()
             await panel.screenshot(path=tmp_path/"models-card.png")
-            await panel.get_by_label("Ведущий",exact=True).select_option("sol-lead")
+            await panel.get_by_label("Ведущий",exact=True).select_option(lead)
             await pw.expect(panel.get_by_role("button",name="Подтвердить платный запуск")).to_be_hidden()
-            assert board.teams.default() == {"lead_profile": "sol-lead","worker_profile": None}
+            assert board.teams.default() == {"lead_profile": lead,"worker_profile": worker}
             assert not board.session_path.exists() and not (board.root.parent/"TEST-2/session.json").exists()
         finally:
             await browser.close()
