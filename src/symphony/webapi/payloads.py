@@ -6,7 +6,15 @@ import heapq
 from datetime import date, datetime
 from typing import Any
 
-from ..api_team import VERIFY_STATES
+from ..api_team import (
+    AttentionRecords,
+    VERIFY_STATES,
+    _read_safe_card_content,
+    build_parent_metadata_index,
+    is_attention_state,
+    resolve_parent_identifier,
+    resolve_stop_reason,
+)
 from ..issue import Issue
 from ..orchestrator import Orchestrator
 from ..orchestrator.scheduler import (
@@ -448,3 +456,37 @@ def _live_by_identifier(orchestrator: Orchestrator) -> dict[str, dict[str, Any]]
         identifier = row.get("issue_identifier") or row.get("identifier") or ""
         live[identifier] = {"status": "retrying", **row}
     return live
+
+
+def _attention_queue_payload(
+    issues: list[Issue],
+    cfg: ServiceConfig,
+) -> list[dict[str, Any]]:
+    """Read-only queue in the same registration order as the board's issues."""
+    by_identifier = {}
+    for issue in issues:
+        if isinstance(issue.identifier, str) and issue.identifier:
+            by_identifier.setdefault(issue.identifier, issue)
+    stopped = [issue for issue in by_identifier.values() if is_attention_state(issue.state)]
+    if not stopped:
+        return []
+
+    records = AttentionRecords(cfg)
+    parent_index = build_parent_metadata_index(cfg, list(by_identifier), records=records)
+    identifiers = set(by_identifier)
+    queue: list[dict[str, Any]] = []
+    for issue in stopped:
+        card = _read_safe_card_content(cfg, issue.identifier)
+        front, body = card if card else (None, None)
+        queue.append({
+            "identifier": issue.identifier,
+            "state": issue.state,
+            "parent_identifier": resolve_parent_identifier(
+                cfg, issue, identifiers, card_frontmatter=front,
+                parent_metadata_index=parent_index, records=records,
+            ),
+            "reason": resolve_stop_reason(
+                cfg, issue, card_text=body, frontmatter=front, records=records,
+            ),
+        })
+    return queue

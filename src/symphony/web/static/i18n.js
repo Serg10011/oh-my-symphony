@@ -16,6 +16,7 @@
 
   const LANGUAGES = [
     { code: 'en', label: 'English' },
+    { code: 'ru', label: 'Русский' },
     { code: 'ko', label: '한국어' },
   ];
 
@@ -301,6 +302,18 @@
     'board.noDescription': 'No description',
     'board.attention': 'Attention',
     'board.attentionRequired': 'Attention required',
+    'board.attentionQueue': 'Attention Queue',
+    'board.attentionQueueUnknown': 'Unknown',
+    'board.attentionQueueUnknownText': 'Queue status unknown: attention queue data was not provided by the server.',
+    'board.attentionQueueEmpty': 'Attention queue is empty. No cards require immediate human intervention.',
+    'board.attentionQueueNeedsHuman': 'Needs human',
+    'board.attentionQueueBlocked': 'Blocked',
+    'board.attentionQueueGroupEmpty': 'No cards',
+    'board.attentionParentPrefix': 'Parent: {parent}',
+    'board.attentionParentTitle': 'Parent card: {parent}',
+    'board.attentionOpenTicketAria': 'Open card {id}',
+    // Exact server contract, intentionally identical in every locale.
+    'board.attentionFallbackReason': 'Причина не записана',
     'board.refreshOrchestrator': 'Refresh orchestrator now',
     'board.refreshRequested': 'Orchestrator refresh requested',
     'board.workflowUpdated': 'Workflow updated',
@@ -935,6 +948,17 @@
     'board.noDescription': '설명 없음',
     'board.attention': '확인 필요',
     'board.attentionRequired': '확인이 필요합니다',
+    'board.attentionQueue': '확인 대기열',
+    'board.attentionQueueUnknown': '알 수 없음',
+    'board.attentionQueueUnknownText': '대기열 상태를 알 수 없습니다.',
+    'board.attentionQueueEmpty': '확인이 필요한 작업이 없습니다.',
+    'board.attentionQueueNeedsHuman': '도움 필요',
+    'board.attentionQueueBlocked': '차단됨',
+    'board.attentionQueueGroupEmpty': '작업 없음',
+    'board.attentionParentPrefix': '상위: {parent}',
+    'board.attentionParentTitle': '상위 작업: {parent}',
+    'board.attentionOpenTicketAria': '{id} 티켓 열기',
+    'board.attentionFallbackReason': 'Причина не записана',
     'board.refreshOrchestrator': '오케스트레이터 즉시 새로고침',
     'board.refreshRequested': '오케스트레이터 새로고침을 요청했습니다',
     'board.workflowUpdated': '워크플로가 수정되었습니다',
@@ -1281,7 +1305,39 @@
     'chat.tokensUsedOnly': '토큰 {used}',
   };
 
-  const DICTIONARIES = { en, ko };
+  const ru = {
+    // -- Generic actions and nouns --
+    'common.cancel': 'Отмена',
+    'common.save': 'Сохранить',
+    'common.apply': 'Применить',
+    'common.close': 'Закрыть',
+    'common.edit': 'Редактировать',
+    'common.refresh': 'Обновить',
+    'common.load': 'Загрузить',
+    'common.loading': 'Загрузка…',
+    'common.noData': 'Нет данных',
+    'common.title': 'Название',
+    'common.state': 'Состояние',
+    'common.status': 'Статус',
+
+    // -- Board page & Attention queue --
+    'board.attention': 'Внимание',
+    'board.attentionRequired': 'Требуется внимание',
+    'board.attentionQueue': 'Очередь внимания',
+    'board.attentionQueueUnknown': 'Неизвестно',
+    'board.attentionQueueUnknownText': 'Статус очереди неизвестен: сервер не передал данные очереди внимания.',
+    'board.attentionQueueEmpty': 'Очередь внимания пуста. Нет задач, требующих вмешательства.',
+    'board.attentionQueueNeedsHuman': 'Нужна помощь',
+    'board.attentionQueueBlocked': 'Заблокирована',
+    'board.attentionQueueGroupEmpty': 'Нет задач',
+    'board.attentionParentPrefix': 'Родитель: {parent}',
+    'board.attentionParentTitle': 'Родительская карточка: {parent}',
+    'board.attentionOpenTicketAria': 'Открыть карточку {id}',
+    'board.attentionFallbackReason': 'Причина не записана',
+    'board.noTickets': 'Нет карточек',
+  };
+
+  const DICTIONARIES = { en, ru, ko };
 
   function normalize(code) {
     if (!code) return null;

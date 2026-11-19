@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from contextlib import ExitStack
 from datetime import datetime, timezone
 import json
 import os
@@ -157,23 +158,478 @@ def normal_review_lane(states) -> str | None:
     return next((s for s in states if s.casefold() in {"human review", "приёмка", "приемка"}), None)
 
 
-def _read_assignment(cfg: ServiceConfig, identifier: str) -> dict | None:
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}", identifier):
+FALLBACK_REASON = "Причина не записана"
+
+ATTENTION_REASONS: dict[str, str] = {
+    "operator_stopped": "Остановлено оператором или после потери связи с доской.",
+    "board_process_interrupted": "Служба прервала процесс команды. Подробности сохранены в журнале службы.",
+    "board_execution_failed": "Процесс команды прерван. Автоматического платного повтора нет.",
+    "api_assignment_changed": "Задача или настройки изменились после подтверждения; платный запуск отменён.",
+    "api_permission_revoked": "Разрешение доски отозвано или изменилось. Новые обращения к моделям остановлены.",
+    "execution_preflight_failed": "Проверка изоляции не прошла; модели не запускались.",
+    "flash_cli_unavailable": "На Mac недоступен Antigravity CLI для Flash.",
+    "flash_customizations_active": "Активные расширения Antigravity мешают проверить ограничения Flash.",
+    "flash_worker_failed": "Сбой исполнителя Flash. Сохранённый расход доступен в отчёте.",
+    "flash_gate_rejected": "Ограничения доступа Flash не подтверждены.",
+    "flash_gate_unverified": "Проверка ограничений Flash не прошла.",
+    "flash_capacity_unavailable": "Antigravity сообщил об ограничении квоты или доступности Flash. Остаток можно обновить в настройках.",
+    "flash_quota_exhausted": "По последнему снимку квота Gemini исчерпана.",
+    "flash_output_limit": "Ответ Flash превысил порог выходных токенов.",
+    "workspace_command_outside_scope": "Команда записала файл вне разрешённых путей. Её изменения отклонены.",
+    "api_plan_invalid": "План отклонён. Причины указаны в отчёте.",
+    "api_plan_not_configured": "Проверь колонки Plan и Subtasks и настройки проекта.",
+    "api_plan_staging_failed": "Запись подзадач прервана. Сохранённый план можно восстановить.",
+    "api_plan_parent_changed": "Исходная карточка или версия задачи изменились.",
+    "api_plan_subtask_changed": "Номер подзадачи занят или черновик изменён.",
+    "api_subtask_check_failed": "Целевая проверка подзадачи не пройдена.",
+    "api_subtask_check_changed_files": "Проверка изменила файлы результата.",
+    "api_subtask_result_changed": "Версия ранее проверенной подзадачи изменилась.",
+    "api_subtasks_budget_exhausted": "Достигнут общий предел составной задачи.",
+    "api_subtasks_not_active": "Выполнение составной задачи остановлено.",
+    "api_final_result_changed": "Закреплённая версия, база или исходная карточка изменились.",
+    "api_final_settings_changed": "Настройки итоговой проверки изменились.",
+    "api_final_test_interrupted": "Итоговая проверка была прервана.",
+    "api_final_tests_unavailable": "Команда проверки проекта недоступна в изоляции.",
+    "api_final_tests_failed": "Общий результат не прошёл итоговую проверку.",
+    "api_final_test_copy_changed": "Итоговая проверка изменила отслеживаемые файлы.",
+    "api_final_review_lane_required": "На доске нужна колонка Human Review для передачи результата.",
+    "budget_exhausted": "Бюджет ходов исчерпан.",
+    "max_state_turns": "Превышен лимит ходов на этапе.",
+}
+
+
+_ATTENTION_FILE_LIMIT = 1024 * 1024
+_ATTENTION_REASON_LIMIT = 4096
+_SAFE_ATTENTION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
+_STOPPED_STATUSES = ("stopped", "failed", "blocked", "needs_human")
+
+
+def _safe_attention_id(value: Any) -> bool:
+    return isinstance(value, str) and _SAFE_ATTENTION_ID.fullmatch(value) is not None
+
+
+def _read_bounded_attention_file(
+    root: Path, parts: tuple[str, ...], *, private: bool, limit: int = _ATTENTION_FILE_LIMIT,
+) -> bytes | None:
+    """Open each component beneath a trusted root without following symlinks.
+
+    Directory descriptors also close the check/open race for intermediate paths.
+    No directories, lock files or recovery records are created by this reader.
+    """
+    if (not parts or any(not part or part in {".", ".."} or "/" in part
+                         or "\\" in part or "\0" in part for part in parts)
+            or not isinstance(limit, int) or not 0 < limit <= _ATTENTION_FILE_LIMIT):
         return None
-    path = cfg.workflow_path.resolve().parent / ".ours-state" / "api-team" / identifier / "assignment.json"
     try:
-        if path.resolve(strict=True) != path:
-            return None
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        with os.fdopen(fd, "rb") as stream:
-            info = os.fstat(fd)
-            if (not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600
-                    or info.st_uid != os.getuid() or info.st_size > 1024 * 1024):
-                return None
-            data = json.loads(stream.read(1024 * 1024 + 1))
-            return data if isinstance(data, dict) and data.get("identifier") == identifier else None
-    except (OSError, ValueError, RecursionError, RuntimeError):
+        with ExitStack() as stack:
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            directory = os.open(root.resolve(strict=True), flags | os.O_DIRECTORY)
+            stack.callback(os.close, directory)
+            for part in parts[:-1]:
+                directory = os.open(part, flags | os.O_DIRECTORY, dir_fd=directory)
+                stack.callback(os.close, directory)
+            fd = os.open(parts[-1], flags, dir_fd=directory)
+            with os.fdopen(fd, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(info.st_mode) or info.st_size > limit
+                        or (private and (stat.S_IMODE(info.st_mode) != 0o600
+                                         or info.st_uid != os.getuid()))):
+                    return None
+                raw = stream.read(limit + 1)
+                return raw if len(raw) <= limit else None
+    except (OSError, ValueError, RuntimeError):
         return None
+
+
+def _state_file_parts(filename: Any) -> tuple[str, ...] | None:
+    if not isinstance(filename, str) or len(filename) > 512 or "\\" in filename:
+        return None
+    parts = tuple(filename.split("/"))
+    if (not parts or not filename.endswith(".json")
+            or any(not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", part)
+                   or part in {".", ".."} for part in parts)):
+        return None
+    return parts
+
+
+def _read_safe_state_file(
+    cfg: ServiceConfig, identifier: str, filename: str, *,
+    require_matching_identifier: bool = True, max_bytes: int = _ATTENTION_FILE_LIMIT,
+) -> dict | None:
+    parts = _state_file_parts(filename)
+    if not _safe_attention_id(identifier) or parts is None or cfg is None:
+        return None
+    workflow = getattr(cfg, "workflow_path", None)
+    if workflow is None:
+        return None
+    raw = _read_bounded_attention_file(
+        Path(workflow).resolve().parent, (".ours-state", "api-team", identifier, *parts),
+        private=True, limit=max_bytes,
+    )
+    if raw is None:
+        return None
+    try:
+        data = json.loads(raw)
+    except (ValueError, RecursionError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if require_matching_identifier and data.get("identifier") != identifier:
+        return None
+    return data
+
+
+def _read_assignment(cfg: ServiceConfig, identifier: str) -> dict | None:
+    return _read_safe_state_file(cfg, identifier, "assignment.json")
+
+
+def _read_subtasks(cfg: ServiceConfig, identifier: str) -> dict | None:
+    data = _read_safe_state_file(cfg, identifier, "subtasks.json", require_matching_identifier=False)
+    if data is not None and data.get("identifier", identifier) != identifier:
+        return None
+    return data
+
+
+def _read_session(
+    cfg: ServiceConfig, identifier: str, *, assignment: dict | None = None,
+    session_file: str | None = None,
+) -> dict | None:
+    """Read a stopped session selected by the current assignment, not an old attempt.
+
+    Supported references are session_file/session_path (or a string session),
+    relative to this card's state directory. Absolute references are accepted
+    only beneath that same directory; every component is still opened no-follow.
+    Without a reference, a session must share a run/assignment/attempt ID with
+    the assignment. A standalone canonical session.json needs its own matching
+    card identifier. Missing identity is allowed only for an explicitly selected
+    file. Conflicting identities always fail closed.
+    """
+    if not _safe_attention_id(identifier):
+        return None
+    selected = session_file
+    if assignment is not None:
+        if assignment.get("status") not in (*_STOPPED_STATUSES, "result"):
+            return None
+        references = [assignment[key] for key in ("session_file", "session_path", "session")
+                      if key in assignment and assignment[key] is not None
+                      and not (key == "session" and isinstance(assignment[key], dict))]
+        if references:
+            if any(not isinstance(ref, str) or ref != references[0] for ref in references):
+                return None
+            selected = references[0]
+    explicit = selected is not None
+    if explicit:
+        if not isinstance(selected, str) or not selected or "\\" in selected:
+            return None
+        if Path(selected).is_absolute():
+            workflow = getattr(cfg, "workflow_path", None)
+            if workflow is None:
+                return None
+            card_root = Path(workflow).resolve().parent / ".ours-state" / "api-team" / identifier
+            try:
+                selected = str(Path(selected).relative_to(card_root))
+            except ValueError:
+                return None
+    else:
+        selected = "session.json"
+    if _state_file_parts(selected) is None or selected in {"assignment.json", "subtasks.json"}:
+        return None
+    data = _read_safe_state_file(cfg, identifier, selected, require_matching_identifier=False)
+    if data is None or data.get("status") not in _STOPPED_STATUSES:
+        return None
+    identities = [data[key] for key in ("identifier", "issue_identifier") if key in data]
+    if any(value != identifier for value in identities) or (not explicit and not identities):
+        return None
+    shared_identity = False
+    if assignment is not None:
+        for key in ("run_id", "assignment_id", "attempt_id"):
+            if key in assignment and key in data:
+                value = assignment[key]
+                if not isinstance(value, str) or not value or value != data[key]:
+                    return None
+                shared_identity = True
+        if not explicit and not shared_identity:
+            return None
+    return data
+
+
+def _attention_state_key(state: Any) -> str:
+    if not isinstance(state, str):
+        return ""
+    words = " ".join(state.strip().casefold().replace("_", " ").replace("-", " ").split())
+    if words in {"needs human", "нужна помощь"}:
+        return "needs_human"
+    if words in {"blocked", "заблокирован", "заблокирована", "заблокировано"}:
+        return "blocked"
+    return words
+
+
+def is_attention_state(state: str | None) -> bool:
+    return _attention_state_key(state) in {"needs_human", "blocked"}
+
+
+def _card_scalar(value: str) -> str | None:
+    """Conservatively read a YAML string scalar, never stringify objects/errors."""
+    value = value.strip()
+    if value.startswith('"'):
+        try:
+            result, end = json.JSONDecoder().raw_decode(value)
+            rest = value[end:].strip()
+            return result if isinstance(result, str) and (not rest or rest.startswith("#")) else None
+        except ValueError:
+            return None
+    if value.startswith("'"):
+        match = re.fullmatch(r"'((?:[^']|'')*)'(?:\s+#.*)?", value)
+        return match[1].replace("''", "'") if match else None
+    value = value.split(" #", 1)[0].rstrip()
+    if (not value or value[0] in "[{|>&*!" or value.casefold() in {"null", "~", "true", "false"}
+            or re.fullmatch(r"[-+]?\d+(?:\.\d+)?", value)):
+        return None
+    return value
+
+
+def _read_safe_card_content(cfg: ServiceConfig, identifier: str) -> tuple[dict[str, Any], str] | None:
+    """Read bounded card frontmatter and body, without the tracker's mutating APIs.
+
+    Only top-level string scalars (including literal/folded blocks) are used.
+    Unsupported or malformed metadata is not guessed into a stop reason.
+    """
+    if not _safe_attention_id(identifier):
+        return None
+    board_root = getattr(getattr(cfg, "tracker", None), "board_root", None)
+    if board_root is None:
+        return None
+    raw = _read_bounded_attention_file(Path(board_root), (f"{identifier}.md",), private=False)
+    if raw is None:
+        return None
+    try:
+        lines = raw.decode("utf-8").splitlines()
+    except UnicodeError:
+        return None
+    if not lines or lines[0] != "---":
+        return None
+    end = next((i for i in range(1, len(lines)) if lines[i] == "---"), None)
+    if end is None:
+        return None
+    front: dict[str, Any] = {}
+    keys: set[str] = set()
+    i = 1
+    while i < end:
+        line = lines[i]
+        i += 1
+        if not line.strip() or line.lstrip().startswith("#") or line[0].isspace():
+            continue
+        match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)", line)
+        if match is None or match[1] in keys:
+            return None
+        key, value = match.groups()
+        keys.add(key)
+        if value in {"|", "|-", "|+", ">", ">-", ">+"}:
+            block: list[str] = []
+            while i < end and (not lines[i].strip() or lines[i][0].isspace()):
+                block.append(lines[i])
+                i += 1
+            indent = min((len(row) - len(row.lstrip()) for row in block if row.strip()), default=0)
+            separator = " " if value.startswith(">") else "\n"
+            front[key] = separator.join(row[indent:] for row in block).strip()
+        else:
+            scalar = _card_scalar(value)
+            if scalar is not None:
+                front[key] = scalar
+    return front, "\n".join(lines[end + 1:])
+
+
+def _matching_attention_card(issue: Issue, front: dict | None) -> bool:
+    return bool(isinstance(front, dict)
+                and front.get("identifier", front.get("id")) == issue.identifier
+                and _attention_state_key(front.get("state")) == _attention_state_key(issue.state))
+
+
+def _reason_text(value: Any) -> str | None:
+    return value.strip()[:_ATTENTION_REASON_LIMIT] if isinstance(value, str) and value.strip() else None
+
+
+def _recorded_reason(record: dict) -> str | None:
+    text = _reason_text(record.get("stop_reason")) or _reason_text(record.get("reason"))
+    return ATTENTION_REASONS.get(text, PUBLIC_ERRORS.get(text, text)) if text else None
+
+
+def _current_stop_heading(title: str, updated_at: datetime | None) -> bool:
+    if title.casefold() in {"current stop", "stop reason", "актуальная остановка", "текущая остановка"}:
+        return True
+    # Legacy failure sections are append-only history. Accept a dated one only
+    # when its aware timestamp exactly matches the saved card revision.
+    match = re.fullmatch(
+        r"(Check Failure|Quota Exhausted|Budget Exceeded|Integration|Level|Plan Failure|Final Check)\s+\(([^()]+)\)",
+        title, re.IGNORECASE,
+    )
+    if match is None or not isinstance(updated_at, datetime) or updated_at.utcoffset() is None:
+        return False
+    try:
+        recorded = datetime.fromisoformat(match[2].replace("Z", "+00:00").replace(" UTC", "+00:00"))
+        return recorded.utcoffset() is not None and recorded == updated_at
+    except ValueError:
+        return False
+
+
+def _extract_reason_from_markdown(
+    card_text: str | None, frontmatter: dict | None = None, *, updated_at: datetime | None = None,
+) -> str | None:
+    if isinstance(frontmatter, dict):
+        for key in ("current_stop_reason", "stop_reason"):
+            reason = _reason_text(frontmatter.get(key))
+            if reason:
+                return reason
+    # Only an explicitly named *current* stop slot is authoritative, not a
+    # historical Check Failure/Integration/Budget section or a heading prefix.
+    current: list[str] | None = None
+    latest: list[str] | None = None
+    fence: str | None = None
+    for line in (card_text or "").splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith(("```", "~~~")):
+            marker = stripped[0]
+            fence = None if fence == marker else (marker if fence is None else fence)
+            continue
+        if fence is not None:
+            continue
+        heading = re.fullmatch(r" {0,3}(#{1,6})\s+(.+?)\s*#*\s*", line)
+        if heading:
+            if current is not None:
+                latest = current
+            current = [] if len(heading[1]) == 2 and _current_stop_heading(heading[2], updated_at) else None
+        elif current is not None:
+            current.append(line)
+    if current is not None:
+        latest = current
+    return _reason_text("\n".join(latest)) if latest is not None else None
+
+
+class AttentionRecords:
+    """One read-only snapshot per board response; never a process-global cache."""
+
+    def __init__(self, cfg: ServiceConfig):
+        self.cfg = cfg
+        self.assignments: dict[str, dict | None] = {}
+
+    def assignment(self, identifier: str) -> dict | None:
+        if identifier not in self.assignments:
+            self.assignments[identifier] = _read_assignment(self.cfg, identifier)
+        return self.assignments[identifier]
+
+
+def resolve_stop_reason(
+    cfg: ServiceConfig, issue: Issue, *, card_text: str | None = None,
+    frontmatter: dict[str, Any] | None = None, records: AttentionRecords | None = None,
+) -> str:
+    """Priority: explicit current assignment stop, failed final, stopped launch,
+    bound stopped session, then the card's explicit current-stop slot.
+
+    Only the canonical assignment.json is examined. Active/prepared/queued (or
+    unknown) assignments invalidate historical nested stops and old sessions.
+    A result may carry a failed final/launch or select a stopped session, but
+    its old top-level error/reason and generic candidate status are not causes.
+    A later final/launch record, even with no reason, invalidates earlier-stage
+    failures. Legacy dated card sections require the exact saved revision time.
+    We never mine errors, previous attempts, events, scheduler decisions, or
+    generic Markdown failure sections. No corroborated record means fallback.
+    """
+    if not is_attention_state(issue.state):
+        return FALLBACK_REASON
+    records = records or AttentionRecords(cfg)
+    assignment = records.assignment(issue.identifier)
+    earlier_stages_are_history = False
+    if assignment is not None and assignment.get("status") in (*_STOPPED_STATUSES, "result"):
+        if assignment.get("status") in _STOPPED_STATUSES:
+            reason = _recorded_reason(assignment)
+            if reason:
+                return reason
+        final = assignment.get("final")
+        if isinstance(final, dict) and final.get("status") in ("failed", "checking", "ready", "complete", "passed"):
+            earlier_stages_are_history = True
+            if final["status"] == "failed":
+                reason = _recorded_reason(final)
+                if reason:
+                    return reason
+        plan = assignment.get("plan")
+        launch = plan.get("launch") if isinstance(plan, dict) else None
+        if not isinstance(launch, dict):
+            launch = assignment.get("launch")
+        if (not earlier_stages_are_history and isinstance(launch, dict)
+                and launch.get("status") in ("stopped", "active", "complete")):
+            earlier_stages_are_history = True
+            if launch["status"] == "stopped":
+                reason = _recorded_reason(launch)
+                if reason:
+                    return reason
+    if (not earlier_stages_are_history
+            and (assignment is None or assignment.get("status") in (*_STOPPED_STATUSES, "result"))):
+        session = _read_session(cfg, issue.identifier, assignment=assignment)
+        if session is not None:
+            reason = _recorded_reason(session)
+            if reason:
+                return reason
+    if _matching_attention_card(issue, frontmatter):
+        reason = _extract_reason_from_markdown(
+            card_text, frontmatter, updated_at=getattr(issue, "updated_at", None),
+        )
+        if reason:
+            return reason
+    return FALLBACK_REASON
+
+
+def build_parent_metadata_index(
+    cfg: ServiceConfig, card_identifiers: list[str], *, records: AttentionRecords | None = None,
+) -> dict[str, str]:
+    """Index exact saved plan.cards/subtasks membership once, rejecting ambiguity."""
+    records = records or AttentionRecords(cfg)
+    identifiers = dict.fromkeys(pid for pid in card_identifiers if _safe_attention_id(pid))
+    claims: dict[str, set[str]] = {}
+    for parent in identifiers:
+        assignment = records.assignment(parent)
+        plan = assignment.get("plan") if assignment else None
+        manifest = _read_subtasks(cfg, parent)
+        lists = [plan.get("cards")] if isinstance(plan, dict) else []
+        if manifest:
+            lists.extend([manifest.get("subtasks"), manifest.get("cards")])
+        for items in lists:
+            if not isinstance(items, list):
+                continue
+            for item in items:
+                child = item.get("identifier") if isinstance(item, dict) else item
+                if isinstance(child, str) and child != parent and child in identifiers:
+                    claims.setdefault(child, set()).add(parent)
+    return {child: next(iter(parents)) for child, parents in claims.items() if len(parents) == 1}
+
+
+def resolve_parent_identifier(
+    cfg: ServiceConfig, issue: Issue, all_issue_identifiers: set[str], *,
+    card_frontmatter: dict[str, Any] | None = None, parent_metadata_index: dict[str, str] | None = None,
+    records: AttentionRecords | None = None,
+) -> str | None:
+    """Prefer the explicit request card, then direct metadata, then saved plan membership.
+
+    A request with no matching board card is just a group. Dependencies and
+    identifier suffixes never establish parenthood. Session history is not plan
+    metadata. Parent references must name a different existing card.
+    """
+    records = records or AttentionRecords(cfg)
+    candidates: list[Any] = [issue.request]
+    if _matching_attention_card(issue, card_frontmatter):
+        candidates.extend(card_frontmatter.get(key) for key in ("parent_identifier", "parent"))
+    assignment = records.assignment(issue.identifier)
+    if assignment:
+        candidates.append(assignment.get("parent_identifier"))
+        subtask = assignment.get("subtask")
+        if isinstance(subtask, dict):
+            candidates.extend(subtask.get(key) for key in ("parent_identifier", "parent"))
+    candidates.append((parent_metadata_index or {}).get(issue.identifier))
+    for candidate in candidates:
+        if isinstance(candidate, str):
+            candidate = candidate.strip()
+            if candidate != issue.identifier and candidate in all_issue_identifiers:
+                return candidate
+    return None
 
 
 def confirmed_in_queue(cfg: ServiceConfig, identifier: str) -> bool:
