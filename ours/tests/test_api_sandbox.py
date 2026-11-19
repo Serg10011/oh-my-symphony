@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 import os
 from pathlib import Path
 import shlex
+import socket
 import subprocess
 import sys
 import tomllib
@@ -42,6 +44,39 @@ def test_profile_is_not_resolved_in_editable_project_and_command_is_one_argument
     assert profile["filesystem"][str(policy.read_roots[0])] == "read"
     assert profile["network"]["enabled"] is False
     assert policy.argv(command)[3] != argv[3]
+
+
+def test_node_adds_only_read_grants_and_a_fixed_environment_entry(policy, monkeypatch):
+    monkeypatch.setattr(sandbox.sys, "platform", "darwin")
+    monkeypatch.setenv("SYMPHONY_NODE", "/inherited/node")
+    monkeypatch.setenv("NODE_OPTIONS", "--require /inherited/script.js")
+    node = policy.workspace.parent / "node"
+    node.touch(mode=0o700)
+
+    def permissions(configured):
+        args = configured.argv("true")
+        profile, = tomllib.loads(args[args.index("-c") + 1])["permissions"].values()
+        return profile
+
+    original = permissions(policy)
+    configured = replace(policy, node=node)
+    expected = dict(original["filesystem"]) | {str(node): "read", sandbox.NODE_OPENSSL_CONFIG: "read"}
+    assert permissions(configured) == {"filesystem": expected, "network": original["network"]}
+    assert {"SYMPHONY_NODE", "NODE_OPTIONS"}.isdisjoint(sandbox._environment(policy))
+    assert sandbox._environment(configured) == sandbox._environment(policy) | {"SYMPHONY_NODE": str(node)}
+
+
+@pytest.mark.parametrize("location", ["workspace", "symlink", "missing", "not_executable"])
+def test_node_refuses_unusable_or_task_controlled_paths(policy, monkeypatch, location):
+    monkeypatch.setattr(sandbox.sys, "platform", "darwin")
+    parent = policy.workspace.parent
+    node = (policy.workspace if location == "workspace" else parent) / "node"
+    if location == "symlink":
+        node.symlink_to(Path(sys.executable).resolve())
+    elif location != "missing":
+        node.touch(mode=0o600 if location == "not_executable" else 0o700)
+    with pytest.raises(sandbox.SandboxError, match="sandbox_node_invalid"):
+        replace(policy, node=node).argv("true")
 
 
 def test_unsupported_platform_never_runs_an_unisolated_command(policy, monkeypatch):
@@ -154,6 +189,72 @@ def test_inconclusive_probe_is_a_failure(policy, monkeypatch, output):
     assert not list(policy.workspace.glob("probe-*"))
     assert not list(policy.workspace.glob("link-*"))
     assert not list(policy.workspace.parent.glob("canary-*"))
+
+
+def test_configured_node_probe_requires_the_runtime_response(policy, monkeypatch):
+    checks = dict.fromkeys(("workspace_write_read", "outside_read_denied", "symlink_read_denied",
+                           "outside_write_denied", "network_denied", "credentials_absent"), True)
+    node = policy.workspace.parent / "node"
+    commands = []
+    output = ""
+
+    def run(configured, command, **options):
+        args = shlex.split(command)
+        commands.append(args)
+        assert configured.node == node
+        response = output if args[0] == str(node) else json.dumps(checks)
+        return {"output": response, "exit_code": 0, "stop_reason": None, "seconds": 0.1}
+
+    monkeypatch.setattr(sandbox, "run", run)
+    configured = replace(policy, node=node)
+    with pytest.raises(sandbox.SandboxError, match="sandbox_node_probe_failed"):
+        sandbox.probe(configured, python=sys.executable)
+    output = "node"
+    assert sandbox.probe(configured, python=sys.executable) == {
+        "checks": checks | {"node_available": True}, "seconds": 0.2,
+    }
+    assert [args[0] for args in commands] == [sys.executable, str(node)] * 2
+
+
+@pytest.mark.skipif(sys.platform != "darwin" or os.environ.get("SYMPHONY_TEST_NATIVE_SANDBOX") != "1",
+                    reason="explicit macOS isolation probe; cannot nest inside another Seatbelt profile")
+def test_native_node_keeps_the_file_and_network_boundary(tmp_path):
+    playwright = pytest.importorskip("playwright")
+    node = (Path(playwright.__file__).resolve().parent / "driver" / "node").resolve()
+    sibling = node.parent / "package" / "package.json"
+    if not node.is_file() or not sibling.is_file():
+        pytest.skip("Playwright's bundled Node and its adjacent package are required")
+    workspace, control = tmp_path / "workspace", tmp_path / "control"
+    workspace.mkdir(mode=0o700)
+    control.mkdir(mode=0o700)
+    policy = sandbox.Policy(workspace.resolve(), control.resolve(), (Path(sys.base_prefix).resolve(),), node=node)
+    assert sandbox.probe(policy, python=str(Path(sys.executable).resolve()))["checks"]["node_available"]
+    outside = tmp_path / "canary.txt"
+    outside.write_text("non-secret")
+    script = """
+const fs = require('node:fs'), net = require('node:net'), assert = require('node:assert/strict');
+const [outside, sibling, port] = process.argv.slice(2);
+const denied = error => ['EACCES', 'EPERM'].includes(error.code);
+fs.writeFileSync('inside.txt', 'inside');
+assert.equal(fs.readFileSync('inside.txt', 'utf8'), 'inside');
+assert.throws(() => fs.readFileSync(outside), denied);
+assert.throws(() => fs.readFileSync(sibling), denied);
+assert.throws(() => fs.openSync(outside, 'r+'), denied);
+assert.throws(() => fs.openSync(process.execPath, 'r+'), denied);
+const client = net.connect({host: '127.0.0.1', port: Number(port)});
+client.setTimeout(1500, () => { throw Error('No evidence of network denial'); });
+client.on('connect', () => { throw Error('Network unexpectedly available'); });
+client.on('error', error => { assert(denied(error)); console.log('node boundaries verified'); });
+"""
+    (workspace / "probe.cjs").write_text(script)
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        arguments = shlex.join(["probe.cjs", str(outside), str(sibling), str(listener.getsockname()[1])])
+        result = sandbox.run(policy, '"$SYMPHONY_NODE" ' + arguments, timeout=12)
+    assert result["exit_code"] == 0 and result["stop_reason"] is None, result["output"]
+    assert result["output"].strip() == "node boundaries verified"
+    assert outside.read_text() == "non-secret"
 
 
 @pytest.mark.skipif(sys.platform != "darwin" or os.environ.get("SYMPHONY_TEST_NATIVE_SANDBOX") != "1",

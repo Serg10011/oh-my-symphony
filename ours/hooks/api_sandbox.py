@@ -22,6 +22,7 @@ import uuid
 
 
 CODEX = "/Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"
+NODE_OPENSSL_CONFIG = "/System/Library/OpenSSL/openssl.cnf"
 MAX_COMMAND_BYTES = 32768
 MAX_OUTPUT_BYTES = 512 * 1024
 MAX_TIMEOUT_SECONDS = 1800
@@ -50,6 +51,7 @@ class Policy:
     control: Path
     read_roots: tuple[Path, ...]
     executable: str = CODEX
+    node: Path | None = None
 
     def validate(self) -> None:
         if sys.platform != "darwin":
@@ -72,6 +74,16 @@ class Policy:
                     or workspace.is_relative_to(root) or control.is_relative_to(root)
                     or root.is_relative_to(workspace) or root.is_relative_to(control)):
                 raise SandboxError("sandbox_runtime_root_too_broad")
+        if self.node is not None:
+            try:
+                valid = (self.node.is_absolute() and self.node.resolve() == self.node
+                         and self.node.is_file() and os.access(self.node, os.X_OK)
+                         and not self.node.is_relative_to(workspace)
+                         and not self.node.is_relative_to(control))
+            except (OSError, RuntimeError):
+                valid = False
+            if not valid:
+                raise SandboxError("sandbox_node_invalid")
 
     def argv(self, command: str) -> list[str]:
         self.validate()
@@ -90,6 +102,9 @@ class Policy:
                       ":slash_tmp": "deny", ":workspace_roots": "read",
                       str(self.workspace): "write"}
         filesystem.update({str(root): "read" for root in self.read_roots})
+        if self.node is not None:
+            filesystem[str(self.node)] = "read"
+            filesystem[NODE_OPENSSL_CONFIG] = "read"
         profile = {"filesystem": filesystem, "network": {"enabled": False}}
         # The shell's program text is a separate argument, never interpolated in
         # the host shell or in the permission profile. No startup/login scripts.
@@ -102,10 +117,13 @@ class Policy:
 def _environment(policy: Policy) -> dict[str, str]:
     # Allowlist rather than deletion: provider keys, proxies, injected Python,
     # shell startup, Git and loader settings must not reach project commands.
-    return {"PATH": os.defpath, "HOME": str(Path.home()), "LANG": "en_US.UTF-8",
-            "TMPDIR": str(policy.workspace / ".tmp"), "PYTHONDONTWRITEBYTECODE": "1",
-            "PYTHONNOUSERSITE": "1", "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0"}
+    environment = {"PATH": os.defpath, "HOME": str(Path.home()), "LANG": "en_US.UTF-8",
+                   "TMPDIR": str(policy.workspace / ".tmp"), "PYTHONDONTWRITEBYTECODE": "1",
+                   "PYTHONNOUSERSITE": "1", "GIT_CONFIG_NOSYSTEM": "1",
+                   "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_TERMINAL_PROMPT": "0"}
+    if policy.node is not None:
+        environment["SYMPHONY_NODE"] = str(policy.node)
+    return environment
 
 
 def run(policy: Policy, command: str, *, timeout: int = 600,
@@ -233,7 +251,15 @@ print(json.dumps(results))
                 or not isinstance(checks, dict) or set(checks) != required
                 or any(value is not True for value in checks.values())):
             raise SandboxError("sandbox_probe_failed")
-        return {"checks": checks, "seconds": result["seconds"]}
+        seconds = result["seconds"]
+        if policy.node is not None:
+            command = shlex.join([str(policy.node), "-e", "process.stdout.write(process.release.name)"])
+            node = run(policy, command, timeout=10, output_limit=1024)
+            if node["exit_code"] != 0 or node["stop_reason"] is not None or node["output"] != "node":
+                raise SandboxError("sandbox_node_probe_failed")
+            checks["node_available"] = True
+            seconds += node["seconds"]
+        return {"checks": checks, "seconds": round(seconds, 3)}
     finally:
         for path in (outside, inside, link):
             path.unlink(missing_ok=True)

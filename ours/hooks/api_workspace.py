@@ -85,6 +85,8 @@ def scope_instructions(spec):
               "Shell commands have the same scope; do not use a shell to bypass a refusal.")
     if "write_paths" in spec["execution"]:
         text += " Change files only in these subtask scopes: " + json.dumps(writable_paths(spec), ensure_ascii=False) + "."
+    if "node" in spec["execution"]:
+        text += ' Use "$SYMPHONY_NODE" to run local JavaScript checks.'
     return text
 
 
@@ -104,15 +106,19 @@ def path_denial(spec, args):
 
 
 def validate(raw: dict, source: dict | None = None) -> dict:
-    if (not isinstance(raw, dict) or set(raw) - {"write_paths"} != {"python", "read_roots"}
+    if (not isinstance(raw, dict) or set(raw) - {"write_paths", "node"} != {"python", "read_roots"}
             or not isinstance(raw["python"], str) or not isinstance(raw["read_roots"], list)
             or not 1 <= len(raw["read_roots"]) <= 8):
         raise WorkspaceError("invalid_execution_spec")
     values = [raw["python"], *raw["read_roots"]]
+    if "node" in raw:
+        values.append(raw["node"])
     if any(not isinstance(p, str) or not Path(p).is_absolute() or ".." in Path(p).parts
            or len(p) > 4096 or any(ord(c) < 32 for c in p) for p in values):
         raise WorkspaceError("invalid_execution_spec")
     result = {"python": raw["python"], "read_roots": sorted(set(raw["read_roots"]))}
+    if "node" in raw:
+        result["node"] = raw["node"]
     if "write_paths" in raw:
         if source is None:
             raise WorkspaceError("invalid_execution_spec")
@@ -210,7 +216,8 @@ def policy(spec: dict, value: dict) -> sandbox.Policy:
     python = Path(config["python"])
     if not python.is_file() or not any(python.resolve().is_relative_to(p) for p in roots):
         raise WorkspaceError("execution_python_unavailable")
-    return sandbox.Policy(Path(value["root"]), Path(value["control"]), roots)
+    node = Path(config["node"]) if "node" in config else None
+    return sandbox.Policy(Path(value["root"]), Path(value["control"]), roots, node=node)
 
 
 def preflight(spec: dict, value: dict) -> dict:
