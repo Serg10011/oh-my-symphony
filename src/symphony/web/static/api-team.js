@@ -43,6 +43,20 @@
   };
   const number = value => Number.isFinite(value) ? value.toLocaleString('ru-RU') : 'не указан';
   const model = value => value ? `${value.model} · усилие ${value.effort}` : 'не назначен';
+
+  function leadCacheShare(session) {
+    const lead = session.lead_profile || session.profiles?.lead?.name;
+    const usage = typeof lead === 'string' && lead ? session.usage?.[lead] : null;
+    const { input_tokens: input, cached_input_tokens: cached } = usage ?? {};
+    if (!Number.isSafeInteger(input) || !Number.isSafeInteger(cached) ||
+        input <= 0 || cached < 0 || cached > input) return 'Нет данных';
+
+    // The saved input count already includes cache hits.
+    const share = cached / input * 100;
+    const percent = share > 0 && share < 0.01 ? '<0,01' : share.toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+    return `${number(cached)} (${percent}%)`;
+  }
+
   // The detailed report text already carries the amounts. The summary that
   // reads them lives in api-team-costs.js so the card and the report cannot
   // drift apart into two different price calculations.
@@ -62,9 +76,11 @@
     const spendWorker = el('dd');
     const spendTotal = el('dd');
     const spendTotalLabel = el('dt', {}, 'Итого');
+    const spendLeadCache = el('dd');
     const spendList = el('dl', { class: 'api-team-assignment' }, [
       el('dt', {}, 'Ведущий'), spendLead, el('dt', {}, 'Исполнитель'), spendWorker,
       spendTotalLabel, spendTotal,
+      el('dt', {}, 'Вход ведущего из кеша, токены'), spendLeadCache,
     ]);
     const spendNote = el('p', { class: 'form-hint' });
     const spend = el('div', { class: 'api-team-spend', role: 'group', 'aria-label': 'Расход команды' },
@@ -290,6 +306,7 @@
         markSpend(spendTotal, spendData.total.incomplete);
         markSpend(spendNote, spendData.total.incomplete);
         spend.classList.toggle('api-team-spend-incomplete', spendData.total.incomplete);
+        setText(spendLeadCache, leadCacheShare(data.session));
       }
       reportDetails.hidden = !data.report_text;
       resultDetails.hidden = !data.session?.result;
