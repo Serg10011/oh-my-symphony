@@ -187,7 +187,8 @@ def test_cloud_board_reuses_normal_publication_offer_and_verified_run(planning_b
     assert len(hub.pushes) == 1 and hub.pr is None and not final_runs
 
 
-def test_composed_card_uses_the_checked_common_release(planning_board, final_runs, monkeypatch, tmp_path):
+@pytest.mark.parametrize("fixes", [False, True])
+def test_composed_card_uses_the_checked_common_release(planning_board, final_runs, monkeypatch, tmp_path, fixes):
     board = planning_board
     configure_cloud(board)
     scripts = board.workflow.parent
@@ -203,7 +204,9 @@ def test_composed_card_uses_the_checked_common_release(planning_board, final_run
     candidate = board._load()["candidate"]
     memo_text = git(board.root / "candidate.git", "show", f"{candidate['commit']}:src/memo.md").decode()
     head, merge, remote, _ = merged_release(board, {"README.md": "[Мануал](src/memo.md)\n",
-                                                  "src/memo.md": memo_text, "src/main.py": "print('updated')\n"})
+                                                  "src/memo.md": memo_text, "src/main.py": "print('updated')\n"},
+                                            fixes={"src/memo.md": memo_text + "\nУточнение.\n"} if fixes else None)
+    before = git(board.repo, "rev-parse", f"{head}^").decode().strip() if fixes else None
     cards = [board, other]
     path = tmp_path / "release.json"
     _, tree, _ = release_verification.revision(board.repo, head)
@@ -220,14 +223,24 @@ def test_composed_card_uses_the_checked_common_release(planning_board, final_run
         with pytest.raises(group.ReleaseError, match="group_release_verification_invalid"):
             group.preview(cards, 21, head, publisher=remote, verified_release=path)
     path.write_text(json.dumps(proof))
+    if fixes:
+        with pytest.raises(group.ReleaseError, match="group_release_missing_changes"):
+            group.preview(cards, 21, head, publisher=remote, verified_release=path)
+        with pytest.raises(group.ReleaseError, match="group_release_fixes_invalid"):
+            group.preview(cards, 21, head, publisher=remote, verified_release=path,
+                          before_fixes=proof["commit"])
     original = board._load()
     board._save({**original, "release_check": {"published": True}})
     with pytest.raises(group.ReleaseError, match="group_release_card_changed"):
-        group.preview(cards, 21, head, publisher=remote, verified_release=path)
+        group.preview(cards, 21, head, publisher=remote, verified_release=path, before_fixes=before)
     board._save(original)
 
-    shown = group.preview(cards, 21, head, publisher=remote, verified_release=path)
-    assert group.record(cards, 21, head, shown["offer"], publisher=remote, verified_release=path) == shown
+    shown = group.preview(cards, 21, head, publisher=remote, verified_release=path, before_fixes=before)
+    if fixes:
+        amendment = shown["release"]["reviewed_fixes"]
+        assert amendment["before_commit"] == before and list(amendment["files"]) == ["src/memo.md"]
+    assert group.record(cards, 21, head, shown["offer"], publisher=remote, verified_release=path,
+                        before_fixes=before) == shown
     grouped = board.show()
     assert grouped["final"] == {"status": "ready", "method": "release", "commit": head, "tree": tree}
     assert grouped["release"]["completion"]["status"] == "waiting_installation"

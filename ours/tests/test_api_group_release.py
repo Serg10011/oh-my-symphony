@@ -41,7 +41,7 @@ def another_card(first, new_text, *, path="README.md"):
     return other
 
 
-def merged_release(board, files, *, with_revert=False):
+def merged_release(board, files, *, with_revert=False, fixes=None):
     base = board._base_commit()
     git(board.repo, "switch", "-c", "codex/combined", base)
     if with_revert:
@@ -53,6 +53,10 @@ def merged_release(board, files, *, with_revert=False):
         (board.repo / path).write_text(text)
     git(board.repo, "add", "-A")
     git(board.repo, "commit", "-qm", "Common release")
+    if fixes:
+        for path, text in fixes.items():
+            (board.repo / path).write_text(text)
+        git(board.repo, "commit", "-qam", "Reviewed fixes")
     head = git(board.repo, "rev-parse", "HEAD").decode().strip()
     git(board.repo, "switch", "our-main")
     git(board.repo, "merge", "--no-ff", "--no-edit", head)
