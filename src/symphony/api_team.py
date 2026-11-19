@@ -18,7 +18,7 @@ import re
 import shlex
 import stat
 import time
-from typing import Any
+from typing import Any, TypeGuard
 
 from ._shell import process_identity, terminate_process_tree
 from .errors import SymphonyError
@@ -439,7 +439,7 @@ def _read_safe_card_content(cfg: ServiceConfig, identifier: str) -> tuple[dict[s
     return front, "\n".join(lines[end + 1:])
 
 
-def _matching_attention_card(issue: Issue, front: dict | None) -> bool:
+def _matching_attention_card(front: dict[str, Any] | None, issue: Issue) -> TypeGuard[dict[str, Any]]:
     return bool(isinstance(front, dict)
                 and front.get("identifier", front.get("id")) == issue.identifier
                 and _attention_state_key(front.get("state")) == _attention_state_key(issue.state))
@@ -569,7 +569,7 @@ def resolve_stop_reason(
             reason = _recorded_reason(session)
             if reason:
                 return reason
-    if _matching_attention_card(issue, frontmatter):
+    if _matching_attention_card(frontmatter, issue):
         reason = _extract_reason_from_markdown(
             card_text, frontmatter, updated_at=getattr(issue, "updated_at", None),
         )
@@ -615,7 +615,7 @@ def resolve_parent_identifier(
     """
     records = records or AttentionRecords(cfg)
     candidates: list[Any] = [issue.request]
-    if _matching_attention_card(issue, card_frontmatter):
+    if _matching_attention_card(card_frontmatter, issue):
         candidates.extend(card_frontmatter.get(key) for key in ("parent_identifier", "parent"))
     assignment = records.assignment(issue.identifier)
     if assignment:

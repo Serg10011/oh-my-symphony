@@ -15,7 +15,6 @@ import hashlib
 import importlib.util
 import json
 import os
-import stat
 import sys
 import tempfile
 import types
@@ -55,7 +54,9 @@ def load_isolated_modules():
         local_modules["symphony._shell"] = shell_mod
 
         err_mod = types.ModuleType("symphony.errors")
-        class SymphonyError(Exception): pass
+        class SymphonyError(Exception):
+            pass
+
         err_mod.SymphonyError = SymphonyError
         local_modules["symphony.errors"] = err_mod
 
@@ -152,7 +153,9 @@ def load_isolated_modules():
         local_modules["symphony.workflow"] = wf_mod
 
         wfm_mod = types.ModuleType("symphony.workflow.mutate")
-        class WorkflowMutationError(Exception): pass
+        class WorkflowMutationError(Exception):
+            pass
+
         wfm_mod.WorkflowMutationError = WorkflowMutationError
         local_modules["symphony.workflow.mutate"] = wfm_mod
 
@@ -213,7 +216,9 @@ def load_isolated_modules():
 
         aio_mod = types.ModuleType("aiohttp")
         aio_web = types.ModuleType("aiohttp.web")
-        class HTTPNotFound(Exception): pass
+        class HTTPNotFound(Exception):
+            pass
+
         aio_web.HTTPNotFound = HTTPNotFound
         class StubResponse:
             def __init__(self, body: bytes, status: int = 200, headers: dict | None = None):
