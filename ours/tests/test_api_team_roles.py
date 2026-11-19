@@ -72,14 +72,15 @@ def test_small_task_may_finish_without_calling_configured_worker(task, policy_ve
     assert all(c["profile"] == "deepseek-lead" for c in session._load(path)["calls"])
 
 
-@pytest.mark.parametrize("policy_version", [1, 2, 4], ids=["legacy-api", "saved-flash", "new-flash"])
+@pytest.mark.parametrize("policy_version", [1, 2, 4, 5],
+                         ids=["legacy-api", "saved-flash", "saved-plan-report", "new-flash"])
 def test_flash_lead_receives_pinned_delegation_policy(tmp_path, monkeypatch, policy_version):
     path, _ = prepared(tmp_path, lead_profile="sol-lead", worker_profile=session.api.FLASH_WORKER)
     monkeypatch.setattr(workspace, "preflight", lambda *a: {"fixture": True})
     monkeypatch.setattr(session.flash_probe, "check_readiness", lambda *a, **kw: None)
     saved = state(path)
-    assert saved["role_policy_version"] == 4
-    if policy_version != 4:
+    assert saved["role_policy_version"] == 5
+    if policy_version != 5:
         saved["role_policy_version"] = policy_version
         path.write_text(json.dumps(saved))
 
@@ -91,7 +92,10 @@ def test_flash_lead_receives_pinned_delegation_policy(tmp_path, monkeypatch, pol
     assert any(tool["name"] == "delegate_worker" for tool in request["tools"])
     assert ("finish it yourself when delegation and review" in instructions) == (policy_version == 1)
     assert ("Delegate suitable implementation, including small edits" in instructions) == (policy_version != 1)
-    assert (session._PLAN_CHANGE_REPORT in instructions) == (policy_version == 4)
+    assert (session._PLAN_CHANGE_REPORT in instructions) == (policy_version in (4, 5))
+    worker_request = session._build_request(saved, [{"role": "user", "content": "Check the fixture."}],
+                                            1024, {}, part_id="part_1")
+    assert (session.FLASH_BATCH_INSTRUCTIONS in worker_request["instructions"]) == (policy_version == 5)
     if policy_version != 1:
         assert "result would cost no more than doing the same work yourself" in instructions
         assert "concrete reason briefly in your\nfinal report" in instructions
@@ -124,7 +128,7 @@ def test_legacy_editable_session_keeps_old_roles_and_no_new_policy_marker(task):
     assert all("role_policy_version" not in c for c in saved["calls"])
 
 
-@pytest.mark.parametrize("invalid", [True, None, "1", 2, 4, -1])
+@pytest.mark.parametrize("invalid", [True, None, "1", 2, 4, 5, -1])
 def test_unrecognized_role_policy_is_rejected_before_requests(task, invalid):
     path, _ = task
     saved = state(path)

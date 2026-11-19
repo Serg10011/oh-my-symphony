@@ -113,6 +113,13 @@ for turn, line in enumerate(sys.stdin.buffer, 1):
         assert "input_tokens_remaining" not in task["resources"]
         requests = [operation("read_project_file", path=path, offset=0, max_chars=4096)
                     for path in ("private.txt", "README.md")]
+        if MODE == "batch_discovery":
+            requests = [
+                operation("read_project_file", path="README.md", offset=0, max_chars=4096),
+                operation("search_project_files", queries=["committed"], prefix="src",
+                          case_sensitive=True, file_offset=0, line_offset=0),
+                operation("read_project_file", path="src/main.py", offset=0, max_chars=4096),
+            ]
         if MODE == "oversized":
             oversized = usage(1)
             oversized.update(output_tokens=2000, total_tokens=2010)
@@ -120,10 +127,17 @@ for turn, line in enumerate(sys.stdin.buffer, 1):
                             "usage": oversized, "conversation_id": cid})
             break
     elif turn == 2:
-        assert len(messages) == 2 and "tools" not in envelope
-        denied, allowed = messages
-        assert denied["arguments"]["path"] == "private.txt" and denied["result"]["error"] == "workspace_path_denied"
-        assert allowed["result"]["text"] == "Project instructions\n"
+        assert "tools" not in envelope
+        if MODE == "batch_discovery":
+            readme, search, source = messages
+            assert readme["result"]["text"] == "Project instructions\n"
+            assert search["result"]["matches"] == [
+                {"path": "src/main.py", "line": 1, "text": "print('committed')"}]
+            assert source["result"]["text"] == "print('committed')\n"
+        else:
+            denied, allowed = messages
+            assert denied["arguments"]["path"] == "private.txt" and denied["result"]["error"] == "workspace_path_denied"
+            assert allowed["result"]["text"] == "Project instructions\n"
         requests = [operation("write_project_file", path="tests/test_flash.py",
                               expected_sha256="", text="assert 2 + 2 == 4\n")]
     elif turn == 3:
@@ -233,6 +247,31 @@ def test_confirmed_flash_edits_only_the_task_copy_and_is_billed_separately(board
     assert board.review()["files"][0]["path"] == "tests/test_flash.py"
     assert not (board.repo / "tests/test_flash.py").exists()
     assert not list(board.root.glob("symphony-flash-*"))
+
+
+def test_flash_receives_a_batch_of_independent_reads_and_searches(board, tmp_path, monkeypatch):
+    log = fake_worker(tmp_path, monkeypatch, "batch_discovery")
+    approve_flash(board, {**TEAM, "lead_profile": api.SOL_62_LEAD})
+    model = api.profile_for(api.SOL_62_LEAD).model
+    transport, sent = lead_frames(sol(calls=[assignment(message="Prepare the test.")], model=model),
+                                  sol("Проверен результат.", model=model), model=model)
+
+    result = board.run("a" * 32, credentials=lambda _: KEYS, transport=transport)
+
+    assert result["status"] == "result", result.get("report_text")
+    rows = [json.loads(line) for line in log.read_text().splitlines()]
+    contents = [json.loads(row["wire"])["message"]["content"] for row in rows]
+    turns = [json.loads("{" + content.split("\n{", 1)[1]) for content in contents]
+    assert len(turns) == 3
+    assert turns[0]["instructions"].count(session.FLASH_BATCH_INSTRUCTIONS) == 1
+    assert all("instructions" not in turn for turn in turns[1:])
+    assert all(session.FLASH_BATCH_INSTRUCTIONS not in body["input"][0]["content"] for body in sent)
+    saved = session._load(board.session_path)
+    flash_calls = [call for call in saved["calls"] if call["profile"] == api.FLASH_WORKER]
+    assert len(flash_calls) == 3
+    assert [call["name"] for call in flash_calls[0]["response"]["function_calls"]] == [
+        "read_project_file", "search_project_files", "read_project_file",
+    ]
 
 
 @pytest.mark.parametrize(("mode", "reason", "tokens"), [

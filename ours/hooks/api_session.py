@@ -67,6 +67,9 @@ assignments or project tool results for that part. Follow the current part and
 its resource counters. The response output ceiling is checked after your
 reply. Keep replies within the stated allowance.
 """
+FLASH_BATCH_INSTRUCTIONS = """Group independent searches and file reads in a single requests list.
+Wait for the results before making requests that depend on them.
+"""
 
 PROJECT_LEAD_INSTRUCTIONS = """You lead the assigned task. Understand it, choose the
 solution and organize work yourself. Delegate coherent useful parts to Luna only
@@ -135,11 +138,13 @@ reason in the task report. Include changes in who implements a part or which
 agreed checks you use. Explain taking on suitable worker implementation even
 if you make that decision before the first handoff.
 """
+_FLASH_BATCH_POLICY = 5
 _EXECUTION_LEAD_POLICIES = {
     1: EXECUTION_LEAD_ROLES_V1,
     2: EXECUTION_LEAD_ROLES_V2,
     3: EXECUTION_LEAD_ROLES_V1 + _PLAN_CHANGE_REPORT,
     4: EXECUTION_LEAD_ROLES_V2 + _PLAN_CHANGE_REPORT,
+    _FLASH_BATCH_POLICY: EXECUTION_LEAD_ROLES_V2 + _PLAN_CHANGE_REPORT,
 }
 EXECUTION_WORKER_ROLES_V1 = """Implement the coherent part assigned by the lead and
 verify your work with appropriate checks. Choose the implementation within the
@@ -391,7 +396,7 @@ def _load(path: Path, *, raw: bytes | None = None) -> dict:
     role_policy = state.get("role_policy_version", 0)
     if (type(role_policy) is not int or role_policy not in (0, *_EXECUTION_LEAD_POLICIES)
             or (role_policy and "execution" not in spec)
-            or (role_policy in (2, 4) and spec["worker_profile"] != api.FLASH_WORKER)):
+            or (role_policy in (2, 4, _FLASH_BATCH_POLICY) and spec["worker_profile"] != api.FLASH_WORKER)):
         raise SessionError("invalid_role_policy")
     if "output_limits" in state:
         pinned = state["output_limits"]
@@ -534,7 +539,7 @@ def create(path, spec: dict) -> dict:
         os.close(fd)
         if "execution" in spec:
             try:
-                state["role_policy_version"] = 4 if spec["worker_profile"] == api.FLASH_WORKER else 3
+                state["role_policy_version"] = _FLASH_BATCH_POLICY if spec["worker_profile"] == api.FLASH_WORKER else 3
                 state["execution_state"] = workspace.create(path, spec, state["project_snapshot"])
             except (workspace.WorkspaceError, sandbox.SandboxError, project.ProjectError) as exc:
                 path.unlink()  # Only the empty file just created exclusively above.
@@ -1216,7 +1221,8 @@ def _build_request(state, history, cap, resources, *, part_id=None, request_vers
         instructions = ("Lead this task and organize the work yourself. Delegate coherent useful parts only when worthwhile. "
                         "Use a stable part_id and at most one targeted correction for that same part. Review worker results."
                         if part_id is None else "Carry out the coherent part assigned by the lead and report evidence and limitations.")
-        lead_policy = _EXECUTION_LEAD_POLICIES.get(state.get("role_policy_version"))
+        role_policy = state.get("role_policy_version")
+        lead_policy = _EXECUTION_LEAD_POLICIES.get(role_policy)
         if lead_policy is not None:
             instructions = lead_policy if part_id is None else EXECUTION_WORKER_ROLES_V1
         instructions += "\n" + workspace.INSTRUCTIONS
@@ -1230,6 +1236,8 @@ def _build_request(state, history, cap, resources, *, part_id=None, request_vers
         if flash_worker:
             request["instructions"] += ("\n" + FLASH_PART_INSTRUCTIONS if part_id is not None else
                                         "\nThe worker is Gemini Flash. Use delegate_worker for its assignments.")
+            if part_id is not None and role_policy == _FLASH_BATCH_POLICY:
+                request["instructions"] += "\n" + FLASH_BATCH_INSTRUCTIONS
     # Append transient counters after the stable context; never accumulate them in history.
     if part_id is None and api_effort.enabled(spec):
         request["effort"] = api_effort.current(state, call_index)
