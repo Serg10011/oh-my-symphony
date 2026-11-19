@@ -25,7 +25,7 @@ cloud = delivery_tests.cloud
 visit = delivery_tests.fixtures.visit
 
 
-def another_card(first, readme):
+def another_card(first, new_text, *, path="README.md"):
     ident = "TEST-2"
     (first.board_root / (ident + ".md")).write_text(
         "---\nid: TEST-2\nidentifier: TEST-2\ntitle: Another ready task\n"
@@ -33,9 +33,9 @@ def another_card(first, readme):
     )
     other = api_board.Board(first.settings, {**first.context, "identifier": ident})
     approve(other)
-    digest = hashlib.sha256((first.repo / "README.md").read_bytes()).hexdigest()
-    replies = iter([frame(None, [tool("write_project_file", "file", path="README.md",
-                                     text=readme, expected_sha256=digest)]), frame("Готово")])
+    digest = hashlib.sha256((first.repo / path).read_bytes()).hexdigest()
+    replies = iter([frame(None, [tool("write_project_file", "file", path=path,
+                                     text=new_text, expected_sha256=digest)]), frame("Готово")])
     transport = httpx.MockTransport(lambda _: httpx.Response(200, json=next(replies)))
     other.run("b" * 32, credentials=lambda _: KEYS, transport=transport)
     return other

@@ -13,6 +13,8 @@ import api_candidate as candidate
 import api_cloud_check as cloud
 import api_publication as publication
 import api_session as session
+import project_config as pc
+import release_verification
 from api_publication import BASE, ReleaseError
 
 
@@ -61,7 +63,10 @@ def receipt(board, value):
                 or board.context["base_branch"] != BASE or value.get("cloud_profile") != cloud.PROFILE
                 or value.get("release_accept") or card["identity"] != _identity(value)):
             raise ReleaseError("group_release_changed")
-        return {**release["target"], **card, "kind": "group_release", "api_acceptance": offer}
+        record = {**release["target"], **card, "kind": "group_release", "api_acceptance": offer}
+        if "verified_release" in release:
+            record["verified_release"] = release["verified_release"]
+        return record
     return None
 
 
@@ -122,7 +127,13 @@ def includes(board, tree, source):
         return merged == tree
 
 
-def _result_identity(board, value, allowed_states=None):
+def _waiting_for_shared_check(value, state):
+    return (value["aggregate"]["method"] == "cloud" and state == value["check_lane"]
+            and not any(key in value for key in ("cloud_attempt", "cloud_seen", "release_check",
+                                                 "release_block", "final_error", "final_document")))
+
+
+def _result_identity(board, value, allowed_states=None, *, shared_check=False):
     # The ordinary delivery also reads group receipts.
     from api_delivery import pairing
 
@@ -136,7 +147,7 @@ def _result_identity(board, value, allowed_states=None):
             or board.card_digest(front, body) != value["result_card_digest"]
             or value["spec"]["project"]["root"] != str(board.repo)):
         raise ReleaseError("group_release_card_changed")
-    if value.get("aggregate"):
+    if value.get("aggregate") and not (shared_check and _waiting_for_shared_check(value, front["state"])):
         final = value.get("final_document", {})
         subject = value.get("check_target") or value["candidate"]
         if (front["state"] != board.review_lane or value.get("final_error")
@@ -201,10 +212,10 @@ def record_review(board, expected, checks):
                 "checks": record["checks"], "checked_at": record["checked_at"]}
 
 
-def _member(board, target, release_tree):
+def _member(board, target, release_tree, *, shared_check):
     from api_delivery import file_delta
 
-    identity = _result_identity(board, board._load())
+    identity = _result_identity(board, board._load(), shared_check=shared_check)
     files = file_delta(board, identity["source_base"], identity["source_commit"])
     if not includes(board, target["tree"], identity):
         raise ReleaseError("group_release_missing_changes")
@@ -226,17 +237,35 @@ def _selection(boards, number, head):
     return first, ids
 
 
-def preview(boards, number, head, *, publisher=None):
+def _shared_check(board, target, path):
+    try:
+        report = release_verification.read(path)
+        release_verification.verify_board(report, board.workflow.parent, BASE)
+    except pc.ProjectError:
+        raise ReleaseError("group_release_verification_invalid") from None
+    if any(report[key] != target[key] for key in ("commit", "tree")):
+        raise ReleaseError("group_release_verification_invalid")
+    proof = {key: report[key] for key in ("commit", "tree", "counts", "test_script_sha256")}
+    if "setup_script_sha256" in report:
+        proof["setup_script_sha256"] = report["setup_script_sha256"]
+    return proof
+
+
+def preview(boards, number, head, *, publisher=None, verified_release=None):
     first, _ = _selection(boards, number, head)
     target = _target(first, number, head, publisher or publication.Publisher(first))
+    proof = _shared_check(first, target, verified_release) if verified_release is not None else None
     tree = candidate._tree(first.repo, target["tree"])
     release = {"target": target, "project": str(first.repo), "workflow": str(first.workflow),
                "agent": first.context["agent_kind"],
-               "cards": {board.identifier: _member(board, target, tree) for board in boards}}
+               "cards": {board.identifier: _member(board, target, tree, shared_check=proof is not None)
+                         for board in boards}}
+    if proof is not None:
+        release["verified_release"] = proof
     return {"offer": _fingerprint(release), "release": release}
 
 
-def record(boards, number, head, expected, *, publisher=None):
+def record(boards, number, head, expected, *, publisher=None, verified_release=None):
     first, ids = _selection(boards, number, head)
     if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-f]{64}", expected):
         raise ReleaseError("group_release_offer_changed")
@@ -256,7 +285,7 @@ def record(boards, number, head, expected, *, publisher=None):
         with ExitStack() as locks:
             for board in sorted(boards, key=lambda item: item.identifier):
                 locks.enter_context(session._lock(board.path))
-            shown = preview(boards, number, head, publisher=publisher)
+            shown = preview(boards, number, head, publisher=publisher, verified_release=verified_release)
             if not hmac.compare_digest(shown["offer"], expected):
                 raise ReleaseError("group_release_offer_changed")
             releases[expected] = shown["release"]

@@ -482,7 +482,16 @@ class Board:
             verdict = "пройдена" if proof["status"] == "passed" else "не пройдена"
             command, output = proof["command"], proof.get("output", "")
             result["report_text"] = result.get("report_text", "") + f"\n\nПроверка подзадачи {verdict}\n{command}\n{output}"
-        if value.get("aggregate"):
+        group_check = release.get("verified_release") if release else None
+        if value.get("aggregate") and group_check:
+            result["final"] = {"status": "ready", "method": "release", "commit": group_check["commit"],
+                               "tree": group_check["tree"]}
+            counts = group_check["counts"]
+            result["report_text"] = (result.get("report_text", "") + "\n\n"
+                                     + f"Итоговая проверка в общем выпуске {group_check['commit'][:12]}\n"
+                                     + f"Тесты прошли — {counts['passed']}, пропущены — {counts['skipped']}, "
+                                     + f"ошибок в полном прогоне — {counts['failed']}.")
+        elif value.get("aggregate"):
             final = api_final.view(self, value)
             result["final"] = final
             if document := api_final.render_document(self, value, final):
@@ -511,7 +520,7 @@ class Board:
                         result["cloud_check"]["phase"] = seen["phase"]
                 except (BoardError, session.SessionError, ValueError, KeyError, TypeError):
                     result["cloud_check"] = {"status": "stale"}
-            if not value.get("aggregate") or result["final"]["status"] != "ready":
+            if grouped or not value.get("aggregate") or result["final"]["status"] != "ready":
                 result["report_text"] = (result.get("report_text", "") + "\n\n"
                                          + candidate.render_report(value["candidate"], cloud_checked=bool(receipt),
                                                                    group_release=grouped, group_ready=group_ready,
@@ -525,7 +534,7 @@ class Board:
 
     def _cloud_subject(self, value, *, allow_moved=False):
         if (not value or value.get("cloud_profile") != cloud.PROFILE or value["status"] != "result"
-                or "group_review" in value
+                or "group_review" in value or group.receipt(self, value)
                 or value.get("candidate", {}).get("status") != "awaiting_full_checks"):
             raise BoardError("cloud_not_enabled")
         report = value["candidate"]
@@ -744,16 +753,20 @@ class Board:
             raise BoardError("api_result_not_ready")
         if version not in ("checked", "original"):
             raise BoardError("invalid_board_payload")
+        grouped = group.receipt(self, value)
         if value.get("aggregate"):
             if self.card_digest(*self.card()) != value["result_card_digest"]:
                 raise BoardError("api_final_result_changed")
+            if grouped:
+                original = grouped["identity"]
+                return delivery.review_files(self, original["source_base"], original["source_commit"], offset,
+                                             source="original_candidate")
             if version == "checked" and value.get("cloud_profile"):
                 return delivery.review(self, value, offset)
             self.verify_result(value)
             report = value["candidate"]
             return delivery.review_files(self, report["base_commit"], report["commit"], offset,
                                          source="original_candidate" if version == "original" else "composed_result")
-        grouped = group.receipt(self, value)
         if version == "checked" and not grouped and (value.get("check_target") or value.get("release_accept")):
             return delivery.review(self, value, offset)
         result = session.review(self.session_path, offset=offset)

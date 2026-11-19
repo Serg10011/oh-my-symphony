@@ -26,12 +26,15 @@ def main(argv=None):
     parser.add_argument("--head")
     parser.add_argument("--card", required=True, action="append")
     parser.add_argument("--offer", help="record the preview with this approved fingerprint")
+    parser.add_argument("--verified-release", type=Path, metavar="REPORT",
+                        help="reuse the saved full checks of the exact merged release")
     parser.add_argument("--ready", metavar="COMMIT", help="record the targeted checks of one candidate")
     parser.add_argument("--checks", help="short summary of the completed targeted checks")
     args = parser.parse_args(argv)
     if args.ready is not None:
-        if len(args.card) != 1 or args.checks is None or any(v is not None for v in (args.pr, args.head, args.offer)):
-            parser.error("--ready requires one --card and --checks")
+        if (len(args.card) != 1 or args.checks is None
+                or any(v is not None for v in (args.pr, args.head, args.offer, args.verified_release))):
+            parser.error("--ready requires one --card and --checks and cannot be combined with release options")
     elif args.pr is None or args.head is None or args.checks is not None:
         parser.error("the release preview requires --pr and --head")
     try:
@@ -46,9 +49,10 @@ def main(argv=None):
         if args.ready is not None:
             result = api_group_release.record_review(boards[0], args.ready, args.checks)
         elif args.offer is None:
-            result = api_group_release.preview(boards, args.pr, args.head)
+            result = api_group_release.preview(boards, args.pr, args.head, verified_release=args.verified_release)
         else:
-            result = api_group_release.record(boards, args.pr, args.head, args.offer)
+            result = api_group_release.record(boards, args.pr, args.head, args.offer,
+                                              verified_release=args.verified_release)
         print(json.dumps(result, ensure_ascii=False))
         return 0
     except (api_board.BoardError, api_candidate.CandidateError, api_session.SessionError, pc.ProjectError,
