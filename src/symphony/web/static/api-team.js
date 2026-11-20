@@ -57,6 +57,36 @@
     return `${number(cached)} (${percent}%)`;
   }
 
+  function delegationStats(session) {
+    const noData = 'Нет данных';
+    const parts = session?.parts;
+    if (!parts || typeof parts !== 'object' || Array.isArray(parts)) {
+      return { delegations: noData, returns: noData };
+    }
+    const entries = Object.entries(parts);
+    if (!entries.length) return { delegations: number(0), returns: number(0) };
+
+    let totalReturns = 0;
+    let returnsValid = true;
+
+    for (const [, record] of entries) {
+      if (!record || typeof record !== 'object' || Array.isArray(record)) {
+        return { delegations: noData, returns: noData };
+      }
+      const attempts = record.attempts;
+      if (!Number.isSafeInteger(attempts) || attempts < 1) {
+        returnsValid = false;
+      } else {
+        totalReturns += attempts - 1;
+      }
+    }
+
+    return {
+      delegations: number(entries.length),
+      returns: returnsValid ? number(totalReturns) : noData,
+    };
+  }
+
   // The detailed report text already carries the amounts. The summary that
   // reads them lives in api-team-costs.js so the card and the report cannot
   // drift apart into two different price calculations.
@@ -77,10 +107,14 @@
     const spendTotal = el('dd');
     const spendTotalLabel = el('dt', {}, 'Итого');
     const spendLeadCache = el('dd');
+    const spendDelegations = el('dd');
+    const spendReturns = el('dd');
     const spendList = el('dl', { class: 'api-team-assignment' }, [
       el('dt', {}, 'Ведущий'), spendLead, el('dt', {}, 'Исполнитель'), spendWorker,
       spendTotalLabel, spendTotal,
       el('dt', {}, 'Вход ведущего из кеша, токены'), spendLeadCache,
+      el('dt', {}, 'Поручения исполнителю'), spendDelegations,
+      el('dt', {}, 'Возвраты на доработку'), spendReturns,
     ]);
     const spendNote = el('p', { class: 'form-hint' });
     const spend = el('div', { class: 'api-team-spend', role: 'group', 'aria-label': 'Расход команды' },
@@ -307,6 +341,9 @@
         markSpend(spendNote, spendData.total.incomplete);
         spend.classList.toggle('api-team-spend-incomplete', spendData.total.incomplete);
         setText(spendLeadCache, leadCacheShare(data.session));
+        const delegations = delegationStats(data.session);
+        setText(spendDelegations, delegations.delegations);
+        setText(spendReturns, delegations.returns);
       }
       reportDetails.hidden = !data.report_text;
       resultDetails.hidden = !data.session?.result;
