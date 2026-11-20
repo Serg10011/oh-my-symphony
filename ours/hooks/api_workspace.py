@@ -529,7 +529,8 @@ def _mutate(spec: dict, value: dict, name: str, args: dict) -> dict:
     return {"path": path, "sha256": _sha(data), "bytes": len(data)}
 
 
-def call(spec: dict, value: dict, name: str, args: dict, *, before_command=None, cancelled=None) -> dict:
+def call(spec: dict, value: dict, name: str, args: dict, *, before_command=None, cancelled=None,
+         include_before_revision=False) -> dict:
     if not isinstance(args, dict):
         raise WorkspaceError("invalid_workspace_query")
     if name in {"write_project_file", "delete_project_file"}:
@@ -569,6 +570,8 @@ def call(spec: dict, value: dict, name: str, args: dict, *, before_command=None,
                     before_command()
                 shutil.rmtree(backup)
         result["revision"] = revision
+        if include_before_revision:
+            result["before_revision"] = before_revision
         # The durable session stores this bounded command result. Large logs can
         # instead be written to a task file and read in chunks by either role.
         if len(result["output"]) > 16000:
