@@ -48,6 +48,49 @@ def test_multiple_standard_checks_have_distinct_counts_and_keep_skip_reasons():
     assert summary["output_sha256"] == log["output_sha256"]
 
 
+@pytest.mark.parametrize(("args", "target"), [
+    ("-B -m unittest discover -v -s tests/api_team -t .", "discover -s tests/api_team -t ."),
+    ("-m unittest discover -t . -s tests/api_team -v", "discover -s tests/api_team -t ."),
+    ("-m unittest discover --top-level-directory . --verbose --start-directory tests",
+     "discover -s tests -t ."),
+    ("-B -m unittest -v tests.api_team.test_lead_effort", "tests.api_team.test_lead_effort"),
+    ("-B -m unittest -v", ""),
+])
+def test_unittest_flags_keep_the_test_selection(args, target):
+    python = "/runtime with space/bin/python3"
+    command = f"{shlex.quote(python)} {args}"
+    summary = api_check_output.summarize(command, python, outcome(unittest_log()))
+    assert summary["checks"] == [
+        {"check": ("unittest " + target).rstrip(), "passed": 35, "skipped": 1,
+         "skip_reasons": ["'optional fixture'"]},
+    ]
+
+
+@pytest.mark.parametrize("args", [
+    "-X dev -m unittest discover -v -s tests -t .",
+    "-m unittest discover -t . --top-level-directory src",
+    "-m unittest discover -s -v tests -t .",
+    "-m unittest discover -s tests -t",
+    "-m unittest discover -v --quiet -s tests -t .",
+    "-m unittest discover -s tests/* -t .",
+    "-m unittest discover -s tests -t . | cat",
+    "-m unittest discover -s tests -t .; echo extra",
+    "-m unittest discover -s tests -t .\necho extra",
+    "-m unittest -v discover -s tests -t .",
+    "-m unittest -v tests.unit -q",
+])
+def test_ambiguous_flags_and_shell_syntax_keep_the_log(args):
+    python = "/runtime/bin/python3"
+    assert api_check_output.summarize(f"{python} {args}", python, outcome(unittest_log())) is None
+
+
+def test_discovery_with_python_flags_keeps_reported_diagnostics():
+    python = "/runtime/bin/python3"
+    command = f"{python} -B -m unittest discover -v -s tests/api_team -t ."
+    log = outcome("DeprecationWarning: optional fixture\n" + unittest_log())
+    assert api_check_output.summarize(command, python, log) is None
+
+
 @pytest.mark.parametrize("reason", [
     "failure", "timeout", "truncated", "excerpt", "warning", "wrong_count",
     "unexpected_footer", "non_test", "mixed_command", "missing_batch_result", "short",
