@@ -6,11 +6,48 @@ import shlex
 
 _PATH = r"[A-Za-z0-9_./][A-Za-z0-9_./-]*"
 _NODE = re.compile(r'"\$SYMPHONY_NODE" --check (' + _PATH + r")")
-_UNITTEST = re.compile(r"-m unittest(?: (discover(?: -s " + _PATH + r")?|" + _PATH + r"))?(?: -[qv])?")
+_VERBOSITY = {"-q", "-v", "--quiet", "--verbose"}
+_DISCOVERY_DIRECTORIES = {"-s": "-s", "--start-directory": "-s", "-t": "-t", "--top-level-directory": "-t"}
 _FOOTER = re.compile(r"^-{70}\nRan ([1-9]\d{0,4}) tests? in \d+\.\d{3}s\n\n"
                      r"OK(?: \(skipped=([1-9]\d{0,4})\))?\n", re.MULTILINE)
 _PROGRESS = re.compile(r"[\w.]+ \([\w.]+\) \.\.\. (?:ok|skipped (.+))")
 _MIN_SAVING_BYTES = 1024
+
+
+def _discovery_target(args):
+    args = iter(args)
+    directories = {}
+    verbosity_seen = False
+    for flag in args:
+        if flag in _VERBOSITY:
+            if verbosity_seen:
+                return None
+            verbosity_seen = True
+            continue
+        option = _DISCOVERY_DIRECTORIES.get(flag)
+        directory = next(args, "")
+        if option is None or option in directories or not re.fullmatch(_PATH, directory):
+            return None
+        directories[option] = directory
+    return " ".join(["discover", *(f"{option} {directories[option]}" for option in ("-s", "-t") if option in directories)])
+
+
+def _unittest_target(command):
+    # Only horizontal whitespace separates tokens. Shell syntax stays unrecognized.
+    args = re.split(r"[ \t]+", command.lstrip(" \t"))
+    if args[:1] == ["-B"]:
+        args = args[1:]
+    if args[:2] != ["-m", "unittest"]:
+        return None
+    args = args[2:]
+    if args[:1] == ["discover"]:
+        return _discovery_target(args[1:])
+    targets = [arg for arg in args if arg not in _VERBOSITY]
+    if len(args) - len(targets) > 1 or len(targets) > 1:
+        return None
+    if targets and (targets[0] == "discover" or not re.fullmatch(_PATH, targets[0])):
+        return None
+    return "".join(targets)
 
 
 def _check_commands(command, python):
@@ -22,10 +59,10 @@ def _check_commands(command, python):
         if node:
             checks.append(("node", node[1]))
             continue
-        unit = _UNITTEST.fullmatch(part.removeprefix(python_prefix)) if part.startswith(python_prefix) else None
+        unit = _unittest_target(part.removeprefix(python_prefix)) if part.startswith(python_prefix) else None
         if unit is None:
             return []
-        checks.append(("unittest", unit[1] or ""))
+        checks.append(("unittest", unit))
     return checks
 
 
