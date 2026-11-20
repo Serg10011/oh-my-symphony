@@ -97,6 +97,24 @@ class ModelRequestCountsTests(unittest.TestCase):
         cases = [
             ("distinct profiles with the same model", with_costs, "Saved report", ("4", "2")),
             ("requests without tokens or cost summary", calls_only, "", ("4", "2")),
+            (
+                "known number of requests without token usage",
+                {
+                    **assignment,
+                    "usage": {
+                        "sol-lead": {"calls": 4, "unknown_usage_calls": 0},
+                        "sol-worker": {"calls": 2, "unknown_usage_calls": 1},
+                    },
+                },
+                "",
+                ("4", "2 · без данных о токенах — 1"),
+            ),
+            (
+                "impossible missing usage count",
+                {**assignment, "usage": {**usage, "sol-worker": {"calls": 2, "unknown_usage_calls": 3}}},
+                "",
+                ("4", "2"),
+            ),
             ("saved snapshot names", {"profiles": profiles, "usage": usage}, "", ("4", "2")),
             (
                 "explicit solo with stale worker snapshot",
@@ -113,6 +131,13 @@ class ModelRequestCountsTests(unittest.TestCase):
                 "", (no_data, "0"),
             ),
             ("assigned roles without usage", assignment, "", (no_data, no_data)),
+            ("missing role metadata", {"usage": usage}, "", (no_data, no_data)),
+            (
+                "legacy snapshot with no assigned worker",
+                {"profiles": {**profiles, "worker": None}, "usage": usage},
+                "",
+                ("4", "не назначен"),
+            ),
             (
                 "assigned worker snapshot without a lookup key",
                 {"profiles": {"worker": {"model": "gpt-6.1-sol"}}, "usage": usage}, "", (no_data, no_data),

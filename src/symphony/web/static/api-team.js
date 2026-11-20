@@ -89,14 +89,19 @@
 
   function profileCallStats(session) {
     const savedCalls = profile => {
-      const calls = typeof profile === 'string' && profile ? session.usage?.[profile]?.calls : undefined;
-      return Number.isSafeInteger(calls) && calls >= 0 ? number(calls) : 'Нет данных';
+      const usage = typeof profile === 'string' && profile ? session.usage?.[profile] : undefined;
+      const calls = usage?.calls;
+      if (!Number.isSafeInteger(calls) || calls < 0) return 'Нет данных';
+      const unknown = usage.unknown_usage_calls;
+      return Number.isSafeInteger(unknown) && unknown > 0 && unknown <= calls
+        ? `${number(calls)} · без данных о токенах — ${number(unknown)}`
+        : number(calls);
     };
     const lead = session.lead_profile || session.profiles?.lead?.name;
     const worker = session.worker_profile;
     const workerSnapshot = session.profiles?.worker;
     // Explicit null means solo, even if an older profile snapshot is present.
-    const solo = worker === null || (worker === undefined && workerSnapshot == null);
+    const solo = worker === null || (worker === undefined && workerSnapshot === null);
     return {
       lead: savedCalls(lead),
       worker: solo ? 'не назначен' : savedCalls(worker === undefined ? workerSnapshot?.name : worker),
