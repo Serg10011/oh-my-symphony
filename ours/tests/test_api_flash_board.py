@@ -107,7 +107,9 @@ for turn, line in enumerate(sys.stdin.buffer, 1):
         break
     assert hook("PreToolUse")["decision"] == "allow"
     if turn == 1:
-        assert messages == [{"assignment": "Prepare the test."}]
+        assert len(messages) == 1
+        assignment = messages[0]["assignment"]
+        assert assignment == "Prepare the test." or assignment.endswith("\n\nLead's assignment (scope):\nPrepare the test.")
         assert "delegate_worker" not in {item["name"] for item in envelope["tools"]}
         assert task["resources"]["response_output_cap_enforced_by_provider"] is False
         assert "input_tokens_remaining" not in task["resources"]
@@ -240,10 +242,20 @@ def test_confirmed_flash_edits_only_the_task_copy_and_is_billed_separately(board
     assert report["by_model"][lead_model]["estimated_requests"] == 4
     assert report["by_model"][api.FLASH_MODEL]["estimated_usd"] is None
     rows = [json.loads(line) for line in path.read_text().splitlines()]
-    flash_calls = [row for row in session._load(board.session_path)["calls"] if row["profile"] == api.FLASH_WORKER]
+    saved = session._load(board.session_path)
+    flash_calls = [row for row in saved["calls"] if row["profile"] == api.FLASH_WORKER]
     assert len(rows) == len(flash_calls) == 4 and len({row["pid"] for row in rows}) == 1
     assert [hashlib.sha256(row["wire"].encode()).hexdigest() for row in rows] == [
         call["request_sha256"] for call in flash_calls]
+    first = json.loads(rows[0]["wire"])["message"]["content"]
+    envelope = json.loads("{" + first.split("\n{", 1)[1])
+    task = saved["spec"]["task"]
+    expected = "Prepare the test."
+    if lead == api.SOL_62_LEAD:
+        expected = f"Architect's task (reference):\n{task}\n\nLead's assignment (scope):\n{expected}"
+        assert session._ORIGINAL_TASK_CONTEXT in envelope["instructions"]
+    assert envelope["task_data"]["messages"] == [{"assignment": expected}]
+    assert all(task not in json.loads(row["wire"])["message"]["content"] for row in rows[1:])
     assert board.review()["files"][0]["path"] == "tests/test_flash.py"
     assert not (board.repo / "tests/test_flash.py").exists()
     assert not list(board.root.glob("symphony-flash-*"))

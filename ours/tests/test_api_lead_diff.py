@@ -44,8 +44,8 @@ def test_completed_handoff_includes_the_checked_diff_in_the_next_lead_request(bo
         "revision": first["revision"], "base_commit": first["base_commit"], "total": 1, "same_as": "hand", "next": None}
     assert "workspace_changes" not in wire.read_text()
     saved = session._load(board.session_path)
-    assert saved["role_policy_version"] == 6
-    assert all(item["role_policy_version"] == 6 for item in saved["calls"])
+    assert saved["role_policy_version"] == 7
+    assert all(item["role_policy_version"] == 7 for item in saved["calls"])
     assert all(item["name"] != "project_changes" for item in saved["file_calls"])
 
 
@@ -119,7 +119,7 @@ def test_files_with_no_text_diff_remain_visible_across_the_file_page_boundary(re
 
 def test_worker_and_saved_policy_keep_the_original_changes_tool(review_copy):
     saved = review_copy
-    for version, part in [(5, None), (6, "worker")]:
+    for version, part in [(5, None), (6, "worker"), (7, "worker")]:
         saved["role_policy_version"] = version
         request = session._build_request(saved, [], 100, {}, part_id=part)
         original = next(item for item in request["tools"] if item["name"] == "project_changes")
@@ -139,9 +139,38 @@ def test_new_policy_is_scoped_to_the_assigned_pair_and_starting_effort(tmp_path,
     path, _ = prepared(tmp_path, lead_profile=lead, worker_profile=worker, lead_effort=effort)
     saved = state(path)
     assert saved["role_policy_version"] == version
-    saved["role_policy_version"] = 6
-    with pytest.raises(session.SessionError, match="invalid_role_policy"):
-        session._load(path, raw=json.dumps(saved).encode())
+    for incompatible in (6, 7):
+        saved["role_policy_version"] = incompatible
+        with pytest.raises(session.SessionError, match="invalid_role_policy"):
+            session._load(path, raw=json.dumps(saved).encode())
+
+
+@pytest.mark.parametrize("version", [6, 7])
+def test_only_first_assignment_can_include_the_original_task(review_copy, tmp_path, monkeypatch, version):
+    saved = review_copy
+    saved["role_policy_version"] = version
+    path = tmp_path / "handoff.json"
+    assert session._load(path, raw=json.dumps(saved).encode())["role_policy_version"] == version
+    assignments = []
+
+    def receive_assignment(_path, _saved, part_id, part, **_kwargs):
+        assignments.append((part_id, part["history"][-1]["content"]))
+        return session._WorkerOutcome("Checked")
+
+    monkeypatch.setattr(session, "_worker", receive_assignment)
+    first = "Проверь реализацию. Запись файлов за пределами поручения запрещена."
+    calls = [
+        assignment(call_id="initial", message=first),
+        assignment(call_id="again", kind="correction", message="Сверь результат."),
+        assignment(call_id="other", part="part_2", message="Проверь второй файл."),
+    ]
+    for call in calls:
+        saved["lead_history"].append(call)
+        session._dispatch(path, saved, [call], environ={}, transport=None)
+    task = saved["spec"]["task"]
+    if version == 7:
+        first = f"Architect's task (reference):\n{task}\n\nLead's assignment (scope):\n{first}"
+    assert assignments == [("part_1", first), ("part_1", "Сверь результат."), ("part_2", "Проверь второй файл.")]
 
 
 def test_correction_with_new_edits_delivers_the_new_diff(review_copy):

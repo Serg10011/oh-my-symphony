@@ -140,9 +140,15 @@ if you make that decision before the first handoff.
 """
 _FLASH_BATCH_POLICY = 5
 _SOL_REVIEW_POLICY = 6
+_SOL_TASK_BRIEF_POLICY = 7
+_SOL_REVIEW_POLICIES = frozenset({_SOL_REVIEW_POLICY, _SOL_TASK_BRIEF_POLICY})
 _EARLY_HANDOFF = """Once a suitable task's goal, constraints and way to check it are clear,
 delegate it to Flash. Leave routine source discovery to the worker. Investigate
 first when an uncertainty would change the assignment or its acceptance.
+"""
+_TASK_BRIEF_HANDOFF = """The controller includes the architect's original task with the first
+Flash assignment. State the assigned scope and essential context. Check the
+final result against the architect's actual requirements.
 """
 _EXECUTION_LEAD_POLICIES = {
     1: EXECUTION_LEAD_ROLES_V1,
@@ -151,6 +157,7 @@ _EXECUTION_LEAD_POLICIES = {
     4: EXECUTION_LEAD_ROLES_V2 + _PLAN_CHANGE_REPORT,
     _FLASH_BATCH_POLICY: EXECUTION_LEAD_ROLES_V2 + _PLAN_CHANGE_REPORT,
     _SOL_REVIEW_POLICY: EXECUTION_LEAD_ROLES_V2 + _PLAN_CHANGE_REPORT + _EARLY_HANDOFF,
+    _SOL_TASK_BRIEF_POLICY: EXECUTION_LEAD_ROLES_V2 + _PLAN_CHANGE_REPORT + _EARLY_HANDOFF + _TASK_BRIEF_HANDOFF,
 }
 EXECUTION_WORKER_ROLES_V1 = """Implement the coherent part assigned by the lead and
 verify your work with appropriate checks. Choose the implementation within the
@@ -158,6 +165,10 @@ given goal, context and constraints. Return actual changes, check evidence and
 remaining limitations to the lead, who owns integration and final review.
 If explicitly assigned only a review or investigation, follow that scope and
 report findings without making unrequested changes. Use the task's language.
+"""
+_ORIGINAL_TASK_CONTEXT = """The architect's original task in the first assignment is context.
+Apply its requirements within the scope assigned by the lead. Flag any conflict
+between those requirements and the assignment to the lead.
 """
 RESOURCE_INSTRUCTIONS = """The final user message supplies current runtime resources,
 not a new task.
@@ -385,11 +396,16 @@ def _read_state(path: Path) -> bytes:
     return raw
 
 
+def _sol_flash_high(spec):
+    return (spec["lead_profile"], spec["worker_profile"], spec["lead_effort"]) == (
+        api.SOL_62_LEAD, api.FLASH_WORKER, "high")
+
+
 def _new_role_policy(spec):
     if spec["worker_profile"] != api.FLASH_WORKER:
         return 3
-    if spec["lead_profile"] == api.SOL_62_LEAD and spec["lead_effort"] == "high":
-        return _SOL_REVIEW_POLICY
+    if _sol_flash_high(spec):
+        return _SOL_TASK_BRIEF_POLICY
     return _FLASH_BATCH_POLICY
 
 
@@ -411,7 +427,7 @@ def _load(path: Path, *, raw: bytes | None = None) -> dict:
     if (type(role_policy) is not int or role_policy not in (0, *_EXECUTION_LEAD_POLICIES)
             or (role_policy and "execution" not in spec)
             or (role_policy in (2, 4, _FLASH_BATCH_POLICY) and spec["worker_profile"] != api.FLASH_WORKER)
-            or (role_policy == _SOL_REVIEW_POLICY and _new_role_policy(spec) != role_policy)):
+            or (role_policy in _SOL_REVIEW_POLICIES and not _sol_flash_high(spec))):
         raise SessionError("invalid_role_policy")
     if "output_limits" in state:
         pinned = state["output_limits"]
@@ -1237,10 +1253,12 @@ def _build_request(state, history, cap, resources, *, part_id=None, request_vers
                         "Use a stable part_id and at most one targeted correction for that same part. Review worker results."
                         if part_id is None else "Carry out the coherent part assigned by the lead and report evidence and limitations.")
         role_policy = state.get("role_policy_version")
-        lead_review = part_id is None and role_policy == _SOL_REVIEW_POLICY
+        lead_review = part_id is None and role_policy in _SOL_REVIEW_POLICIES
         lead_policy = _EXECUTION_LEAD_POLICIES.get(role_policy)
         if lead_policy is not None:
             instructions = lead_policy if part_id is None else EXECUTION_WORKER_ROLES_V1
+        if part_id is not None and role_policy == _SOL_TASK_BRIEF_POLICY:
+            instructions += "\n" + _ORIGINAL_TASK_CONTEXT
         instructions += "\n" + (workspace.LEAD_REVIEW_INSTRUCTIONS if lead_review else workspace.INSTRUCTIONS)
         instructions += "\nAvailable Python: " + spec["execution"]["python"]
         instructions += "\nLimits: " + json.dumps(limits)
@@ -1252,7 +1270,7 @@ def _build_request(state, history, cap, resources, *, part_id=None, request_vers
         if flash_worker:
             request["instructions"] += ("\n" + FLASH_PART_INSTRUCTIONS if part_id is not None else
                                         "\nThe worker is Gemini Flash. Use delegate_worker for its assignments.")
-            if part_id is not None and role_policy in (_FLASH_BATCH_POLICY, _SOL_REVIEW_POLICY):
+            if part_id is not None and (role_policy == _FLASH_BATCH_POLICY or role_policy in _SOL_REVIEW_POLICIES):
                 request["instructions"] += "\n" + FLASH_BATCH_INSTRUCTIONS
     # Append transient counters after the stable context; never accumulate them in history.
     if part_id is None and api_effort.enabled(spec):
@@ -1333,7 +1351,7 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport,
         _stop(path, state, "output_limit")
         return None
     resources = _resources(state, cap, worker=part_id is not None)
-    lead_review = part_id is None and state.get("role_policy_version") == _SOL_REVIEW_POLICY
+    lead_review = part_id is None and state.get("role_policy_version") in _SOL_REVIEW_POLICIES
     while True:
         request = _build_request(state, history, cap, resources, part_id=part_id)
         try:
@@ -1473,7 +1491,7 @@ def _project_answer(state, call, *, part_id=None, deferred=False, before_command
     try:
         args = _decode(call["arguments"])
         if "execution" in state["spec"]:
-            if part_id is None and state.get("role_policy_version") == _SOL_REVIEW_POLICY and call["name"] == "project_changes":
+            if part_id is None and state.get("role_policy_version") in _SOL_REVIEW_POLICIES and call["name"] == "project_changes":
                 return workspace.lead_changes(state["spec"], state["execution_state"],
                                               state["project_snapshot"], args), False
             return workspace.call(state["spec"], state["execution_state"], call["name"],
@@ -1635,8 +1653,11 @@ def _dispatch(path, state, calls, *, environ, transport, flash=None, resumed_par
                 state["tool_errors"].append({"call_id": call["call_id"], "error": error})
             else:
                 part_id = args["part_id"]
+                message = args["message"]
+                if state.get("role_policy_version") == _SOL_TASK_BRIEF_POLICY and not state["parts"]:
+                    message = f"Architect's task (reference):\n{spec['task']}\n\nLead's assignment (scope):\n{message}"
                 part = state["parts"].setdefault(part_id, {"attempts": 0, "history": []})
-                part["history"].append({"role": "user", "content": args["message"]})
+                part["history"].append({"role": "user", "content": message})
                 part["attempts"] += 1
                 worker = _worker(path, state, part_id, part, environ=environ, transport=transport, flash=flash)
                 if worker is None:
@@ -1646,7 +1667,7 @@ def _dispatch(path, state, calls, *, environ, transport, flash=None, resumed_par
                     output.update(error=worker.error, partial=True)
                     state["tool_errors"].append({"call_id": call["call_id"], "error": worker.error})
         fatal = False
-        if state.get("role_policy_version") == _SOL_REVIEW_POLICY and "text" in output and "error" not in output:
+        if state.get("role_policy_version") in _SOL_REVIEW_POLICIES and "text" in output and "error" not in output:
             fatal = _handoff_diff(state, output)
             if "error" in output["workspace_changes"]:
                 state["tool_errors"].append({"call_id": call["call_id"], "error": output["workspace_changes"]["error"]})
