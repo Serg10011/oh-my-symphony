@@ -44,16 +44,16 @@ def test_completed_handoff_includes_the_checked_diff_in_the_next_lead_request(bo
         "revision": first["revision"], "base_commit": first["base_commit"], "total": 1, "same_as": "hand", "next": None}
     assert "workspace_changes" not in wire.read_text()
     saved = session._load(board.session_path)
-    assert saved["role_policy_version"] == 8
-    assert all(item["role_policy_version"] == 8 for item in saved["calls"])
+    assert saved["role_policy_version"] == 9
+    assert all(item["role_policy_version"] == 9 for item in saved["calls"])
     assert all(item["name"] != "project_changes" for item in saved["file_calls"])
 
 
-@pytest.mark.parametrize("version", [7, 8], ids=["saved-policy", "new-policy"])
+@pytest.mark.parametrize("version", [7, 8, 9])
 def test_handoff_checks_use_completed_commands_at_the_submitted_revision(board, tmp_path, monkeypatch, version):
     fake_worker(tmp_path, monkeypatch, "handoff_checks")
-    if version == 7:
-        monkeypatch.setattr(session, "_new_role_policy", lambda _spec: 7)
+    if version in (7, 8):
+        monkeypatch.setattr(session, "_new_role_policy", lambda _spec: version)
     approve_flash(board, {**TEAM, "lead_profile": api.SOL_62_LEAD})
     full_output = "detailed test output\n" * 500
 
@@ -70,7 +70,7 @@ def test_handoff_checks_use_completed_commands_at_the_submitted_revision(board, 
                                   sol("Reviewed", model=model), model=model)
     assert board.run("a" * 32, credentials=lambda _: KEYS, transport=transport)["status"] == "result"
     assert len(sent) == 2
-    assert (session._CHECK_HANDOFF in sent[0]["input"][0]["content"]) == (version == 8)
+    assert (session._CHECK_HANDOFF in sent[0]["input"][0]["content"]) == (version >= 8)
     returned = tool_result(sent[-1], "hand")
     assert "detailed test output" not in json.dumps(returned)
     revision = returned["workspace_changes"]["revision"]
@@ -171,7 +171,7 @@ def test_files_with_no_text_diff_remain_visible_across_the_file_page_boundary(re
 
 def test_worker_and_saved_policy_keep_the_original_changes_tool(review_copy):
     saved = review_copy
-    for version, part in [(5, None), (6, "worker"), (7, "worker"), (8, "worker")]:
+    for version, part in [(5, None), (6, "worker"), (7, "worker"), (8, "worker"), (9, "worker")]:
         saved["role_policy_version"] = version
         request = session._build_request(saved, [], 100, {}, part_id=part)
         original = next(item for item in request["tools"] if item["name"] == "project_changes")
@@ -184,20 +184,21 @@ def test_worker_and_saved_policy_keep_the_original_changes_tool(review_copy):
 @pytest.mark.parametrize(("lead", "worker", "effort", "version"), [
     (api.SOL_62_LEAD, api.FLASH_WORKER, "max", 5),
     ("sol-lead", api.FLASH_WORKER, "high", 5),
-    (api.SOL_62_LEAD, None, "high", 3),
+    (api.SOL_62_LEAD, None, "high", 10),
+    (api.SOL_62_LEAD, None, "max", 10),
 ])
 def test_new_policy_is_scoped_to_the_assigned_pair_and_starting_effort(tmp_path, portable_offline_policy,
                                                                       lead, worker, effort, version):
     path, _ = prepared(tmp_path, lead_profile=lead, worker_profile=worker, lead_effort=effort)
     saved = state(path)
     assert saved["role_policy_version"] == version
-    for incompatible in (6, 7, 8):
+    for incompatible in {6, 7, 8, 9, 10} - {version}:
         saved["role_policy_version"] = incompatible
         with pytest.raises(session.SessionError, match="invalid_role_policy"):
             session._load(path, raw=json.dumps(saved).encode())
 
 
-@pytest.mark.parametrize("version", [6, 7, 8])
+@pytest.mark.parametrize("version", [6, 7, 8, 9])
 def test_only_first_assignment_can_include_the_original_task(review_copy, tmp_path, monkeypatch, version):
     saved = review_copy
     saved["role_policy_version"] = version
@@ -220,7 +221,7 @@ def test_only_first_assignment_can_include_the_original_task(review_copy, tmp_pa
         saved["lead_history"].append(call)
         session._dispatch(path, saved, [call], environ={}, transport=None)
     task = saved["spec"]["task"]
-    if version in (7, 8):
+    if version >= 7:
         first = f"Architect's task (reference):\n{task}\n\nLead's assignment (scope):\n{first}"
     assert assignments == [("part_1", first), ("part_1", "Сверь результат."), ("part_2", "Проверь второй файл.")]
 

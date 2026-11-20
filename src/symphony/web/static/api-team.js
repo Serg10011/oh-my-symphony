@@ -108,6 +108,43 @@
     };
   }
 
+  function leadEffortStats(session) {
+    const noData = 'Нет данных';
+    if (!session || typeof session !== 'object') return noData;
+
+    const events = Array.isArray(session.lead_effort?.events) ? session.lead_effort.events : null;
+    if (events?.length) {
+      const escalation = events.slice().reverse().find(ev =>
+        ev && typeof ev === 'object' &&
+        String(ev.from).toLowerCase() === 'high' &&
+        String(ev.to).toLowerCase() === 'max'
+      );
+      if (escalation) {
+        const arrow = `${escalation.from} → ${escalation.to}`;
+        const calls = Number.isSafeInteger(session.calls) && session.calls >= 0 ? session.calls : 0;
+        const index = escalation.effective_call_index;
+        const validIndex = Number.isSafeInteger(index) && index > 0;
+        const future = validIndex && index > calls;
+        const suffix = future
+          ? `назначенное повышение с запроса ${index}`
+          : (validIndex ? `с запроса ${index}` : '');
+        const reason = typeof escalation.reason === 'string' && escalation.reason.trim()
+          ? escalation.reason.trim()
+          : '';
+        const note = suffix && reason ? `${suffix}: ${reason}` : (suffix || reason);
+        return note ? `${arrow} · ${note}` : arrow;
+      }
+    }
+
+    const initial = session.lead_effort?.initial;
+    if (typeof initial === 'string' && initial.trim()) return initial.trim();
+
+    const profileEffort = session.profiles?.lead?.effort;
+    if (typeof profileEffort === 'string' && profileEffort.trim()) return profileEffort.trim();
+
+    return noData;
+  }
+
   // The detailed report text already carries the amounts. The summary that
   // reads them lives in api-team-costs.js so the card and the report cannot
   // drift apart into two different price calculations.
@@ -132,6 +169,7 @@
     const spendLeadCache = el('dd');
     const spendDelegations = el('dd');
     const spendReturns = el('dd');
+    const spendLeadEffort = el('dd');
     const spendList = el('dl', { class: 'api-team-assignment' }, [
       el('dt', {}, 'Ведущий'), spendLead,
       el('dt', {}, 'Запросы ведущего'), spendLeadCalls,
@@ -141,6 +179,7 @@
       el('dt', {}, 'Вход ведущего из кеша, токены'), spendLeadCache,
       el('dt', {}, 'Поручения исполнителю'), spendDelegations,
       el('dt', {}, 'Возвраты на доработку'), spendReturns,
+      el('dt', {}, 'Усилие ведущего'), spendLeadEffort,
     ]);
     const spendNote = el('p', { class: 'form-hint' });
     const spend = el('div', { class: 'api-team-spend', role: 'group', 'aria-label': 'Расход команды' },
@@ -374,6 +413,7 @@
         const delegations = delegationStats(data.session);
         setText(spendDelegations, delegations.delegations);
         setText(spendReturns, delegations.returns);
+        setText(spendLeadEffort, leadEffortStats(data.session));
       }
       reportDetails.hidden = !data.report_text;
       resultDetails.hidden = !data.session?.result;

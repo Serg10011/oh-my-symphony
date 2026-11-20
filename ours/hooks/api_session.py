@@ -24,6 +24,7 @@ import api_budget as budget
 import api_project as project
 import api_project_context as project_context
 import api_cache
+import api_check_output
 import api_effort
 import api_flash_probe as flash_probe
 import api_flash_protocol as flash_protocol
@@ -144,7 +145,11 @@ _FLASH_BATCH_POLICY = 5
 _SOL_REVIEW_POLICY = 6
 _SOL_TASK_BRIEF_POLICY = 7
 _SOL_CHECKS_POLICY = 8
-_SOL_TASK_BRIEF_POLICIES = frozenset({_SOL_TASK_BRIEF_POLICY, _SOL_CHECKS_POLICY})
+_SOL_CHECK_SUMMARY_POLICY = 9
+_SOL_SOLO_CHECK_SUMMARY_POLICY = 10
+_SOL_OWN_CHECK_POLICIES = frozenset({_SOL_CHECK_SUMMARY_POLICY, _SOL_SOLO_CHECK_SUMMARY_POLICY})
+_SOL_CHECKS_POLICIES = frozenset({_SOL_CHECKS_POLICY, _SOL_CHECK_SUMMARY_POLICY})
+_SOL_TASK_BRIEF_POLICIES = _SOL_CHECKS_POLICIES | {_SOL_TASK_BRIEF_POLICY}
 _SOL_REVIEW_POLICIES = _SOL_TASK_BRIEF_POLICIES | {_SOL_REVIEW_POLICY}
 _EARLY_HANDOFF = """Once a suitable task's goal, constraints and way to check it are clear,
 delegate it to Flash. Leave routine source discovery to the worker. Investigate
@@ -159,6 +164,15 @@ handoff revision. Consider exit codes and stop reasons alongside the actual diff
 Use relevant results while the files match. Run missing, stale or independent
 checks when needed. A command's exit status does not establish task acceptance.
 """
+_CHECK_SUMMARY = """Successful standard checks can return counts and skips for the workspace
+revision, with verbose output saved in the session journal. Report skips
+accurately. Check failures retain command output.
+"""
+_SOLO_LEAD_ROLES = """Own the task from understanding the goal through implementation and verification.
+Use relevant project context, follow the task constraints and run checks appropriate
+to the change. Record changes to the agreed approach or checks and explain why.
+In the final report, state what changed, which checks ran and what remains unverified.
+"""
 _EXECUTION_LEAD_POLICIES = {
     1: EXECUTION_LEAD_ROLES_V1,
     2: EXECUTION_LEAD_ROLES_V2,
@@ -170,7 +184,9 @@ _EXECUTION_LEAD_POLICIES = {
     _SOL_CHECKS_POLICY: (
         EXECUTION_LEAD_ROLES_V2 + _PLAN_CHANGE_REPORT + _EARLY_HANDOFF + _TASK_BRIEF_HANDOFF + _CHECK_HANDOFF
     ),
+    _SOL_SOLO_CHECK_SUMMARY_POLICY: _SOLO_LEAD_ROLES + _CHECK_SUMMARY,
 }
+_EXECUTION_LEAD_POLICIES[_SOL_CHECK_SUMMARY_POLICY] = _EXECUTION_LEAD_POLICIES[_SOL_CHECKS_POLICY] + _CHECK_SUMMARY
 EXECUTION_WORKER_ROLES_V1 = """Implement the coherent part assigned by the lead and
 verify your work with appropriate checks. Choose the implementation within the
 given goal, context and constraints. Return actual changes, check evidence and
@@ -413,11 +429,17 @@ def _sol_flash_high(spec):
         api.SOL_62_LEAD, api.FLASH_WORKER, "high")
 
 
+def _sol_62_solo(spec):
+    return spec["lead_profile"] == api.SOL_62_LEAD and spec["worker_profile"] is None
+
+
 def _new_role_policy(spec):
+    if _sol_62_solo(spec):
+        return _SOL_SOLO_CHECK_SUMMARY_POLICY
     if spec["worker_profile"] != api.FLASH_WORKER:
         return 3
     if _sol_flash_high(spec):
-        return _SOL_CHECKS_POLICY
+        return _SOL_CHECK_SUMMARY_POLICY
     return _FLASH_BATCH_POLICY
 
 
@@ -439,7 +461,8 @@ def _load(path: Path, *, raw: bytes | None = None) -> dict:
     if (type(role_policy) is not int or role_policy not in (0, *_EXECUTION_LEAD_POLICIES)
             or (role_policy and "execution" not in spec)
             or (role_policy in (2, 4, _FLASH_BATCH_POLICY) and spec["worker_profile"] != api.FLASH_WORKER)
-            or (role_policy in _SOL_REVIEW_POLICIES and not _sol_flash_high(spec))):
+            or (role_policy in _SOL_REVIEW_POLICIES and not _sol_flash_high(spec))
+            or (role_policy == _SOL_SOLO_CHECK_SUMMARY_POLICY and not _sol_62_solo(spec))):
         raise SessionError("invalid_role_policy")
     if "output_limits" in state:
         pinned = state["output_limits"]
@@ -1506,7 +1529,9 @@ def _project_answer(state, call, *, part_id=None, deferred=False, before_command
             if part_id is None and state.get("role_policy_version") in _SOL_REVIEW_POLICIES and call["name"] == "project_changes":
                 return workspace.lead_changes(state["spec"], state["execution_state"],
                                               state["project_snapshot"], args), False
-            capture_revision = part_id is not None and state.get("role_policy_version") == _SOL_CHECKS_POLICY
+            role_policy = state.get("role_policy_version")
+            capture_revision = (role_policy in _SOL_OWN_CHECK_POLICIES if part_id is None
+                                else role_policy in _SOL_CHECKS_POLICIES)
             return workspace.call(state["spec"], state["execution_state"], call["name"],
                                   args, before_command=before_command,
                                   cancelled=_CANCELLATION.get(), include_before_revision=capture_revision), False
@@ -1541,7 +1566,7 @@ def _project_call(path, state, call, history, *, part_id=None, deferred=False, p
     output, fatal = prepared if prepared is not None else _project_answer(
         state, call, part_id=part_id, deferred=deferred, before_command=lambda: _save(path, state))
     before_revision = output.pop("before_revision", None)
-    if before_revision is not None:
+    if part_id is not None and before_revision is not None:
         command = _decode(call["arguments"])["command"].encode("utf-8")
         record["command_result"] = {
             "attempt": state["parts"][part_id]["attempts"],
@@ -1552,6 +1577,12 @@ def _project_call(path, state, call, history, *, part_id=None, deferred=False, p
             "exit_code": output["exit_code"],
             "stop_reason": output["stop_reason"],
         }
+    if part_id is None and before_revision is not None and before_revision == output["revision"]:
+        command = _decode(call["arguments"])["command"]
+        summary = api_check_output.summarize(command, state["spec"]["execution"]["python"], output)
+        if summary is not None:
+            record["command_output"] = output["output"]
+            output = summary
     record.update(status="error" if "error" in output else "completed", finished_at=_now(),
                   reply_bytes=len(_encode(output)))
     if "error" in output:
@@ -1726,7 +1757,7 @@ def _dispatch(path, state, calls, *, environ, transport, flash=None, resumed_par
             fatal = _handoff_diff(state, output)
             if "error" in output["workspace_changes"]:
                 state["tool_errors"].append({"call_id": call["call_id"], "error": output["workspace_changes"]["error"]})
-            elif state.get("role_policy_version") == _SOL_CHECKS_POLICY:
+            elif state.get("role_policy_version") in _SOL_CHECKS_POLICIES:
                 checks = _handoff_checks(state, output["part_id"], output["workspace_changes"]["revision"])
                 if checks is not None:
                     output["workspace_checks"] = checks
