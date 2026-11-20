@@ -87,6 +87,27 @@
     };
   }
 
+  function profileCallStats(session) {
+    const savedCalls = profile => {
+      const usage = typeof profile === 'string' && profile ? session.usage?.[profile] : undefined;
+      const calls = usage?.calls;
+      if (!Number.isSafeInteger(calls) || calls < 0) return 'Нет данных';
+      const unknown = usage.unknown_usage_calls;
+      return Number.isSafeInteger(unknown) && unknown > 0 && unknown <= calls
+        ? `${number(calls)} · без данных о токенах — ${number(unknown)}`
+        : number(calls);
+    };
+    const lead = session.lead_profile || session.profiles?.lead?.name;
+    const worker = session.worker_profile;
+    const workerSnapshot = session.profiles?.worker;
+    // Explicit null means solo, even if an older profile snapshot is present.
+    const solo = worker === null || (worker === undefined && workerSnapshot === null);
+    return {
+      lead: savedCalls(lead),
+      worker: solo ? 'не назначен' : savedCalls(worker === undefined ? workerSnapshot?.name : worker),
+    };
+  }
+
   // The detailed report text already carries the amounts. The summary that
   // reads them lives in api-team-costs.js so the card and the report cannot
   // drift apart into two different price calculations.
@@ -103,14 +124,19 @@
     const status = el('p', { 'aria-live': 'polite' }, 'Загружаю назначение…');
     const error = el('p', { class: 'api-team-error', role: 'alert' });
     const spendLead = el('dd');
+    const spendLeadCalls = el('dd');
     const spendWorker = el('dd');
+    const spendWorkerCalls = el('dd');
     const spendTotal = el('dd');
     const spendTotalLabel = el('dt', {}, 'Итого');
     const spendLeadCache = el('dd');
     const spendDelegations = el('dd');
     const spendReturns = el('dd');
     const spendList = el('dl', { class: 'api-team-assignment' }, [
-      el('dt', {}, 'Ведущий'), spendLead, el('dt', {}, 'Исполнитель'), spendWorker,
+      el('dt', {}, 'Ведущий'), spendLead,
+      el('dt', {}, 'Запросы ведущего'), spendLeadCalls,
+      el('dt', {}, 'Исполнитель'), spendWorker,
+      el('dt', {}, 'Запросы исполнителя'), spendWorkerCalls,
       spendTotalLabel, spendTotal,
       el('dt', {}, 'Вход ведущего из кеша, токены'), spendLeadCache,
       el('dt', {}, 'Поручения исполнителю'), spendDelegations,
@@ -324,22 +350,26 @@
           : 'Карточка, файлы, база или настройки изменились. Прежняя проверка утратила силу.');
         workflowLink.removeAttribute('href');
       }
-      const spendData = data.session ? spendSummary(data.report_text, data.session, data.profiles) : null;
-      spend.hidden = !spendData;
-      if (spendData) {
+      spend.hidden = !data.session;
+      if (data.session) {
+        const spendData = spendSummary(data.report_text, data.session, data.profiles);
         const markSpend = (node, incomplete) => {
           node.dataset.incomplete = incomplete ? 'true' : 'false';
         };
-        setText(spendLead, spendData.lead.value);
-        setText(spendWorker, spendData.worker.value);
-        setText(spendTotalLabel, spendData.subscription ? 'Итого по API' : 'Итого');
-        setText(spendTotal, spendData.total.value);
-        setText(spendNote, spendData.note);
-        markSpend(spendLead, spendData.lead.incomplete);
-        markSpend(spendWorker, spendData.worker.incomplete);
-        markSpend(spendTotal, spendData.total.incomplete);
-        markSpend(spendNote, spendData.total.incomplete);
-        spend.classList.toggle('api-team-spend-incomplete', spendData.total.incomplete);
+        // Missing cost estimates do not make the saved session counters unavailable.
+        setText(spendLead, spendData?.lead.value ?? 'н/д');
+        setText(spendWorker, spendData?.worker.value ?? 'н/д');
+        setText(spendTotalLabel, spendData?.subscription ? 'Итого по API' : 'Итого');
+        setText(spendTotal, spendData?.total.value ?? 'н/д');
+        setText(spendNote, spendData?.note ?? '');
+        markSpend(spendLead, spendData?.lead.incomplete ?? true);
+        markSpend(spendWorker, spendData?.worker.incomplete ?? true);
+        markSpend(spendTotal, spendData?.total.incomplete ?? true);
+        markSpend(spendNote, spendData?.total.incomplete);
+        spend.classList.toggle('api-team-spend-incomplete', spendData?.total.incomplete ?? true);
+        const calls = profileCallStats(data.session);
+        setText(spendLeadCalls, calls.lead);
+        setText(spendWorkerCalls, calls.worker);
         setText(spendLeadCache, leadCacheShare(data.session));
         const delegations = delegationStats(data.session);
         setText(spendDelegations, delegations.delegations);
