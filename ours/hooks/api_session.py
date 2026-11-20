@@ -36,6 +36,8 @@ MIN_RESPONSE_TOKENS = 16
 MAX_CALLS = 100_000
 MAX_TOTAL_OUTPUT_TOKENS = 100_000_000
 PROJECT_CALLS_PER_RESPONSE = 256
+MAX_HANDOFF_CHECKS = 6
+MAX_CHECK_COMMAND_BYTES = 256
 DEFAULT_LIMITS = {"max_calls": 1000, "output_tokens_per_call": api.MAX_OUTPUT_TOKENS,
                   "output_tokens_total": 2 * 1024 * 1024, "request_bytes": api.MAX_REQUEST_BYTES}
 LEAD_INSTRUCTIONS = """You lead the assigned task. Understand it, choose the solution and
@@ -141,7 +143,9 @@ if you make that decision before the first handoff.
 _FLASH_BATCH_POLICY = 5
 _SOL_REVIEW_POLICY = 6
 _SOL_TASK_BRIEF_POLICY = 7
-_SOL_REVIEW_POLICIES = frozenset({_SOL_REVIEW_POLICY, _SOL_TASK_BRIEF_POLICY})
+_SOL_CHECKS_POLICY = 8
+_SOL_TASK_BRIEF_POLICIES = frozenset({_SOL_TASK_BRIEF_POLICY, _SOL_CHECKS_POLICY})
+_SOL_REVIEW_POLICIES = _SOL_TASK_BRIEF_POLICIES | {_SOL_REVIEW_POLICY}
 _EARLY_HANDOFF = """Once a suitable task's goal, constraints and way to check it are clear,
 delegate it to Flash. Leave routine source discovery to the worker. Investigate
 first when an uncertainty would change the assignment or its acceptance.
@@ -149,6 +153,11 @@ first when an uncertainty would change the assignment or its acceptance.
 _TASK_BRIEF_HANDOFF = """The controller includes the architect's original task with the first
 Flash assignment. State the assigned scope and essential context. Check the
 final result against the architect's actual requirements.
+"""
+_CHECK_HANDOFF = """The controller's workspace_checks records worker command outcomes on the
+handoff revision. Consider exit codes and stop reasons alongside the actual diff.
+Use relevant results while the files match. Run missing, stale or independent
+checks when needed. A command's exit status does not establish task acceptance.
 """
 _EXECUTION_LEAD_POLICIES = {
     1: EXECUTION_LEAD_ROLES_V1,
@@ -158,6 +167,9 @@ _EXECUTION_LEAD_POLICIES = {
     _FLASH_BATCH_POLICY: EXECUTION_LEAD_ROLES_V2 + _PLAN_CHANGE_REPORT,
     _SOL_REVIEW_POLICY: EXECUTION_LEAD_ROLES_V2 + _PLAN_CHANGE_REPORT + _EARLY_HANDOFF,
     _SOL_TASK_BRIEF_POLICY: EXECUTION_LEAD_ROLES_V2 + _PLAN_CHANGE_REPORT + _EARLY_HANDOFF + _TASK_BRIEF_HANDOFF,
+    _SOL_CHECKS_POLICY: (
+        EXECUTION_LEAD_ROLES_V2 + _PLAN_CHANGE_REPORT + _EARLY_HANDOFF + _TASK_BRIEF_HANDOFF + _CHECK_HANDOFF
+    ),
 }
 EXECUTION_WORKER_ROLES_V1 = """Implement the coherent part assigned by the lead and
 verify your work with appropriate checks. Choose the implementation within the
@@ -405,7 +417,7 @@ def _new_role_policy(spec):
     if spec["worker_profile"] != api.FLASH_WORKER:
         return 3
     if _sol_flash_high(spec):
-        return _SOL_TASK_BRIEF_POLICY
+        return _SOL_CHECKS_POLICY
     return _FLASH_BATCH_POLICY
 
 
@@ -1257,7 +1269,7 @@ def _build_request(state, history, cap, resources, *, part_id=None, request_vers
         lead_policy = _EXECUTION_LEAD_POLICIES.get(role_policy)
         if lead_policy is not None:
             instructions = lead_policy if part_id is None else EXECUTION_WORKER_ROLES_V1
-        if part_id is not None and role_policy == _SOL_TASK_BRIEF_POLICY:
+        if part_id is not None and role_policy in _SOL_TASK_BRIEF_POLICIES:
             instructions += "\n" + _ORIGINAL_TASK_CONTEXT
         instructions += "\n" + (workspace.LEAD_REVIEW_INSTRUCTIONS if lead_review else workspace.INSTRUCTIONS)
         instructions += "\nAvailable Python: " + spec["execution"]["python"]
@@ -1367,9 +1379,9 @@ def _request(path, state, profile, history, *, part_id=None, environ, transport,
         else:
             if len(encoded) <= limits["request_bytes"]:
                 break
-        # Fold only unsolicited diffs that have never reached the lead. This
+        # Fold only unsolicited evidence that has never reached the lead. This
         # local size check runs before a provider call or budget measurement.
-        if not lead_review or not _defer_unsent_handoff_diffs(state, history):
+        if not lead_review or not _defer_unsent_handoff_evidence(state, history):
             _stop(path, state, "request_size_limit")
             return None
     reservation = None
@@ -1494,9 +1506,10 @@ def _project_answer(state, call, *, part_id=None, deferred=False, before_command
             if part_id is None and state.get("role_policy_version") in _SOL_REVIEW_POLICIES and call["name"] == "project_changes":
                 return workspace.lead_changes(state["spec"], state["execution_state"],
                                               state["project_snapshot"], args), False
+            capture_revision = part_id is not None and state.get("role_policy_version") == _SOL_CHECKS_POLICY
             return workspace.call(state["spec"], state["execution_state"], call["name"],
                                   args, before_command=before_command,
-                                  cancelled=_CANCELLATION.get()), False
+                                  cancelled=_CANCELLATION.get(), include_before_revision=capture_revision), False
         return project.call(state["project_snapshot"], call["name"], args), False
     except (workspace.WorkspaceError, sandbox.SandboxError) as exc:
         if str(exc) == "workspace_diff_cursor_stale":
@@ -1527,6 +1540,18 @@ def _project_call(path, state, call, history, *, part_id=None, deferred=False, p
     _save(path, state)
     output, fatal = prepared if prepared is not None else _project_answer(
         state, call, part_id=part_id, deferred=deferred, before_command=lambda: _save(path, state))
+    before_revision = output.pop("before_revision", None)
+    if before_revision is not None:
+        command = _decode(call["arguments"])["command"].encode("utf-8")
+        record["command_result"] = {
+            "attempt": state["parts"][part_id]["attempts"],
+            "before_revision": before_revision,
+            "after_revision": output["revision"],
+            "command": command[:MAX_CHECK_COMMAND_BYTES].decode("utf-8", errors="ignore"),
+            "command_truncated": len(command) > MAX_CHECK_COMMAND_BYTES,
+            "exit_code": output["exit_code"],
+            "stop_reason": output["stop_reason"],
+        }
     record.update(status="error" if "error" in output else "completed", finished_at=_now(),
                   reply_bytes=len(_encode(output)))
     if "error" in output:
@@ -1579,9 +1604,10 @@ def _handoff_outputs(history):
             yield item, _decode(item["output"])
 
 
-def _defer_unsent_handoff_diffs(state, history):
+def _defer_unsent_handoff_evidence(state, history):
     sent = next((call["history_items"] - 1 for call in reversed(state["calls"]) if call["part_id"] is None), 0)
     deferred = set()
+    checks_to_compact = []
     for item, output in _handoff_outputs(history[sent:]):
         page = output.get("workspace_changes", {})
         if page.get("files") or page.get("same_as") in deferred:
@@ -1590,7 +1616,36 @@ def _defer_unsent_handoff_diffs(state, history):
             page["next"] = {**workspace.DIFF_START, "revision": page["revision"], "max_chars": project.MAX_CHARS}
             item["output"] = json.dumps(output, ensure_ascii=False)
             deferred.add(item["call_id"])
-    return bool(deferred)
+        if output.get("workspace_checks", {}).get("commands"):
+            checks_to_compact.append((item, output))
+    if deferred:
+        return True
+    for item, output in checks_to_compact:
+        del output["workspace_checks"]["commands"]
+        item["output"] = json.dumps(output, ensure_ascii=False)
+    return bool(checks_to_compact)
+
+
+def _handoff_checks(state, part_id, revision):
+    attempt = state["parts"][part_id]["attempts"]
+    commands = []
+    other_revisions = 0
+    failures = 0
+    for record in state["file_calls"]:
+        result = record.get("command_result")
+        if record["part_id"] != part_id or not result or result["attempt"] != attempt:
+            continue
+        if result["before_revision"] != revision or result["after_revision"] != revision:
+            other_revisions += 1
+            continue
+        failures += result["exit_code"] != 0 or result["stop_reason"] is not None
+        commands.append({"call_id": record["call_id"], "command": result["command"],
+                         "command_truncated": result["command_truncated"],
+                         "exit_code": result["exit_code"], "stop_reason": result["stop_reason"]})
+    if not commands and not other_revisions:
+        return None
+    return {"revision": revision, "total": len(commands), "failures": failures,
+            "other_revisions": other_revisions, "commands": commands[-MAX_HANDOFF_CHECKS:]}
 
 
 def _handoff_diff(state, output):
@@ -1654,7 +1709,7 @@ def _dispatch(path, state, calls, *, environ, transport, flash=None, resumed_par
             else:
                 part_id = args["part_id"]
                 message = args["message"]
-                if state.get("role_policy_version") == _SOL_TASK_BRIEF_POLICY and not state["parts"]:
+                if state.get("role_policy_version") in _SOL_TASK_BRIEF_POLICIES and not state["parts"]:
                     message = f"Architect's task (reference):\n{spec['task']}\n\nLead's assignment (scope):\n{message}"
                 part = state["parts"].setdefault(part_id, {"attempts": 0, "history": []})
                 part["history"].append({"role": "user", "content": message})
@@ -1671,6 +1726,10 @@ def _dispatch(path, state, calls, *, environ, transport, flash=None, resumed_par
             fatal = _handoff_diff(state, output)
             if "error" in output["workspace_changes"]:
                 state["tool_errors"].append({"call_id": call["call_id"], "error": output["workspace_changes"]["error"]})
+            elif state.get("role_policy_version") == _SOL_CHECKS_POLICY:
+                checks = _handoff_checks(state, output["part_id"], output["workspace_changes"]["revision"])
+                if checks is not None:
+                    output["workspace_checks"] = checks
         state["lead_history"].append({"type": "function_call_output", "call_id": call["call_id"],
                                       "output": json.dumps(output, ensure_ascii=False)})
         if fatal:

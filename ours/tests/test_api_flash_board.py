@@ -144,6 +144,14 @@ for turn, line in enumerate(sys.stdin.buffer, 1):
                               expected_sha256="", text="assert 2 + 2 == 4\n")]
     elif turn == 3:
         assert len(messages) == 1 and messages[0]["result"]["path"] == "tests/test_flash.py"
+        requests = [
+            operation("run_project_command", command=command, timeout_seconds=10)
+            for command in ("check-before-edit", "edit-and-check", "check-final " + "я" * 256,
+                            "fail-final", "timeout-final")
+        ] if MODE == "handoff_checks" else []
+    elif turn == 4 and MODE == "handoff_checks":
+        assert len(messages) == 5 and all(m["tool"] == "run_project_command" for m in messages)
+        assert all("before_revision" not in m["result"] for m in messages)
         requests = []
     else:
         assert turn == 4 and messages == [{"assignment": "Confirm the result."}]
