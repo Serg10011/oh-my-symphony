@@ -147,7 +147,9 @@ _SOL_TASK_BRIEF_POLICY = 7
 _SOL_CHECKS_POLICY = 8
 _SOL_CHECK_SUMMARY_POLICY = 9
 _SOL_SOLO_CHECK_SUMMARY_POLICY = 10
-_SOL_OWN_CHECK_POLICIES = frozenset({_SOL_CHECK_SUMMARY_POLICY, _SOL_SOLO_CHECK_SUMMARY_POLICY})
+_SOL_SOLO_READ_HINT_POLICY = 11
+_SOL_SOLO_POLICIES = frozenset({_SOL_SOLO_CHECK_SUMMARY_POLICY, _SOL_SOLO_READ_HINT_POLICY})
+_SOL_OWN_CHECK_POLICIES = _SOL_SOLO_POLICIES | {_SOL_CHECK_SUMMARY_POLICY}
 _SOL_CHECKS_POLICIES = frozenset({_SOL_CHECKS_POLICY, _SOL_CHECK_SUMMARY_POLICY})
 _SOL_TASK_BRIEF_POLICIES = _SOL_CHECKS_POLICIES | {_SOL_TASK_BRIEF_POLICY}
 _SOL_REVIEW_POLICIES = _SOL_TASK_BRIEF_POLICIES | {_SOL_REVIEW_POLICY}
@@ -173,6 +175,10 @@ Use relevant project context, follow the task constraints and run checks appropr
 to the change. Record changes to the agreed approach or checks and explain why.
 In the final report, state what changed, which checks ran and what remains unverified.
 """
+_SEARCH_READ_HINT = """Open search matches with read_project_file using their path and read_hint values
+when available. Follow next_offset for more context. Search again after edits.
+Use focused reads for inspection and shell commands for operations and checks.
+"""
 _EXECUTION_LEAD_POLICIES = {
     1: EXECUTION_LEAD_ROLES_V1,
     2: EXECUTION_LEAD_ROLES_V2,
@@ -185,6 +191,7 @@ _EXECUTION_LEAD_POLICIES = {
         EXECUTION_LEAD_ROLES_V2 + _PLAN_CHANGE_REPORT + _EARLY_HANDOFF + _TASK_BRIEF_HANDOFF + _CHECK_HANDOFF
     ),
     _SOL_SOLO_CHECK_SUMMARY_POLICY: _SOLO_LEAD_ROLES + _CHECK_SUMMARY,
+    _SOL_SOLO_READ_HINT_POLICY: _SOLO_LEAD_ROLES + _CHECK_SUMMARY + _SEARCH_READ_HINT,
 }
 _EXECUTION_LEAD_POLICIES[_SOL_CHECK_SUMMARY_POLICY] = _EXECUTION_LEAD_POLICIES[_SOL_CHECKS_POLICY] + _CHECK_SUMMARY
 EXECUTION_WORKER_ROLES_V1 = """Implement the coherent part assigned by the lead and
@@ -435,7 +442,7 @@ def _sol_62_solo(spec):
 
 def _new_role_policy(spec):
     if _sol_62_solo(spec):
-        return _SOL_SOLO_CHECK_SUMMARY_POLICY
+        return _SOL_SOLO_READ_HINT_POLICY
     if spec["worker_profile"] != api.FLASH_WORKER:
         return 3
     if _sol_flash_high(spec):
@@ -462,7 +469,7 @@ def _load(path: Path, *, raw: bytes | None = None) -> dict:
             or (role_policy and "execution" not in spec)
             or (role_policy in (2, 4, _FLASH_BATCH_POLICY) and spec["worker_profile"] != api.FLASH_WORKER)
             or (role_policy in _SOL_REVIEW_POLICIES and not _sol_flash_high(spec))
-            or (role_policy == _SOL_SOLO_CHECK_SUMMARY_POLICY and not _sol_62_solo(spec))):
+            or (role_policy in _SOL_SOLO_POLICIES and not _sol_62_solo(spec))):
         raise SessionError("invalid_role_policy")
     if "output_limits" in state:
         pinned = state["output_limits"]
@@ -1534,7 +1541,8 @@ def _project_answer(state, call, *, part_id=None, deferred=False, before_command
                                 else role_policy in _SOL_CHECKS_POLICIES)
             return workspace.call(state["spec"], state["execution_state"], call["name"],
                                   args, before_command=before_command,
-                                  cancelled=_CANCELLATION.get(), include_before_revision=capture_revision), False
+                                  cancelled=_CANCELLATION.get(), include_before_revision=capture_revision,
+                                  include_read_hints=part_id is None and role_policy == _SOL_SOLO_READ_HINT_POLICY), False
         return project.call(state["project_snapshot"], call["name"], args), False
     except (workspace.WorkspaceError, sandbox.SandboxError) as exc:
         if str(exc) == "workspace_diff_cursor_stale":

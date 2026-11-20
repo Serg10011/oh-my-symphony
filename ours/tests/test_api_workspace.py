@@ -166,6 +166,92 @@ def test_search_and_changed_revision_reflect_current_worker_files(tmp_path):
     assert invoke(path, "list_project_files", prefix="tests", offset=0)["files"][0]["path"] == "tests/new_test.py"
 
 
+def test_search_hint_reads_nearby_unicode_lines_and_can_continue(tmp_path):
+    path, _ = prepared(tmp_path)
+    name = "tests/notes.txt"
+    lines = [f"Строка {number} 🙂\r\n" for number in range(52)]
+    lines[25] = "Строка с целью 🙂\r\n"
+    invoke(path, "write_project_file", path=name, text="".join(lines), expected_sha256="")
+    saved = state(path)
+    args = {"queries": ["с целью"], "prefix": name, "case_sensitive": True,
+            "file_offset": 0, "line_offset": 0}
+    result = workspace.call(saved["spec"], saved["execution_state"], "search_project_files", args,
+                            include_read_hints=True)
+    [hit] = result["matches"]
+    assert hit["line"] == 26
+    assert hit["read_hint"] == {"offset": len("".join(lines[:5])), "max_chars": len("".join(lines[5:46]))}
+    snippet = invoke(path, "read_project_file", path=hit["path"], **hit["read_hint"])
+    assert snippet["text"] == "".join(lines[5:46]) and not snippet["eof"]
+    rest = invoke(path, "read_project_file", path=name, offset=snippet["next_offset"], max_chars=4096)
+    assert rest["text"] == "".join(lines[46:]) and rest["eof"]
+
+
+@pytest.mark.parametrize(("prefix", "case_sensitive"), [("🙂", True), ("ß", False)])
+def test_search_hint_includes_a_match_deep_in_a_long_line(tmp_path, prefix, case_sensitive):
+    path, _ = prepared(tmp_path)
+    name = "tests/long.txt"
+    text = prefix * 5000 + "ФРАГМЕНТ" + "я" * 5000
+    invoke(path, "write_project_file", path=name, text=text, expected_sha256="")
+    saved = state(path)
+    args = {"queries": ["ФРАГМЕНТ" if case_sensitive else "фрагмент"], "prefix": name,
+            "case_sensitive": case_sensitive, "file_offset": 0, "line_offset": 0}
+    result = workspace.call(saved["spec"], saved["execution_state"], "search_project_files", args,
+                            include_read_hints=True)
+    [hit] = result["matches"]
+    assert hit["read_hint"]["offset"] > 0
+    assert hit["read_hint"]["max_chars"] == project.MAX_CHARS
+    assert "ФРАГМЕНТ" in invoke(path, "read_project_file", path=name, **hit["read_hint"])["text"]
+
+
+def test_search_hint_keeps_pagination_and_omits_unreadable_text(tmp_path):
+    path, _ = prepared(tmp_path)
+    saved = state(path)
+    root = Path(saved["execution_state"]["root"])
+    (root / "tests").mkdir(exist_ok=True)
+    (root / "tests/a.bin").write_bytes(b"needle\x00data")
+    (root / "tests/b.txt").write_text("needle\n" * 45)
+    args = {"queries": ["needle"], "prefix": "tests", "case_sensitive": True,
+            "file_offset": 0, "line_offset": 0}
+    first = workspace.call(saved["spec"], saved["execution_state"], "search_project_files", args,
+                           include_read_hints=True)
+    assert len(first["matches"]) == 40
+    assert first["matches"][0]["path"] == "tests/a.bin" and "read_hint" not in first["matches"][0]
+    assert "read_hint" in first["matches"][1]
+    previous = invoke(path, "search_project_files", **args)
+    assert first["next_cursor"] == previous["next_cursor"]
+    second = workspace.call(saved["spec"], saved["execution_state"], "search_project_files",
+                            {**args, **first["next_cursor"]}, include_read_hints=True)
+    assert [hit["line"] for hit in second["matches"]] == list(range(40, 46))
+    assert second["next_cursor"] is None
+
+
+@pytest.mark.parametrize("version", [10, 11])
+def test_solo_search_hint_is_pinned_and_can_feed_the_read_tool(tmp_path, monkeypatch, version):
+    if version == 10:
+        monkeypatch.setattr(session, "_new_role_policy", lambda _spec: 10)
+    path, _ = prepared(tmp_path, lead_profile=session.api.SOL_62_LEAD, worker_profile=None)
+    monkeypatch.setattr(workspace, "preflight", lambda *_args: {"fixture": True})
+    search = tool("search_project_files", "find", queries=["committed"], prefix="src",
+                  case_sensitive=True, file_offset=0, line_offset=0)
+    text = "print('committed')\n"
+    read = tool("read_project_file", "read", path="src/main.py", offset=0, max_chars=len(text))
+    model = session.api.SOL_62_MODEL
+    transport, sent = exchange([frame(None, [search], model=model), frame(None, [read], model=model),
+                                frame("Проверено.", model=model)])
+    assert session.run(path, environ=KEYS, transport=transport)["status"] == "dialogue_complete"
+    saved = session._load(path)
+    assert saved["role_policy_version"] == version
+    assert (session._SEARCH_READ_HINT in sent[0]["body"]["input"][0]["content"]) == (version == 11)
+    outputs = {item["call_id"]: json.loads(item["output"]) for item in saved["lead_history"]
+               if item.get("type") == "function_call_output"}
+    [hit] = outputs["find"]["matches"]
+    assert outputs["read"]["text"] == text
+    if version == 11:
+        assert {"path": hit["path"], **hit["read_hint"]} == json.loads(read["arguments"])
+    else:
+        assert set(hit) == {"path", "line", "text"}
+
+
 def test_command_created_source_outside_grant_is_not_silently_omitted(tmp_path):
     path, _ = prepared(tmp_path)
     root = Path(state(path)["execution_state"]["root"])

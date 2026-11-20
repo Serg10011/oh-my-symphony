@@ -123,12 +123,12 @@ def test_only_recognized_successful_check_output_is_compacted(reason):
 
 
 @pytest.mark.parametrize(("worker", "version"), [
-    (None, 3), (api.FLASH_WORKER, 8), (api.FLASH_WORKER, 9), (None, 10),
+    (None, 3), (api.FLASH_WORKER, 8), (api.FLASH_WORKER, 9), (None, 10), (None, 11),
 ])
 def test_dispatch_preserves_saved_policies_failures_and_moved_revisions(
     tmp_path, portable_offline_policy, monkeypatch, worker, version,
 ):
-    if version in (3, 8):
+    if version in (3, 8, 10):
         monkeypatch.setattr(session, "_new_role_policy", lambda _spec: version)
     if worker:
         monkeypatch.setattr(session.flash_probe, "check_readiness", lambda *_args, **_options: None)
@@ -161,8 +161,8 @@ def test_dispatch_preserves_saved_policies_failures_and_moved_revisions(
     assert any(value["name"] == "delegate_worker" for value in initial["tools"]) == bool(worker)
     instructions = initial["input"][0]["content"]
     assert (session._CHECK_HANDOFF in instructions) == bool(worker)
-    assert (session._SOLO_LEAD_ROLES in instructions) == (version == 10)
-    assert (session._CHECK_SUMMARY in instructions) == (version in (9, 10))
+    assert (session._SOLO_LEAD_ROLES in instructions) == (version in (10, 11))
+    assert (session._CHECK_SUMMARY in instructions) == (version in (9, 10, 11))
     outputs = {
         row["call_id"]: json.loads(row["output"][0]["text"])
         for row in sent[-1]["body"]["input"] if row.get("type") == "function_call_output"
@@ -172,7 +172,7 @@ def test_dispatch_preserves_saved_policies_failures_and_moved_revisions(
     assert outputs["call_failed"]["output"] == failed
     assert outputs["call_mutated"]["output"] == passed
     assert "checks" not in outputs["call_mutated"]
-    if version in (9, 10):
+    if version in (9, 10, 11):
         assert checks["checks"][0]["passed"] == 35
         assert checks["revision"] != outputs["call_mutated"]["revision"]
         assert "output" not in checks
