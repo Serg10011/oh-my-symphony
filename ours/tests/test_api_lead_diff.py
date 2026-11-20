@@ -184,15 +184,16 @@ def test_worker_and_saved_policy_keep_the_original_changes_tool(review_copy):
 @pytest.mark.parametrize(("lead", "worker", "effort", "version"), [
     (api.SOL_62_LEAD, api.FLASH_WORKER, "max", 5),
     ("sol-lead", api.FLASH_WORKER, "high", 5),
-    (api.SOL_62_LEAD, None, "high", 10),
-    (api.SOL_62_LEAD, None, "max", 10),
+    (api.SOL_62_LEAD, None, "high", 11),
+    (api.SOL_62_LEAD, None, "max", 11),
 ])
 def test_new_policy_is_scoped_to_the_assigned_pair_and_starting_effort(tmp_path, portable_offline_policy,
                                                                       lead, worker, effort, version):
     path, _ = prepared(tmp_path, lead_profile=lead, worker_profile=worker, lead_effort=effort)
     saved = state(path)
     assert saved["role_policy_version"] == version
-    for incompatible in {6, 7, 8, 9, 10} - {version}:
+    compatible = {10, 11} if worker is None else {version}
+    for incompatible in {6, 7, 8, 9, 10, 11} - compatible:
         saved["role_policy_version"] = incompatible
         with pytest.raises(session.SessionError, match="invalid_role_policy"):
             session._load(path, raw=json.dumps(saved).encode())

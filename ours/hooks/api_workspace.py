@@ -10,6 +10,7 @@ from contextlib import contextmanager
 from copy import deepcopy
 import hashlib
 import difflib
+from itertools import accumulate
 import json
 import os
 from pathlib import Path
@@ -23,6 +24,7 @@ import api_sandbox as sandbox
 
 MAX_WORKSPACE_BYTES = 256 * 1024 * 1024
 LEAD_DIFF_CHARS = 12_000
+SEARCH_CONTEXT_LINES = 20
 DIFF_START = {"offset": 0, "diff_offset": 0, "revision": "", "max_chars": LEAD_DIFF_CHARS}
 SHA = re.compile(r"[0-9a-f]{64}\Z")
 MUTATION_NAMES = frozenset({"write_project_file", "delete_project_file", "run_project_command"})
@@ -530,7 +532,7 @@ def _mutate(spec: dict, value: dict, name: str, args: dict) -> dict:
 
 
 def call(spec: dict, value: dict, name: str, args: dict, *, before_command=None, cancelled=None,
-         include_before_revision=False) -> dict:
+         include_before_revision=False, include_read_hints=False) -> dict:
     if not isinstance(args, dict):
         raise WorkspaceError("invalid_workspace_query")
     if name in {"write_project_file", "delete_project_file"}:
@@ -607,11 +609,29 @@ def call(spec: dict, value: dict, name: str, args: dict, *, before_command=None,
         return {"files": rows, "total": len(names), "revision": _revision(files),
                 "next_offset": start + len(rows) if start + len(rows) < len(names) else None}
     if name == "search_project_files":
-        return _search(spec, value, args)
+        return _search(spec, value, args, include_read_hints=include_read_hints)
     raise WorkspaceError("invalid_workspace_query")
 
 
-def _search(spec: dict, value: dict, args: dict) -> dict:
+def _read_hint(starts: list[int], line_index: int, line: str, query: str, *,
+               case_sensitive: bool) -> dict[str, int]:
+    start = starts[max(0, line_index - SEARCH_CONTEXT_LINES)]
+    end = starts[min(len(starts) - 1, line_index + SEARCH_CONTEXT_LINES + 1)]
+    line_start = starts[line_index]
+    if line_start + len(line) > start + project.MAX_CHARS:
+        match = (line if case_sensitive else line.casefold()).index(query)
+        if not case_sensitive:
+            # Casefold can expand one Unicode character into several characters.
+            for char_index, char in enumerate(line):
+                match -= len(char.casefold())
+                if match < 0:
+                    match = char_index
+                    break
+        start = max(start, line_start + match - project.MAX_CHARS // 2)
+    return {"offset": start, "max_chars": min(end - start, project.MAX_CHARS)}
+
+
+def _search(spec: dict, value: dict, args: dict, *, include_read_hints=False) -> dict:
     if (set(args) != {"queries", "prefix", "case_sensitive", "file_offset", "line_offset"}
             or not isinstance(args["queries"], list) or not 1 <= len(args["queries"]) <= 8
             or any(not isinstance(q, str) or not 1 <= len(q) <= 256 for q in args["queries"])
@@ -631,14 +651,24 @@ def _search(spec: dict, value: dict, args: dict) -> dict:
             break
         data, _ = read(spec, value, names[index])
         try:
-            lines = data.decode("utf-8").splitlines()
+            text = data.decode("utf-8")
         except UnicodeError:
             continue
+        lines = text.splitlines()
+        can_hint = include_read_hints and "\x00" not in text
+        starts = None
         start = args["line_offset"] if index == args["file_offset"] else 0
         for line_index in range(start, len(lines)):
             line = lines[line_index] if args["case_sensitive"] else lines[line_index].casefold()
-            if any(q in line for q in queries):
-                result["matches"].append({"path": names[index], "line": line_index + 1, "text": lines[line_index][:300]})
+            query = next((q for q in queries if q in line), None)
+            if query is not None:
+                hit = {"path": names[index], "line": line_index + 1, "text": lines[line_index][:300]}
+                if can_hint:
+                    if starts is None:
+                        starts = list(accumulate(map(len, text.splitlines(keepends=True)), initial=0))
+                    hit["read_hint"] = _read_hint(starts, line_index, lines[line_index], query,
+                                                  case_sensitive=args["case_sensitive"])
+                result["matches"].append(hit)
             if len(result["matches"]) >= 40:
                 result["next_cursor"] = {"file_offset": index, "line_offset": line_index + 1}
                 return result
