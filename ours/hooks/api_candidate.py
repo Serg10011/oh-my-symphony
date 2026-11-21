@@ -28,6 +28,27 @@ KEY_LIKE = re.compile(rb"sk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{20,}")
 MAX_RULE_BYTES = 1024 * 1024
 
 
+def protected_write_paths(spec: dict, snapshot: dict, board: Path) -> list[str]:
+    """Find explicit write targets which the submission rules already reject."""
+    paths = spec.get("execution", {}).get("write_paths")
+    if not paths:
+        return []
+    try:
+        cfg = check.load_config(board)
+    except check.CheckError:
+        raise CandidateError("api_check_rules_invalid") from None
+    rules = check.forbidden_rules(cfg)
+    forbidden_trees = check._matcher(
+        pattern for pattern in (*rules.contour, *rules.closed)
+        if pattern == "**" or pattern.replace("\\", "/").rstrip("/").endswith("/**")
+    )
+    # A directory can contain both protected files and allowed exceptions.
+    # Reject a named file or a subtree covered by an unconditional rule.
+    return [path for path in paths if forbidden_trees(path) or (
+        path in snapshot["files"] and check.forbidden_violations({path}, cfg)
+    )]
+
+
 def rules_snapshot(board: Path) -> dict:
     """Bind trusted board rules and their implementation to the approval."""
     result = {}

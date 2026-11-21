@@ -3,6 +3,7 @@
 import asyncio
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+import json
 from pathlib import Path
 import shlex
 import sys
@@ -211,6 +212,24 @@ async def test_bridge_bounds_output_and_hides_untrusted_error_body(workflow, tmp
     with pytest.raises(SymphonyError) as exc:
         await api_team.invoke(cfg, "api-team", "SEED-1", "show")
     assert "dummy secret" not in str(exc.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("paths", "valid"), [
+    (["ours/hooks/project_config.py", "ours/закрытый файл.md"], True),
+    (["/private/local/path"], False),
+    (["ours/../local/path"], False),
+    (["ours/unsafe\ntext"], False),
+])
+async def test_bridge_shows_only_valid_protected_write_paths(workflow, tmp_path, paths, valid):
+    code = "api_protected_write_paths"
+    reply = json.dumps({"error": code, "paths": paths, "message": "dummy secret detail"})
+    cfg = runner_config(workflow, tmp_path, f"print({reply!r})\nraise SystemExit(2)\n")
+    with pytest.raises(SymphonyError) as exc:
+        await api_team.invoke(cfg, "api-team", "SEED-1", "prepare")
+    assert exc.value.context["reason"] == code
+    assert "dummy secret detail" not in exc.value.message
+    assert all((path in exc.value.message) == valid for path in paths)
 
 
 @pytest.mark.asyncio

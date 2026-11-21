@@ -57,6 +57,12 @@ class BoardError(Exception):
     """Fixed, public error codes; never provider/Keychain exception bodies."""
 
 
+class ProtectedWritePathsError(BoardError):
+    def __init__(self, paths: list[str]) -> None:
+        super().__init__("api_protected_write_paths")
+        self.paths = paths
+
+
 class Interrupted(BaseException):
     def __init__(self, reason="operator_stopped"):
         super().__init__(reason)
@@ -204,13 +210,16 @@ class Board:
                                                   "commit": self._base_commit() if base_commit is None else base_commit}})
         session._path(self.session_path)
         spec["project"], snapshot = project.snapshot(spec["project"])
+        rules = candidate.rules_snapshot(self.workflow.parent)
+        blocked = candidate.protected_write_paths(spec, snapshot, self.workflow.parent)
+        if blocked:
+            raise ProtectedWritePathsError(blocked)
         if spec["lead_profile"] == "deepseek-lead" and raw.get("context_paths"):
             spec["project_context"] = project_context.capture(snapshot, self.teams.binding, raw["context_paths"])
         code = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in sorted(Path(__file__).parent.glob("api_*.py"))}
         if planning:
             code["plan.py"] = hashlib.sha256(Path(__file__).with_name("plan.py").read_bytes()).hexdigest()
-        rules = candidate.rules_snapshot(self.workflow.parent)
         binding = {"card": self.card_digest(front, body), "spec": spec,
                    "snapshot": snapshot["digest"], "profiles": session._profiles(spec),
                    "context": self.context, "settings": raw, "code": code,
@@ -1172,6 +1181,9 @@ def cli(argv=None):
             result = getattr(board, args.action)()
         print(json.dumps(result, ensure_ascii=False, allow_nan=False))
         return 0
+    except ProtectedWritePathsError as exc:
+        print(json.dumps({"error": str(exc), "paths": exc.paths}, ensure_ascii=False))
+        return 2
     except (BoardError, api_plan.PlanError, cloud.CloudError, candidate.CandidateError, session.SessionError,
             project.ProjectError, OSError, ValueError, KeyError) as exc:
         # Detailed provider/OS error bodies may contain credentials. This is a
