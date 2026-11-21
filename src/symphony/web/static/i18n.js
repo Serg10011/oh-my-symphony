@@ -299,6 +299,8 @@
     'board.readOnlyTracker': 'Linear/Jira boards are read-only here.',
     'board.noPriority': 'No priority',
     'board.defaultAgent': 'default',
+    'board.agentWithDefault': '{agent} (default)',
+    'board.savedAgent': '{agent} (saved assignment)',
     'board.noDescription': 'No description',
     'board.attention': 'Attention',
     'board.attentionRequired': 'Attention required',
@@ -945,6 +947,8 @@
     'board.readOnlyTracker': 'Linear/Jira 보드는 여기에서 읽기 전용입니다.',
     'board.noPriority': '우선순위 없음',
     'board.defaultAgent': '기본값',
+    'board.agentWithDefault': '{agent} (기본값)',
+    'board.savedAgent': '{agent} (저장된 배정)',
     'board.noDescription': '설명 없음',
     'board.attention': '확인 필요',
     'board.attentionRequired': '확인이 필요합니다',
@@ -1306,6 +1310,9 @@
   };
 
   const ru = {
+    'board.defaultAgent': 'По умолчанию',
+    'board.agentWithDefault': '{agent} (по умолчанию)',
+    'board.savedAgent': '{agent} (сохранённое назначение)',
     // -- Generic actions and nouns --
     'common.cancel': 'Отмена',
     'common.save': 'Сохранить',

@@ -369,8 +369,18 @@ def build_service_config(
     new_kind = agent_raw.get("new_issue_kind", "")
     if not isinstance(new_kind, str) or (new_kind and new_kind not in selectable_kinds):
         raise ConfigValidationError("agent.new_issue_kind must be a selectable backend", value=new_kind)
+    picker = agent_raw.get("picker_kinds")
+    if picker is not None and (
+        not isinstance(picker, list) or not picker
+        or any(not isinstance(k, str) or k not in selectable_kinds for k in picker)
+        or len(set(picker)) != len(picker)
+    ):
+        raise ConfigValidationError(
+            "agent.picker_kinds must list distinct allowed backends", value=picker
+        )
     agent = AgentConfig(
         kind=agent_kind,
+        picker_kinds=tuple(picker or ()),
         new_issue_kind=new_kind,
         allowed_kinds=tuple(sorted(selectable_kinds)) if allowed is not None else (),
         max_concurrent_agents=_validated_positive_or_default(

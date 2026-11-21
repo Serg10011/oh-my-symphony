@@ -32,6 +32,7 @@ from ..workflow import (
 from ..workflow.mutate import WorkflowMutationError
 from .context import _Ctx
 from .payloads import (
+    _agent_picker_payload,
     _attention_queue_payload,
     _columns_payload,
     _issue_card,
@@ -65,6 +66,12 @@ from .validation import (
 )
 
 log = get_logger()
+
+
+def _new_issue_pin(cfg: ServiceConfig) -> str:
+    if cfg.agent.new_issue_kind:
+        return cfg.agent.new_issue_kind
+    return cfg.agent.kind if uses_board_queue(cfg, cfg.agent.kind) else ""
 
 
 def can_start_issue(cfg: ServiceConfig, issue: Issue) -> bool:
@@ -209,7 +216,8 @@ def _register_issue_routes(
                     "tracker_kind": cfg.tracker.kind,
                     "read_only": read_only,
                     "default_agent_kind": cfg.agent.kind,
-                    "new_issue_kind": cfg.agent.new_issue_kind,
+                    "new_issue_kind": _new_issue_pin(cfg),
+                    **_agent_picker_payload(cfg),
                     "id_prefix": cfg.tracker.id_prefix,
                     "agent_kinds": sorted(cfg.board_agent_kinds()),
                     "api_team_kinds": sorted(k for k in cfg.agent.profiles if api_profile(cfg, k)),
@@ -414,9 +422,7 @@ def _register_issue_routes(
         cfg = ctx.config()
         tracker = ctx.file_tracker()
         title = _check_title(body.get("title"))
-        agent_kind = _check_agent_kind(body.get("agent_kind"), cfg) or cfg.agent.new_issue_kind
-        if not agent_kind and uses_board_queue(cfg, cfg.agent.kind):
-            agent_kind = cfg.agent.kind
+        agent_kind = _check_agent_kind(body.get("agent_kind"), cfg) or _new_issue_pin(cfg)
         state = (
             _check_state(cfg, body.get("state"))
             if body.get("state")
