@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 import test_api_board as board_tests
+from test_api_board_permission import authorize, new_card
 from test_api_project import git
 from test_api_session import KEYS, frame
 from test_api_workspace import tool
@@ -62,6 +63,76 @@ def edit(state, name, text=None, *, delete=False):
 def capture(board, **kwargs):
     return candidate.prepare(board.session_path, board.workflow.parent, board.identifier,
                              candidate.rules_snapshot(board.workflow.parent), **kwargs)
+
+
+@pytest.fixture()
+def write_scope_board(board):
+    for path in ("ours/hooks/guard.py", "ours/README.md", "ours/internal.md"):
+        target = board.repo / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("project context\n")
+    git(board.repo, "add", "ours")
+    git(board.repo, "commit", "-qm", "add assignment scope fixtures")
+    git(board.repo, "branch", "-f", "our-main", "HEAD")
+    settings = json.loads(board.settings.read_text())
+    settings["paths"] = ["ours", "src"]
+    board.settings.write_text(json.dumps(settings))
+    configure(board, checks='allow_paths=["ours/README.md", "ours/hooks/**"]')
+    return board
+
+
+def set_write_paths(board, paths):
+    settings = json.loads(board.settings.read_text())
+    settings["execution"]["write_paths"] = paths
+    board.settings.write_text(json.dumps(settings))
+
+
+@pytest.mark.parametrize("protected", ["ours/hooks/guard.py", "ours/hooks", "ours/hooks/new.py", "ours/internal.md"])
+def test_preview_refuses_protected_write_target_before_preparing_assignment(write_scope_board, protected):
+    board = write_scope_board
+    set_write_paths(board, [protected, "ours/README.md"])
+    with pytest.raises(board_tests.board_api.ProtectedWritePathsError) as exc:
+        board.prepare()
+    assert exc.value.paths == [protected]
+    assert not board.path.exists() and not board.session_path.exists()
+    assert board.card()[0]["state"] == "needs_human"
+
+
+@pytest.mark.parametrize("paths", [None, ["ours/README.md"], ["ours"]])
+def test_preview_accepts_legacy_read_context_and_allowed_write_scopes(write_scope_board, paths):
+    board = write_scope_board
+    if paths is not None:
+        set_write_paths(board, paths)
+    approve(board)
+    spec = board._load()["spec"]
+    _, snapshot = candidate.project.snapshot(spec["project"])
+    assert "ours/hooks/guard.py" in snapshot["files"]
+    assert spec["execution"].get("write_paths") == paths
+    assert board.card()[0]["state"] == "Todo"
+    assert not board.session_path.exists()
+
+
+def test_submission_with_board_permission_refuses_protected_target(write_scope_board):
+    board = write_scope_board
+    set_write_paths(board, ["ours/hooks/guard.py"])
+    authorize(board)
+    card = new_card(board)
+    with pytest.raises(board_tests.board_api.ProtectedWritePathsError) as exc:
+        card.submit(card.show()["submission"])
+    assert exc.value.paths == ["ours/hooks/guard.py"]
+    assert not card.path.exists() and not card.session_path.exists()
+
+
+def test_confirmation_rechecks_write_scope_before_queuing(write_scope_board):
+    board = write_scope_board
+    set_write_paths(board, ["ours/README.md"])
+    token = board.prepare()["confirmation_token"]
+    set_write_paths(board, ["ours/hooks/guard.py"])
+    with pytest.raises(board_tests.board_api.ProtectedWritePathsError) as exc:
+        board.confirm(token)
+    assert exc.value.paths == ["ours/hooks/guard.py"]
+    assert board._load()["status"] == "prepared" and not board.session_path.exists()
+    assert board.card()[0]["state"] == "needs_human"
 
 
 def test_real_candidate_keeps_base_and_source_untouched_without_pass_or_delivery(board):

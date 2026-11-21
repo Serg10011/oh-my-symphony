@@ -63,6 +63,7 @@ PUBLIC_ERRORS = {
     "api_permission_invalid": "Не удалось прочитать разрешение доски. Требуется проверка оператором",
     "api_permission_storage_unsafe": "Права папки разрешений не подходят для платной работы",
     "invalid_composition": "Такое сочетание ведущего и исполнителя не поддерживается",
+    "api_protected_write_paths": "В списке правок есть защищённые пути. Проверь назначение перед запуском.",
     "api_assignment_changed": "Задача или настройки изменились. Посмотри назначение заново перед подтверждением",
     "api_confirmation_expired": "Время подтверждения истекло. Посмотри назначение заново",
     "api_plan_not_configured": "Для плана нужны колонки Plan и Subtasks и настройки проекта.",
@@ -778,7 +779,18 @@ async def invoke(cfg: ServiceConfig, kind: str, identifier: str, action: str, *,
             # Public runner errors are fixed machine codes, not stderr.
             if not isinstance(code, str) or not code.replace("_", "").isalnum() or len(code) > 100:
                 code = "api_bridge_failed"
-            raise SymphonyError(PUBLIC_ERRORS.get(code, f"Действие API-команды отклонено (код: {code})"), reason=code)
+            public_message = PUBLIC_ERRORS.get(code, f"Действие API-команды отклонено (код: {code})")
+            if code == "api_protected_write_paths" and isinstance(reply, dict):
+                paths = reply.get("paths")
+                if isinstance(paths, list) and 1 <= len(paths) <= 32 and all(
+                    isinstance(path, str) and len(path) <= 1024 and "\\" not in path
+                    and (path == "." or not any(part in {"", ".", ".."} for part in path.split("/")))
+                    and not any(ord(char) < 32 or ord(char) == 127 for char in path)
+                    for path in paths
+                ):
+                    names = ", ".join(f"«{path}»" for path in paths)
+                    public_message = f"Защищённые пути в списке правок — {names}. Исправь назначение перед запуском."
+            raise SymphonyError(public_message, reason=code)
         return reply
     task = asyncio.create_task(exchange())
     timeout = profile.turn_timeout_ms / 1000 if action in {"run", "check-local-final"} else 60
