@@ -189,6 +189,7 @@ _SCHEMA: dict[str, dict[str, tuple[type, bool]]] = {
         "protected_dirs": (list, False),
         "project_rules": (str, False),
         "manager_rules": (str, False),
+        "picker_kinds": (list, False),
     },
     "integration": {
         "enabled": (bool, False),
@@ -548,6 +549,10 @@ def validate_project(data: dict) -> dict:
     }
     out["agent"]["allowed_bash"] = _check_allowed_bash(out["agent"].get("allowed_bash", []))
     _check_agent_paths(out["agent"])
+    if "picker_kinds" in out["agent"]:
+        kinds = out["agent"]["picker_kinds"]
+        if not kinds or len(set(kinds)) != len(kinds):
+            raise ProjectError("project.toml: [agent] picker_kinds: нужен список разных профилей")
     agents = out["agent"].setdefault("max_concurrent_agents", DEFAULT_MAX_CONCURRENT_AGENTS)
     if "model" in out["service"] and not MODEL_RE.match(out["service"]["model"]):
         raise ProjectError(
@@ -1412,8 +1417,22 @@ def render_workflow(board: Path, project: dict, template: Path = TEMPLATE, *, se
         import api_session
 
         try:
-            return api_board_config.render(text, board.resolve(), project, OURS_DIR / "hooks", settings_dir=settings_dir)
+            text = api_board_config.render(text, board.resolve(), project, OURS_DIR / "hooks", settings_dir=settings_dir)
         except (api_session.SessionError, OSError, ValueError, KeyError) as exc:
             raise ProjectError("project.toml: [api_team]: настройки API-команды не приняты; "
                                "проверь JSON-файл, модели, пути и ограничения") from exc
+
+    if picker := project["agent"].get("picker_kinds"):
+        import yaml
+
+        from symphony.workflow import selectable_agent_kinds
+
+        _, front, body = text.split("---\n", 2)
+        workflow = yaml.safe_load(front)
+        agent = workflow["agent"]
+        allowed = agent.get("allowed_kinds") or selectable_agent_kinds(agent.get("profiles", {}))
+        if any(kind not in allowed for kind in picker):
+            raise ProjectError("project.toml: [agent] picker_kinds: доступны только разрешённые профили")
+        agent["picker_kinds"] = picker
+        text = "---\n" + yaml.safe_dump(workflow, allow_unicode=True, sort_keys=False) + "---\n" + body
     return text

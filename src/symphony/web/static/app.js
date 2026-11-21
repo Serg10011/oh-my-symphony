@@ -910,12 +910,43 @@
     return el('select', { class: 'select' }, columns.map((c) => el('option', { value: c.name, selected: c.name === current }, c.name)));
   }
 
-  function buildAgentSelect(current, identifier) {
-    const kinds = (state.board && state.board.board.agent_kinds) || [];
-    const options = [el('option', { value: '', selected: !current }, t('board.defaultAgent'))];
-    for (const kind of kinds) options.push(el('option', { value: kind, selected: kind === current },
-      window.SymphonyApiModels.kindLabel(state.board, kind, kind === current ? identifier : null)));
-    return el('select', { class: 'select' }, options);
+  function defaultAgentKind(column, pin) {
+    const board = state.board?.board;
+    const key = column.trim().toLowerCase();
+    const routes = board?.stage_agent_kinds || {};
+    return pin || (Object.hasOwn(routes, key) ? routes[key] : board?.default_agent_kind);
+  }
+
+  function agentOptions(current, { identifier, column, pin }) {
+    const board = state.board?.board;
+    const picker = board?.agent_picker_kinds;
+    const kinds = picker || board?.agent_kinds || [];
+    const configured = defaultAgentKind(column, pin);
+    const options = [];
+    let defaultValue;
+    if (!picker) defaultValue = kinds.includes(pin) ? pin : '';
+    if (picker && !identifier) defaultValue = kinds.includes(configured) ? configured : kinds[0];
+    const selected = current || defaultValue || '';
+    if (defaultValue !== undefined) {
+      const kind = picker ? defaultValue : configured;
+      const label = kind ? t('board.agentWithDefault', { agent: window.SymphonyApiModels.kindLabel(state.board, kind) })
+        : t('board.defaultAgent');
+      options.push(el('option', { value: defaultValue, selected: selected === defaultValue, 'data-follows-default': '' }, label));
+    }
+    for (const kind of kinds) {
+      if (kind === defaultValue) continue;
+      options.push(el('option', { value: kind, selected: kind === selected },
+        window.SymphonyApiModels.kindLabel(state.board, kind, kind === current ? identifier : null)));
+    }
+    if (!kinds.includes(current) && (current || (picker && identifier))) {
+      const agent = window.SymphonyApiModels.kindLabel(state.board, current || configured, identifier);
+      options.push(el('option', { value: current || '', selected: true, disabled: true }, t('board.savedAgent', { agent })));
+    }
+    return options;
+  }
+
+  function buildAgentSelect(current, context) {
+    return el('select', { class: 'select' }, agentOptions(current, context));
   }
 
   // ------------------------------------------------------------------
@@ -2219,7 +2250,12 @@
     const stateSelect = buildStateSelect(defaults.state);
     const prioritySelect = buildPrioritySelect(null);
     const labelsInput = el('input', { class: 'input', type: 'text', placeholder: t('board.labelsPlaceholder') });
-    const agentSelect = buildAgentSelect(state.board?.board?.new_issue_kind || '');
+    const pin = state.board?.board?.new_issue_kind;
+    const agentSelect = buildAgentSelect('', { column: stateSelect.value, pin });
+    stateSelect.addEventListener('change', () => {
+      const followsDefault = agentSelect.selectedOptions[0]?.hasAttribute('data-follows-default');
+      agentSelect.replaceChildren(...agentOptions(followsDefault ? '' : agentSelect.value, { column: stateSelect.value, pin }));
+    });
     const prefixInput = el('input', {
       class: 'input', type: 'text', placeholder: state.board?.board?.id_prefix || 'TASK', maxlength: 16,
     });
@@ -2421,10 +2457,16 @@
     // Every field passes a revert callback: a failed PATCH must snap the
     // control back to the last saved value, never keep showing the edit.
     const stateSelect = buildStateSelect(detail.state);
+    const agentContext = () => ({ identifier: detail.identifier, column: detail.state || '' });
+    const agentSelect = buildAgentSelect(detail.agent_kind, agentContext());
+    const refreshAgentOptions = () => agentSelect.replaceChildren(...agentOptions(detail.agent_kind, agentContext()));
     stateSelect.addEventListener('change', () => commitField(
       detail.identifier, 'state', stateSelect.value,
       () => { stateSelect.value = detail.state; },
-      () => { detail.state = stateSelect.value; },
+      () => {
+        detail.state = stateSelect.value;
+        refreshAgentOptions();
+      },
     ));
 
     const prioritySelect = buildPrioritySelect(detail.priority);
@@ -2437,7 +2479,6 @@
       );
     });
 
-    const agentSelect = buildAgentSelect(detail.agent_kind, detail.identifier);
     agentSelect.addEventListener('change', () => commitField(
       detail.identifier, 'agent_kind', agentSelect.value,
       () => { agentSelect.value = detail.agent_kind || ''; },
@@ -2526,7 +2567,10 @@
       isActive: () => state.drawerIssue === detail.identifier,
       onProfiles: profiles => {
         const option = Array.from(agentSelect.options).find(o => o.value === detail.agent_kind);
-        if (option && profiles.lead) option.textContent = window.SymphonyApiModels.confirmedLabel(detail.agent_kind, profiles);
+        if (option && profiles.lead) {
+          const agent = window.SymphonyApiModels.confirmedLabel(detail.agent_kind, profiles);
+          option.textContent = option.disabled ? t('board.savedAgent', { agent }) : agent;
+        }
       },
       onTransition: async () => {
         await refreshBoard();
@@ -2534,6 +2578,7 @@
         if (current && state.drawerIssue === detail.identifier) {
           detail.state = current.state;
           stateSelect.value = current.state;
+          refreshAgentOptions();
         }
       },
     }));

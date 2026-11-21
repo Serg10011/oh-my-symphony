@@ -346,6 +346,8 @@ class AgentConfig:
     # Pin only newly created board cards. Earlier tickets retain their dispatch rules.
     new_issue_kind: str = ""
     allowed_kinds: tuple[str, ...] = ()
+    # Ordered choices for card assignments in the UI, not dispatch permissions.
+    picker_kinds: tuple[str, ...] = ()
 
     def stage_contracts_enabled(self, active_states: "tuple[str, ...]") -> bool:
         """Resolve `agent.stage_contracts` against the board's lanes."""

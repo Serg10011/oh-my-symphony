@@ -31,6 +31,16 @@ from ..workflow import (
 # ---------------------------------------------------------------------------
 
 
+def _agent_picker_payload(cfg: ServiceConfig) -> dict[str, Any]:
+    """Optional metadata; agent_kinds remains the board's execution catalog."""
+    payload: dict[str, Any] = {}
+    if kinds := getattr(cfg.agent, "picker_kinds", ()):
+        payload["agent_picker_kinds"] = list(kinds)
+    if routes := getattr(cfg.agent, "stage_kinds", {}):
+        payload["stage_agent_kinds"] = routes
+    return payload
+
+
 def _issue_card(
     issue: Issue,
     *,
