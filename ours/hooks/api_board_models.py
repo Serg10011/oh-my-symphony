@@ -47,7 +47,7 @@ def from_spec(spec):
                  "worker_profile": spec.get("worker_profile", "luna-worker")})
 
 
-def catalog():
+def catalog(*, neon=False):
     choices = []
     for lead in api.PROFILES:
         for worker in [*api.PROFILES, api.FLASH_WORKER, None]:
@@ -55,7 +55,9 @@ def catalog():
                 choices.append(pair({"lead_profile": lead, "worker_profile": worker}))
             except session.SessionError:
                 pass
-    profiles = [*api.PROFILES.values(), api.FLASH_PROFILE]
+    profiles = [*api.PROFILES.values(), api.FLASH_PROFILE, api.NEON_PROFILE]
+    if neon:
+        choices.append(pair({"lead_profile": api.NEON_SOLO, "worker_profile": None}))
     return {"pairs": choices, "models": {p.name: p.model for p in profiles}}
 
 
@@ -87,6 +89,9 @@ class Teams:
         if raw is None:
             raw = config.load_settings(self.settings)
         return from_spec(raw["session"])
+
+    def catalog(self):
+        return catalog(neon=config.load_settings(self.settings).get("neon", False))
 
     def work_settings(self, raw):
         if not self.work_file.exists() and not self.work_file.is_symlink():
@@ -161,6 +166,8 @@ class Teams:
         from api_board_permission import Permission
 
         choice = pair(choice)
+        if choice["lead_profile"] == api.NEON_SOLO:
+            raise session.SessionError("neon_card_only")
         for p in (self.base, self.file.parent):
             p.mkdir(mode=0o700, exist_ok=True)
             _checked_dir(p)

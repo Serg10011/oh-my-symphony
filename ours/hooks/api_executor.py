@@ -53,6 +53,9 @@ PROFILES = {
 }
 FLASH_WORKER = "flash-worker"
 FLASH_PROFILE = Profile(FLASH_WORKER, "antigravity", FLASH_MODEL, "high", None, None)
+NEON_SOLO = "neon-solo"
+NEON_MODEL = "gemini-pro-orchestrator-neon"
+NEON_PROFILE = Profile(NEON_SOLO, "antigravity-neon", NEON_MODEL, "fixed", None, None)
 
 
 class ExecutorError(Exception):
@@ -76,6 +79,8 @@ class ExecutorError(Exception):
 def profile_for(name: str) -> Profile:
     if name == FLASH_WORKER:
         return FLASH_PROFILE
+    if name == NEON_SOLO:
+        return NEON_PROFILE
     try:
         return PROFILES[name]
     except (KeyError, TypeError):
@@ -92,7 +97,7 @@ def output_limit(name: str) -> int:
 
 def validate_effort(name: str, effort: str) -> None:
     profile = profile_for(name)
-    if name in ("luna-worker", FLASH_WORKER):
+    if name in ("luna-worker", FLASH_WORKER, NEON_SOLO):
         choices = {profile.effort}
     else:
         choices = {"high", "max", "low"} if profile.provider == "deepseek" else {"low", "medium", "high", "xhigh", "max"}

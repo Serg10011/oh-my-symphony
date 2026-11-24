@@ -2,13 +2,14 @@
 (function (root) {
   'use strict';
   const names = { 'deepseek-flash': 'DeepSeek Flash 4.1', 'gpt-6.1-sol': 'Sol 6.1', 'gpt-6.2-sol': 'Sol 6.2', 'gpt-6-luna': 'Luna',
-    'gemini-3.8-flash-high': 'Gemini 3.8 Flash' };
+    'gemini-3.8-flash-high': 'Gemini 3.8 Flash', 'gemini-pro-orchestrator-neon': 'Orchestrator (Neon)' };
   const name = id => names[id] || id;
   const cache = new Map();
   const invalidate = kind => { if (kind) cache.delete(kind); else cache.clear(); };
   function label(kind, pair, models) {
     if (!pair || !models?.[pair.lead_profile]) return 'API-команда';
     const lead = name(models[pair.lead_profile]);
+    if (pair.lead_profile === 'neon-solo') return lead;
     return pair.worker_profile && models[pair.worker_profile]
       ? `${kind} — ${lead} + ${name(models[pair.worker_profile])}` : `${kind} — ${lead}`;
   }
@@ -55,6 +56,7 @@
       const ids = data.pairs.filter(p => p.lead_profile === lead.value).map(p => p.worker_profile);
       const selected = ids.includes(preferred) ? preferred : ids[0];
       worker.replaceChildren(...ids.map(id => option(id, id === selected)));
+      if (lead.value === 'neon-solo') worker.options[0].textContent = 'Orchestrator работает один';
     }
     workers(current.worker_profile);
     const value = () => ({ lead_profile: lead.value, worker_profile: worker.value || null });

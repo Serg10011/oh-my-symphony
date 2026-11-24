@@ -20,12 +20,13 @@ def load_settings(path: Path) -> dict:
     if path.is_symlink() or not path.is_file() or path.stat().st_size > 1024 * 1024:
         raise session.SessionError("invalid_api_board_settings")
     raw = session._decode(path.read_bytes())
-    if (not isinstance(raw, dict) or set(raw) - {"cloud_check", "mode", "route", "context_paths"}
+    if (not isinstance(raw, dict) or set(raw) - {"cloud_check", "mode", "route", "context_paths", "neon"}
             != {"version", "paths", "session", "execution"}
             or type(raw["version"]) is not int or raw["version"] != 1
             or ("cloud_check" in raw and raw["cloud_check"] != cloud.PROFILE)
             or ("mode" in raw and raw["mode"] not in MODES)
             or ("route" in raw and raw["route"] != "single-api")
+            or ("neon" in raw and type(raw["neon"]) is not bool)
             or not isinstance(raw["session"], dict)
             or set(raw["session"]) - {"context", "lead_profile", "worker_profile", "lead_effort", "lead_escalation", "limits", "budget"}):
         raise session.SessionError("invalid_api_board_settings")
@@ -52,6 +53,12 @@ def with_work_settings(raw, mode, paths):
 def session_options(raw, roles):
     options = {**raw["session"], **roles}
     lead = options.get("lead_profile", "deepseek-lead")
+    if lead == api.NEON_SOLO:
+        if not raw.get("neon"):
+            raise session.SessionError("neon_disabled")
+        for option in ("lead_effort", "lead_escalation", "budget"):
+            options.pop(option, None)
+        return options
     configured_lead = raw["session"].get("lead_profile", "deepseek-lead")
     flash_worker = options.get("worker_profile") == api.FLASH_WORKER
     if lead != configured_lead and lead not in api.SOL_LEAD_PROFILES:

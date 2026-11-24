@@ -125,6 +125,13 @@
     const subscription = worker?.provider === 'antigravity';
     const roleNames = { lead: leadName || leadModel, worker: subscription ? null : workerName || workerModel };
     const usage = session && session.usage && typeof session.usage === 'object' ? session.usage : null;
+    if (lead?.provider === 'antigravity-neon') {
+      const tokens = session?.neon?.usage?.total_tokens;
+      const known = Number.isSafeInteger(tokens) && tokens >= 0;
+      const amount = known ? ' · ' + tokens.toLocaleString('ru-RU') + ' токенов' : ' · расход неизвестен';
+      return { ...zeroSummary('Дополнительные кредиты выключены.', roleNames), subscription: true,
+        lead: { value: 'Подписка Antigravity' + amount, amount: null, assigned: true, incomplete: !known } };
+    }
     function withSubscription(result) {
       if (!subscription) return result;
       const row = usage?.[workerName];
