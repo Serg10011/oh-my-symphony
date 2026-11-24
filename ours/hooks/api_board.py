@@ -317,6 +317,8 @@ class Board:
             with session._lock(self.permission.settings_lock), session._lock(self.permission.path):
                 authorization = self.permission.validate_submission(self, expected)
                 proposal = self.proposal()
+                if proposal["spec"]["lead_profile"] == api.NEON_SOLO:
+                    raise BoardError("neon_confirmation_required")
                 value = {"version": 1, "identifier": self.identifier, "status": "queued",
                          "created_at": session._now(), "confirmed_at": session._now(),
                          "permission_revision": authorization["revision"], "authorization": authorization,
@@ -421,9 +423,9 @@ class Board:
                 if isinstance(frozen, dict):
                     return {"version": 1, "status": "unassigned", "identifier": self.identifier, **view,
                             "mode": frozen.get("mode"), "team_picker": {"default": models.pair(frozen.get("team")),
-                                                                        "override": None, **models.catalog()}}
+                                                                        "override": None, **self.teams.catalog()}}
             return {"version": 1, "status": "unassigned", "identifier": self.identifier, **view,
-                    "team_picker": {"default": self.teams.default(), "override": None, **models.catalog()}}
+                    "team_picker": {"default": self.teams.default(), "override": None, **self.teams.catalog()}}
         if value["status"] == "running":
             value = self._recover_running(value)
         release = None
@@ -471,7 +473,7 @@ class Board:
             frozen = self.card()[0].get("api_defaults")
             default = models.pair(frozen["team"]) if isinstance(frozen, dict) else self.teams.default()
             result["team_picker"] = {"default": default, "override": value.get("team_override"),
-                                     **models.catalog()}
+                                     **self.teams.catalog()}
         if self.session_path.exists():
             state = session._load(self.session_path)
             result["session"] = session.summary(state)
@@ -860,10 +862,11 @@ class Board:
                 self._hold(value, "Разрешение доски отозвано или изменилось. Платный запуск не выполнен.",
                            append_note=not subtask)
                 return self.show()
-            if value["spec"]["worker_profile"] == api.FLASH_WORKER:
+            neon = value["spec"]["lead_profile"] == api.NEON_SOLO
+            if neon or value["spec"]["worker_profile"] == api.FLASH_WORKER:
                 reset = gemini_quota.blocked_until(self.teams.saved_gemini_quota())
                 if reset is not None:
-                    value.update(status="stopped", reason="flash_quota_exhausted",
+                    value.update(status="stopped", reason="neon_quota_exhausted" if neon else "flash_quota_exhausted",
                                  gemini_wait_until=reset.isoformat(), finished_at=session._now())
                     self._save(value)
                     self._hold(value, "По последнему снимку квота Gemini исчерпана.", append_note=not subtask)

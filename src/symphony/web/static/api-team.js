@@ -13,6 +13,14 @@
     api_assignment_changed: 'Задача или настройки изменились после подтверждения; платный запуск отменён.',
     api_permission_revoked: 'Разрешение доски отозвано или изменилось. Новые обращения к моделям остановлены.',
     execution_preflight_failed: 'Проверка изоляции не прошла; модели не запускались.',
+    neon_startup_failed: 'Не удалось открыть профиль Orchestrator (Neon) в Antigravity.',
+    neon_failed: 'Antigravity завершил Orchestrator без результата. Смотри отчёт карточки.',
+    neon_timeout: 'Orchestrator не завершился за отведённое время.',
+    neon_invalid_response: 'Antigravity вернул ответ в неизвестном формате.',
+    neon_quota_exhausted: 'Квота подписки Gemini исчерпана. Остаток можно обновить в настройках.',
+    neon_permission_denied: 'Antigravity остановился на разрешении доступа к файлу или инструменту.',
+    neon_scope_changed: 'Orchestrator вернул изменения за пределами разрешённых файлов.',
+    neon_no_changes: 'Orchestrator завершил запуск без правок.',
     flash_cli_unavailable: 'На Mac недоступен Antigravity CLI для Flash.',
     flash_customizations_active: 'Активные расширения Antigravity мешают проверить ограничения Flash.',
     flash_worker_failed: 'Сбой исполнителя Flash. Сохранённый расход доступен в отчёте.',
@@ -334,6 +342,8 @@
       if (data.status !== 'prepared') token = null;
       prepare.hidden = draft || !['unassigned', 'prepared'].includes(data.status);
       confirm.hidden = data.status !== 'prepared' || !token;
+      const neon = data.profiles?.lead?.provider === 'antigravity-neon';
+      setText(confirm, neon ? 'Запустить по подписке' : 'Подтвердить платный запуск');
       submit.hidden = draft || !permitted || !submission || !['unassigned','prepared'].includes(data.status) || Boolean(selection);
       if (!submit.hidden) confirm.hidden = true;
       const choices = data.team_picker;
@@ -423,7 +433,13 @@
         onProfiles?.(data.profiles);
         const limits = data.limits || {}, project = data.project || {};
         const subscription = data.profiles.worker?.provider === 'antigravity';
-        const rows = [
+        const rows = neon ? [
+          ['Исполнитель карточки', 'Orchestrator (Neon)'],
+          ['Оплата', 'Подписка Antigravity. Дополнительные кредиты выключены.'],
+          ['Время на запуск', `${number(Math.min(data.process_timeout_seconds, 7200) / 60)} мин`],
+          ['Версия проекта', project.commit || 'не указана'],
+          ['Доступные файлы', (project.paths || []).join(', ')],
+        ] : [
           ['Ведущий', model(data.session?.lead_effort?.current ? { ...data.profiles.lead, effort: data.session.lead_effort.current } : data.profiles.lead)],
           ['Исполнитель', model(data.profiles.worker)],
           ...(subscription ? [

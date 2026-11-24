@@ -29,6 +29,7 @@ import api_effort
 import api_flash_probe as flash_probe
 import api_flash_protocol as flash_protocol
 import api_flash_transport as flash_transport
+import api_neon
 import api_workspace as workspace
 import api_sandbox as sandbox
 
@@ -269,6 +270,8 @@ def _text(value, limit: int, *, empty: bool = False) -> bool:
 
 
 def validate_composition(lead, worker):
+    if lead == api.NEON_SOLO and worker is None:
+        return
     if (lead not in ("deepseek-lead", *api.SOL_LEAD_PROFILES) or worker not in (None, "luna-worker", api.FLASH_WORKER)
             or (lead == "deepseek-lead" and worker != "luna-worker")):
         raise SessionError("invalid_composition")
@@ -287,6 +290,9 @@ def validate_spec(raw: dict) -> dict:
         validate_composition(lead, "luna-worker")
     else:
         validate_composition(lead, worker)
+    neon = lead == api.NEON_SOLO
+    if neon and ("execution" not in raw or "budget" in raw):
+        raise SessionError("neon_isolated_subscription_required")
     flash_worker = worker == api.FLASH_WORKER
     if flash_worker and "execution" not in raw:
         raise SessionError("flash_requires_execution")
@@ -297,7 +303,7 @@ def validate_spec(raw: dict) -> dict:
     if not isinstance(limits, dict) or set(limits) - set(DEFAULT_LIMITS):
         raise SessionError("invalid_limits")
     defaults = dict(DEFAULT_LIMITS)
-    if "output_tokens_per_call" not in limits:
+    if "output_tokens_per_call" not in limits and not neon:
         defaults["output_tokens_per_call"] = min(defaults["output_tokens_per_call"], api.output_limit(lead))
     limits = defaults | limits
     bounds = {"max_calls": (1, MAX_CALLS), "output_tokens_per_call": (16, api.MAX_OUTPUT_TOKENS),
@@ -464,6 +470,12 @@ def _load(path: Path, *, raw: bytes | None = None) -> dict:
         raise SessionError("invalid_state")
     calls = state["calls"]
     spec = state["spec"]
+    neon_usage = state.get("neon_usage", {})
+    if (not isinstance(neon_usage, dict) or set(neon_usage) - set(api_neon.USAGE_FIELDS)
+            or any(type(v) is not int or v < 0 for v in neon_usage.values())
+            or ("neon_usage" in state and (spec["lead_profile"] != api.NEON_SOLO or state["status"] == "prepared"))
+            or (spec["lead_profile"] == api.NEON_SOLO and (calls or state["parts"]))):
+        raise SessionError("invalid_neon_state")
     role_policy = state.get("role_policy_version", 0)
     if (type(role_policy) is not int or role_policy not in (0, *_EXECUTION_LEAD_POLICIES)
             or (role_policy and "execution" not in spec)
@@ -582,7 +594,7 @@ def create(path, spec: dict) -> dict:
     state = {"version": 1, "status": "prepared", "spec": spec, "created_at": _now(),
              "profiles": _profiles(spec),
              "output_limits": {p: min(spec["limits"]["output_tokens_per_call"], api.output_limit(p))
-                               if p != api.FLASH_WORKER else spec["limits"]["output_tokens_per_call"]
+                               if p not in (api.FLASH_WORKER, api.NEON_SOLO) else spec["limits"]["output_tokens_per_call"]
                                for p in (spec["lead_profile"], spec["worker_profile"]) if p},
              "lead_history": [{"role": "user", "content": spec["task"]}], "parts": {},
              "calls": [], "tool_errors": [], "result": None, "stop_reason": None}
@@ -710,6 +722,10 @@ def summary(state: dict) -> dict:
         result["resumptions"] = state["resumptions"]
     if api_effort.enabled(state["spec"]):
         result["lead_effort"] = api_effort.summary(state)
+    if state["spec"]["lead_profile"] == api.NEON_SOLO:
+        result["neon"] = {"usage": state.get("neon_usage", {}), "extra_credits_enabled": False}
+        result["usage"][api.NEON_SOLO] = {"calls": None, "billing": "subscription", **result["neon"]["usage"]}
+        result["cost_usd"] = 0
     return result
 
 
@@ -934,6 +950,8 @@ def spend_report(state: dict) -> dict:
         result["lead_effort"] = api_effort.summary(state)
     if "budget" in state["spec"]:
         result["budget"] = _budget_report(state, catalog)
+    if state["spec"]["lead_profile"] == api.NEON_SOLO:
+        result["neon"] = {"usage": state.get("neon_usage", {}), "extra_credits_enabled": False}
     return result
 
 
@@ -1089,6 +1107,16 @@ def render_report(data: dict) -> str:
     """Operator-readable Russian text over the same report data; no I/O, keys or network."""
     if not isinstance(data, dict):
         raise SessionError("invalid_report")
+    if isinstance(data.get("neon"), dict):
+        usage = data["neon"].get("usage", {})
+        return "\n".join([
+            "Orchestrator (Neon) · Подписка Antigravity. Дополнительные кредиты выключены.",
+            f"Статус — {_report_label(data.get('status'), REPORT_STATUSES)}",
+            f"Входные токены — {_count(usage.get('input_tokens'))}",
+            f"Чтение кеша — {_count(usage.get('cache_read_tokens'))}",
+            f"Выходные токены — {_count(usage.get('output_tokens'))}",
+            "Показания Antigravity за весь запуск. Число внутренних запросов CLI не сообщает.",
+        ])
     totals = data.get("totals") if isinstance(data.get("totals"), dict) else {}
     cost = data.get("cost") if isinstance(data.get("cost"), dict) else {}
     models = data.get("by_model") if isinstance(data.get("by_model"), dict) else {}
@@ -1820,6 +1848,29 @@ def run(path, *, environ=None, transport=None, require_budget=False, cancelled=N
         _CANCELLATION.reset(token)
 
 
+def _run_neon(path, state):
+    state.update(status="running", started_at=_now())
+    _save(path, state)
+    try:
+        result = api_neon.run(state["spec"], state["execution_state"], cancelled=_CANCELLATION.get(),
+                              admit=_REQUEST_GUARD.get() or nullcontext, checkpoint=_CHECKPOINT.get())
+    except api_neon.NeonError as exc:
+        _stop(path, state, str(exc))
+        return summary(state)
+    state["neon_usage"] = result["usage"]
+    if "reason" in result:
+        _stop(path, state, result["reason"])
+        return summary(state)
+    value = state["execution_state"]
+    value["retired_roots"].append(value["root"])
+    value["root"] = result["root"]
+    delta = workspace.changes(state["spec"], value, 0)
+    state["execution_result"] = {"revision": delta["revision"], "changes_total": delta["total"]}
+    state.update(status="dialogue_complete", result=result["answer"], finished_at=_now())
+    _save(path, state)
+    return summary(state)
+
+
 def _run(path, *, environ=None, transport=None, require_budget=False, credential_loader=None) -> dict:
     path = _path(path)
     with _lock(path):
@@ -1841,6 +1892,10 @@ def _run(path, *, environ=None, transport=None, require_budget=False, credential
                 return summary(state)
         if _cancelled(path, state):
             return summary(state)
+        if state["spec"]["lead_profile"] == api.NEON_SOLO:
+            if require_budget:
+                raise SessionError("budget_required")
+            return _run_neon(path, state)
         if state["spec"]["worker_profile"] == api.FLASH_WORKER:
             try:
                 flash_probe.check_readiness(state["profiles"]["worker"]["model"],
